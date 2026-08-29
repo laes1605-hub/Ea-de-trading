@@ -2,13 +2,17 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.10"
+#property version   "8.20"
 #property strict
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
-input group "=== ESTRATEGIA PERSONAL ==="
+input group "=== ESTRATEGIAS PARA PROBAR (RR 1:3) ==="
+input bool   InpUseTrendRetrace     = true;
+input bool   InpUseBreakoutRetest   = true;
+input bool   InpUseSRFlip           = true;
+input bool   InpUseMomentum         = true;
 input bool   InpUsePersonalStrategy = true;
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
@@ -191,6 +195,24 @@ input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
 input int    InpTableSize        = 20;
 
+input group "=== PARAMETROS TREND-RT ==="
+input int    InpTR_EmaFast          = 20;
+input int    InpTR_EmaSlow          = 50;
+
+input group "=== PARAMETROS BO-RT ==="
+input int    InpBR_Bars             = 10;
+input double InpBR_VolMult          = 1.5;
+input double InpBR_RetestTol        = 10.0;
+
+input group "=== PARAMETROS S/R-FLIP ==="
+input int    InpSRF_Lookback        = 40;
+input double InpSRF_Tol             = 10.0;
+
+input group "=== PARAMETROS MOM-ADX ==="
+input int    InpMO_AdxPeriod        = 14;
+input double InpMO_AdxMin           = 25.0;
+input int    InpMO_SwingBars        = 10;
+
 
 //+------------------------------------------------------------------+
 //| CONSTANTES                                                       |
@@ -211,7 +233,7 @@ input int    InpTableSize        = 20;
 #define TAB_CONFIG       3
 #define TAB_ESTRAT       4
 #define N_TABS           5
-#define STRAT_COUNT      1
+#define STRAT_COUNT      5
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -232,7 +254,11 @@ input int    InpTableSize        = 20;
 //+------------------------------------------------------------------+
 enum ENUM_STRATEGY_ID
 {
-   STRAT_PERSONAL = 0
+   STRAT_TREND_RETRACE = 0,
+   STRAT_BREAKOUT      = 1,
+   STRAT_SR_FLIP       = 2,
+   STRAT_MOMENTUM      = 3,
+   STRAT_PERSONAL      = 4
 };
 
 //+------------------------------------------------------------------+
@@ -275,6 +301,12 @@ struct SymbolSystemState
    bool     hasLive;
    int      activeLiveStrategy;
    StrategyState strategies[STRAT_COUNT];
+   int      handleFast;      // EMA rápida (TREND-RT)
+   int      handleSlow;      // EMA lenta (TREND-RT)
+   int      handleADX;       // ADX (MOM-ADX)
+   double   boRangeHigh, boRangeLow;
+   bool     boWaitRetestBuy, boWaitRetestSell;
+   double   boRetestLevel;
 };
 
 struct TradeRecord
@@ -414,8 +446,12 @@ long MagicManual(int symIdx)
 string GetStrategyName(int sid)
 {
    switch(sid)
-   { case STRAT_PERSONAL: return "PERSONAL";
-     default:             return "PERSONAL"; }
+   { case STRAT_TREND_RETRACE: return "TREND-RT";
+     case STRAT_BREAKOUT:      return "BO-RT";
+     case STRAT_SR_FLIP:       return "S/R-FLIP";
+     case STRAT_MOMENTUM:      return "MOM-ADX";
+     case STRAT_PERSONAL:      return "PERSONAL";
+     default:                  return "???"; }
 }
 
 int FindTrade(ulong ticket)
@@ -741,9 +777,17 @@ void InitSystemState(int si)
 {
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
+   g_SysState[si].handleFast=INVALID_HANDLE;
+   g_SysState[si].handleSlow=INVALID_HANDLE;
+   g_SysState[si].handleADX =INVALID_HANDLE;
+   g_SysState[si].boRangeHigh=0; g_SysState[si].boRangeLow=0;
+   g_SysState[si].boWaitRetestBuy=false; g_SysState[si].boWaitRetestSell=false;
+   g_SysState[si].boRetestLevel=0;
 
+   bool ena[STRAT_COUNT]={InpUseTrendRetrace,InpUseBreakoutRetest,
+                           InpUseSRFlip,InpUseMomentum,InpUsePersonalStrategy};
    for(int st=0;st<STRAT_COUNT;st++)
-   { g_SysState[si].strategies[st].enabled        = InpUsePersonalStrategy;
+   { g_SysState[si].strategies[st].enabled        = ena[st];
      g_SysState[si].strategies[st].isLive         = false;
      g_SysState[si].strategies[st].CV             = 1;
      g_SysState[si].strategies[st].CR             = 1;
@@ -762,6 +806,43 @@ void InitSystemState(int si)
      g_SysState[si].strategies[st].cbPausedCR     = 1; }
 }
 
+//+------------------------------------------------------------------+
+//| HANDLES DE INDICADORES                                           |
+//+------------------------------------------------------------------+
+bool InitStrategyHandles()
+{
+   for(int si=0;si<g_SymCount;si++)
+   { string sym=g_Symbols[si].name;
+     if(InpUseTrendRetrace)
+     { int hF=iMA(sym,PERIOD_CURRENT,InpTR_EmaFast,0,MODE_EMA,PRICE_CLOSE);
+       int hS=iMA(sym,PERIOD_CURRENT,InpTR_EmaSlow, 0,MODE_EMA,PRICE_CLOSE);
+       if(hF==INVALID_HANDLE||hS==INVALID_HANDLE)
+       { Print("ERROR handles TrendRetrace [",sym,"]"); return false; }
+       double tmp[]; CopyBuffer(hF,0,0,200,tmp); CopyBuffer(hS,0,0,200,tmp);
+       g_SysState[si].handleFast=hF; g_SysState[si].handleSlow=hS; }
+     if(InpUseMomentum)
+     { int hA=iADX(sym,PERIOD_CURRENT,InpMO_AdxPeriod);
+       if(hA==INVALID_HANDLE)
+       { Print("ERROR handle ADX [",sym,"]"); return false; }
+       double tmp2[]; CopyBuffer(hA,0,0,200,tmp2);
+       g_SysState[si].handleADX=hA; } }
+   return true;
+}
+
+void ReleaseStrategyHandles()
+{
+   for(int si=0;si<g_SymCount;si++)
+   { if(g_SysState[si].handleFast!=INVALID_HANDLE)
+     { IndicatorRelease(g_SysState[si].handleFast);
+       g_SysState[si].handleFast=INVALID_HANDLE; }
+     if(g_SysState[si].handleSlow!=INVALID_HANDLE)
+     { IndicatorRelease(g_SysState[si].handleSlow);
+       g_SysState[si].handleSlow=INVALID_HANDLE; }
+     if(g_SysState[si].handleADX!=INVALID_HANDLE)
+     { IndicatorRelease(g_SysState[si].handleADX);
+       g_SysState[si].handleADX=INVALID_HANDLE; } }
+}
+
 
 //+------------------------------------------------------------------+
 //| PERSISTENCIA                                                     |
@@ -776,7 +857,7 @@ void InitGlobalVarKeys()
 }
 
 string GetStateFileName()
-{ return "GQP_v810_"+IntegerToString(InpMagicNumber)+".dat"; }
+{ return "GQP_v820_"+IntegerToString(InpMagicNumber)+".dat"; }
 
 void SaveState()
 {
@@ -1068,7 +1149,7 @@ void UpdateStrategyVirtual(int si, int st)
 }
 
 //+------------------------------------------------------------------+
-//| SEÑAL — ESTRATEGIA PERSONAL                                      |
+//| SEÑALES — ESTRATEGIAS (todas con gestión 1:3)                    |
 //+------------------------------------------------------------------+
 bool IsNewBar(int si, int st)
 {
@@ -1077,19 +1158,130 @@ bool IsNewBar(int si, int st)
    g_SysState[si].strategies[st].lastBarTime=bt; return true;
 }
 
-int CheckStrategySignal(int si, int st)
+//+------------------------------------------------------------------+
+//| 1) TREND-RT — Retroceso de tendencia con EMA                     |
+//|    Compra: EMA rápida > EMA lenta (tendencia alcista); la vela    |
+//|    anterior cerró bajo la EMA rápida (retroceso) y la última      |
+//|    vela cerrada la recuperó. Venta: espejo.                       |
+//+------------------------------------------------------------------+
+int CheckTrendRetraceSignal(int si)
 {
-   if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
-   return CheckPersonalSignal(si);
+   string sym=g_Symbols[si].name;
+   int hF=g_SysState[si].handleFast, hS=g_SysState[si].handleSlow;
+   if(hF==INVALID_HANDLE||hS==INVALID_HANDLE) return 0;
+   double fN[1],sN[1],fP[1],sP[1],CN[1],CP[1];
+   if(CopyBuffer(hF,0,1,1,fN)<=0||CopyBuffer(hS,0,1,1,sN)<=0) return 0;
+   if(CopyBuffer(hF,0,2,1,fP)<=0||CopyBuffer(hS,0,2,1,sP)<=0) return 0;
+   if(CopyClose(sym,PERIOD_CURRENT,1,1,CN)<=0||
+      CopyClose(sym,PERIOD_CURRENT,2,1,CP)<=0) return 0;
+   bool upT=fN[0]>sN[0], dnT=fN[0]<sN[0];
+   if(upT && CP[0]<fP[0] && CN[0]>fN[0] && CN[0]>sN[0]) return +1;
+   if(dnT && CP[0]>fP[0] && CN[0]<fN[0] && CN[0]<sN[0]) return -1;
+   return 0;
 }
 
 //+------------------------------------------------------------------+
-//| CheckPersonalSignal — REGLAS DE ENTRADA (PENDIENTES DE DEFINIR)  |
+//| 2) BO-RT — Ruptura de rango con retest                           |
+//|    Ruptura del rango de N velas con volumen y retest del nivel    |
+//|    roto antes de entrar.                                          |
 //+------------------------------------------------------------------+
-//  Esta función implementa la lógica de entrada de la ESTRATEGIA
-//  PERSONAL. Se llama 1 vez por cada NUEVA VELA y por cada símbolo.
-//
-//  Debe devolver:
+void UpdateBreakoutRange(int si)
+{
+   string sym=g_Symbols[si].name;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double H[],L[];
+   if(CopyHigh(sym,PERIOD_CURRENT,2,InpBR_Bars,H)<=0||
+      CopyLow (sym,PERIOD_CURRENT,2,InpBR_Bars,L)<=0) return;
+   double hi=H[0],lo=L[0];
+   for(int i=1;i<InpBR_Bars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
+   g_SysState[si].boRangeHigh=NormalizeDouble(hi,dg);
+   g_SysState[si].boRangeLow =NormalizeDouble(lo,dg);
+}
+
+int CheckBreakoutSignal(int si)
+{
+   if(g_SysState[si].boRangeHigh==0||g_SysState[si].boRangeLow==0) return 0;
+   string sym=g_Symbols[si].name;
+   double tol=InpBR_RetestTol*SymbolInfoDouble(sym,SYMBOL_POINT);
+   double C[],H[],L[]; long TV[];
+   if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0||
+      CopyHigh (sym,PERIOD_CURRENT,1,2,H)<=0||
+      CopyLow  (sym,PERIOD_CURRENT,1,2,L)<=0||
+      CopyTickVolume(sym,PERIOD_CURRENT,1,2,TV)<=0) return 0;
+   long va[]; double avg=0;
+   if(CopyTickVolume(sym,PERIOD_CURRENT,2,InpBR_Bars,va)>0)
+   { long vs=0; for(int i=0;i<InpBR_Bars;i++) vs+=va[i]; avg=(double)vs/InpBR_Bars; }
+   bool vOK=(avg>0&&TV[0]>=(long)(avg*InpBR_VolMult));
+   double hi=g_SysState[si].boRangeHigh, lo=g_SysState[si].boRangeLow;
+   if(g_SysState[si].boWaitRetestBuy)
+   { if(L[0]<=g_SysState[si].boRetestLevel+tol&&
+        L[0]>=g_SysState[si].boRetestLevel-tol&&
+        C[0]>g_SysState[si].boRetestLevel)
+     { g_SysState[si].boWaitRetestBuy=false; return +1; }
+     if(C[0]<lo) g_SysState[si].boWaitRetestBuy=false; return 0; }
+   if(g_SysState[si].boWaitRetestSell)
+   { if(H[0]>=g_SysState[si].boRetestLevel-tol&&
+        H[0]<=g_SysState[si].boRetestLevel+tol&&
+        C[0]<g_SysState[si].boRetestLevel)
+     { g_SysState[si].boWaitRetestSell=false; return -1; }
+     if(C[0]>hi) g_SysState[si].boWaitRetestSell=false; return 0; }
+   if(C[0]>hi&&vOK){g_SysState[si].boWaitRetestBuy=true; g_SysState[si].boRetestLevel=hi; return 0;}
+   if(C[0]<lo&&vOK){g_SysState[si].boWaitRetestSell=true;g_SysState[si].boRetestLevel=lo; return 0;}
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| 3) S/R-FLIP — Ruptura y retest de nivel fractal                  |
+//|    Ruptura de un máximo/mínimo fractal reciente y retest del      |
+//|    nivel roto (la resistencia se vuelve soporte y viceversa).     |
+//+------------------------------------------------------------------+
+int CheckSRFlipSignal(int si)
+{
+   string sym=g_Symbols[si].name;
+   double tol=InpSRF_Tol*SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    nB=MathMax(6,InpSRF_Lookback);
+   double H[],L[],C1[1],C2[1];
+   if(CopyHigh(sym,PERIOD_CURRENT,1,nB,H)<=0) return 0;
+   if(CopyLow (sym,PERIOD_CURRENT,1,nB,L)<=0) return 0;
+   if(CopyClose(sym,PERIOD_CURRENT,1,1,C1)<=0||
+      CopyClose(sym,PERIOD_CURRENT,2,1,C2)<=0) return 0;
+   double sH=0,sL=0;
+   for(int i=1;i<nB-1;i++)
+   { if(H[i]>H[i-1]&&H[i]>=H[i+1]&&sH==0) sH=H[i];
+     if(L[i]<L[i-1]&&L[i]<=L[i+1]&&sL==0) sL=L[i];
+     if(sH!=0&&sL!=0) break; }
+   if(sH>0&&C2[0]>sH+tol&&L[0]<=sH+tol&&C1[0]>sH) return +1;
+   if(sL>0&&C2[0]<sL-tol&&H[0]>=sL-tol&&C1[0]<sL) return -1;
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| 4) MOM-ADX — Momentum con ADX y ruptura de extremos              |
+//|    ADX alto y creciente + cierre por encima del máximo de N velas|
+//+------------------------------------------------------------------+
+int CheckMomentumSignal(int si)
+{
+   string sym=g_Symbols[si].name;
+   int hA=g_SysState[si].handleADX;
+   if(hA==INVALID_HANDLE) return 0;
+   double A[2];
+   if(CopyBuffer(hA,0,2,2,A)<=0) return 0;
+   if(A[1]<InpMO_AdxMin||A[1]<A[0]) return 0;
+   double H[],L[],CN[1];
+   if(CopyHigh(sym,PERIOD_CURRENT,2,InpMO_SwingBars,H)<=0) return 0;
+   if(CopyLow (sym,PERIOD_CURRENT,2,InpMO_SwingBars,L)<=0) return 0;
+   if(CopyClose(sym,PERIOD_CURRENT,1,1,CN)<=0) return 0;
+   double hi=H[0],lo=L[0];
+   for(int i=1;i<InpMO_SwingBars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
+   if(CN[0]>hi) return +1;
+   if(CN[0]<lo) return -1;
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| 5) PERSONAL — TU ESTRATEGIA (PENDIENTE DE DEFINIR)               |
+//+------------------------------------------------------------------+
+//  Implementa aquí tus propias reglas de entrada. Debe devolver:
 //    +1  → señal de COMPRA
 //    -1  → señal de VENTA
 //     0  → sin señal
@@ -1107,17 +1299,21 @@ int CheckPersonalSignal(int si)
 
    // ══════════════════════════════════════════════════════════════
    //  AQUÍ VAN LAS REGLAS DE ENTRADA DE TU ESTRATEGIA.
-   //
-   //  Ejemplo de estructura (borrar/adaptar):
-   //
-   //  double C[];
-   //  if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
-   //  if(C[0]>C[1]) return +1;   // vela alcista → compra
-   //  if(C[0]<C[1]) return -1;   // vela bajista → venta
-   //  return 0;
    // ══════════════════════════════════════════════════════════════
 
    return 0;
+}
+
+int CheckStrategySignal(int si, int st)
+{
+   if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
+   switch(st)
+   { case STRAT_TREND_RETRACE: return CheckTrendRetraceSignal(si);
+     case STRAT_BREAKOUT:      UpdateBreakoutRange(si); return CheckBreakoutSignal(si);
+     case STRAT_SR_FLIP:       return CheckSRFlipSignal(si);
+     case STRAT_MOMENTUM:      return CheckMomentumSignal(si);
+     case STRAT_PERSONAL:      return CheckPersonalSignal(si);
+     default:                  return 0; }
 }
 
 //+------------------------------------------------------------------+
@@ -1567,7 +1763,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.10  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.20  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2459,7 +2655,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.10           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.20           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -2499,7 +2695,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.10 === X=",InpXActivacion,
+   Print("=== DIAG v8.20 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -2555,13 +2751,15 @@ int OnInit()
 
    if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
 
+   if(!InitStrategyHandles()) return INIT_FAILED;
+
    SyncAllTrades();
 
    if(!IsTester())
    { BuildStaticStructure(); RebuildActiveTab(); UpdateInfoBar();
      if(g_LimitPrice>0) UpdateLimitLine(); }
 
-   Print("EA v8.10 | Símbolos:",g_SymCount,
+   Print("EA v8.20 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -2574,9 +2772,10 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(!IsTester()) SaveState();
+   ReleaseStrategyHandles();
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); }
    Comment("");
-   Print("EA v8.10 cerrado | Razón:",reason);
+   Print("EA v8.20 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
