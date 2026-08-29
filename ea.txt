@@ -2,18 +2,17 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.20"
+#property version   "8.30"
 #property strict
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
-input group "=== ESTRATEGIAS PARA PROBAR (RR 1:3) ==="
-input bool   InpUseTrendRetrace     = true;
-input bool   InpUseBreakoutRetest   = true;
-input bool   InpUseSRFlip           = true;
-input bool   InpUseMomentum         = true;
-input bool   InpUsePersonalStrategy = true;
+input group "=== ESTRATEGIAS SMC (RR 1:3) ==="
+input bool   InpUseSMC       = true;   // 0 Estructura / CHoCH
+input bool   InpUseFVG       = true;   // 1 Fair Value Gap H1
+input bool   InpUseOBBounce  = true;   // 2 Rebote en Order Block H1
+input bool   InpUsePersonal  = true;   // 3 Líneas smc2 (L1-L4, trigger)
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input double InpSL_Points        = 95.0;
@@ -195,23 +194,9 @@ input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
 input int    InpTableSize        = 20;
 
-input group "=== PARAMETROS TREND-RT ==="
-input int    InpTR_EmaFast          = 20;
-input int    InpTR_EmaSlow          = 50;
-
-input group "=== PARAMETROS BO-RT ==="
-input int    InpBR_Bars             = 10;
-input double InpBR_VolMult          = 1.5;
-input double InpBR_RetestTol        = 10.0;
-
-input group "=== PARAMETROS S/R-FLIP ==="
-input int    InpSRF_Lookback        = 40;
-input double InpSRF_Tol             = 10.0;
-
-input group "=== PARAMETROS MOM-ADX ==="
-input int    InpMO_AdxPeriod        = 14;
-input double InpMO_AdxMin           = 25.0;
-input int    InpMO_SwingBars        = 10;
+input group "=== PARAMETROS MOTOR SMC ==="
+input int    InpLookbackBars        = 300;  // velas para L1/L2 del motor
+input int    InpZoneScanBars        = 80;   // velas H1 escaneadas para OB/FVG
 
 
 //+------------------------------------------------------------------+
@@ -233,7 +218,7 @@ input int    InpMO_SwingBars        = 10;
 #define TAB_CONFIG       3
 #define TAB_ESTRAT       4
 #define N_TABS           5
-#define STRAT_COUNT      5
+#define STRAT_COUNT      4
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -254,11 +239,24 @@ input int    InpMO_SwingBars        = 10;
 //+------------------------------------------------------------------+
 enum ENUM_STRATEGY_ID
 {
-   STRAT_TREND_RETRACE = 0,
-   STRAT_BREAKOUT      = 1,
-   STRAT_SR_FLIP       = 2,
-   STRAT_MOMENTUM      = 3,
-   STRAT_PERSONAL      = 4
+   STRAT_SMC       = 0,   // CHoCH / cambio de estructura
+   STRAT_FVG       = 1,   // retest de Fair Value Gap H1
+   STRAT_OB_BOUNCE = 2,   // rebote en Order Block H1
+   STRAT_PERSONAL  = 3    // lógica de líneas smc2 (trigger L1/L2)
+};
+
+enum ENUM_STRUCTURE_BIAS
+{
+   BIAS_UNDEFINED =  0,
+   BIAS_BULLISH   =  1,
+   BIAS_BEARISH   = -1
+};
+
+enum ENUM_STRUCTURE_PHASE
+{
+   PHASE_CONTINUATION = 0,
+   PHASE_REACTION     = 1,
+   PHASE_TRIGGERED    = 2
 };
 
 //+------------------------------------------------------------------+
@@ -296,17 +294,32 @@ struct StrategyState
    int      cbPausedCR;
 };
 
+struct StructureEngine
+{
+   double               L1, L2, L3, L4, EQ;
+   bool                 L3L4_Active;
+   ENUM_STRUCTURE_BIAS  Bias;
+   ENUM_STRUCTURE_PHASE Phase;
+   bool                 Valid;
+   ENUM_TIMEFRAMES      TF;
+};
+
 struct SymbolSystemState
 {
    bool     hasLive;
    int      activeLiveStrategy;
    StrategyState strategies[STRAT_COUNT];
-   int      handleFast;      // EMA rápida (TREND-RT)
-   int      handleSlow;      // EMA lenta (TREND-RT)
-   int      handleADX;       // ADX (MOM-ADX)
-   double   boRangeHigh, boRangeLow;
-   bool     boWaitRetestBuy, boWaitRetestSell;
-   double   boRetestLevel;
+   StructureEngine SE;       // motor del TF del gráfico (SMC / PERSONAL)
+   StructureEngine SE_D1;    // motor D1 (filtro premium/discount)
+   datetime structLastBar;   // última vela del TF procesada
+   datetime h1LastBar;       // última vela H1 procesada
+   bool     zonesScanned;    // escaneo histórico de OB/FVG hecho
+   int      sigSMC;          // señal CHoCH de la vela cerrada
+   int      sigPersonal;     // señal trigger de la vela cerrada
+   bool     obBullActive,  obBearActive;
+   double   obBullHigh, obBullLow, obBearHigh, obBearLow;
+   bool     fvgBullActive, fvgBearActive;
+   double   fvgBullTop, fvgBullBot, fvgBearTop, fvgBearBot;
 };
 
 struct TradeRecord
@@ -446,12 +459,11 @@ long MagicManual(int symIdx)
 string GetStrategyName(int sid)
 {
    switch(sid)
-   { case STRAT_TREND_RETRACE: return "TREND-RT";
-     case STRAT_BREAKOUT:      return "BO-RT";
-     case STRAT_SR_FLIP:       return "S/R-FLIP";
-     case STRAT_MOMENTUM:      return "MOM-ADX";
-     case STRAT_PERSONAL:      return "PERSONAL";
-     default:                  return "???"; }
+   { case STRAT_SMC:       return "SMC";
+     case STRAT_FVG:       return "FVG";
+     case STRAT_OB_BOUNCE: return "OB-H1";
+     case STRAT_PERSONAL:  return "LINEAS";
+     default:              return "???"; }
 }
 
 int FindTrade(ulong ticket)
@@ -777,15 +789,14 @@ void InitSystemState(int si)
 {
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
-   g_SysState[si].handleFast=INVALID_HANDLE;
-   g_SysState[si].handleSlow=INVALID_HANDLE;
-   g_SysState[si].handleADX =INVALID_HANDLE;
-   g_SysState[si].boRangeHigh=0; g_SysState[si].boRangeLow=0;
-   g_SysState[si].boWaitRetestBuy=false; g_SysState[si].boWaitRetestSell=false;
-   g_SysState[si].boRetestLevel=0;
+   g_SysState[si].SE.Valid=false;      g_SysState[si].SE_D1.Valid=false;
+   g_SysState[si].structLastBar=0;     g_SysState[si].h1LastBar=0;
+   g_SysState[si].zonesScanned=false;
+   g_SysState[si].sigSMC=0;            g_SysState[si].sigPersonal=0;
+   g_SysState[si].obBullActive=false;  g_SysState[si].obBearActive=false;
+   g_SysState[si].fvgBullActive=false; g_SysState[si].fvgBearActive=false;
 
-   bool ena[STRAT_COUNT]={InpUseTrendRetrace,InpUseBreakoutRetest,
-                           InpUseSRFlip,InpUseMomentum,InpUsePersonalStrategy};
+   bool ena[STRAT_COUNT]={InpUseSMC,InpUseFVG,InpUseOBBounce,InpUsePersonal};
    for(int st=0;st<STRAT_COUNT;st++)
    { g_SysState[si].strategies[st].enabled        = ena[st];
      g_SysState[si].strategies[st].isLive         = false;
@@ -806,42 +817,6 @@ void InitSystemState(int si)
      g_SysState[si].strategies[st].cbPausedCR     = 1; }
 }
 
-//+------------------------------------------------------------------+
-//| HANDLES DE INDICADORES                                           |
-//+------------------------------------------------------------------+
-bool InitStrategyHandles()
-{
-   for(int si=0;si<g_SymCount;si++)
-   { string sym=g_Symbols[si].name;
-     if(InpUseTrendRetrace)
-     { int hF=iMA(sym,PERIOD_CURRENT,InpTR_EmaFast,0,MODE_EMA,PRICE_CLOSE);
-       int hS=iMA(sym,PERIOD_CURRENT,InpTR_EmaSlow, 0,MODE_EMA,PRICE_CLOSE);
-       if(hF==INVALID_HANDLE||hS==INVALID_HANDLE)
-       { Print("ERROR handles TrendRetrace [",sym,"]"); return false; }
-       double tmp[]; CopyBuffer(hF,0,0,200,tmp); CopyBuffer(hS,0,0,200,tmp);
-       g_SysState[si].handleFast=hF; g_SysState[si].handleSlow=hS; }
-     if(InpUseMomentum)
-     { int hA=iADX(sym,PERIOD_CURRENT,InpMO_AdxPeriod);
-       if(hA==INVALID_HANDLE)
-       { Print("ERROR handle ADX [",sym,"]"); return false; }
-       double tmp2[]; CopyBuffer(hA,0,0,200,tmp2);
-       g_SysState[si].handleADX=hA; } }
-   return true;
-}
-
-void ReleaseStrategyHandles()
-{
-   for(int si=0;si<g_SymCount;si++)
-   { if(g_SysState[si].handleFast!=INVALID_HANDLE)
-     { IndicatorRelease(g_SysState[si].handleFast);
-       g_SysState[si].handleFast=INVALID_HANDLE; }
-     if(g_SysState[si].handleSlow!=INVALID_HANDLE)
-     { IndicatorRelease(g_SysState[si].handleSlow);
-       g_SysState[si].handleSlow=INVALID_HANDLE; }
-     if(g_SysState[si].handleADX!=INVALID_HANDLE)
-     { IndicatorRelease(g_SysState[si].handleADX);
-       g_SysState[si].handleADX=INVALID_HANDLE; } }
-}
 
 
 //+------------------------------------------------------------------+
@@ -857,7 +832,7 @@ void InitGlobalVarKeys()
 }
 
 string GetStateFileName()
-{ return "GQP_v820_"+IntegerToString(InpMagicNumber)+".dat"; }
+{ return "GQP_v830_"+IntegerToString(InpMagicNumber)+".dat"; }
 
 void SaveState()
 {
@@ -1159,161 +1134,245 @@ bool IsNewBar(int si, int st)
 }
 
 //+------------------------------------------------------------------+
-//| 1) TREND-RT — Retroceso de tendencia con EMA                     |
-//|    Compra: EMA rápida > EMA lenta (tendencia alcista); la vela    |
-//|    anterior cerró bajo la EMA rápida (retroceso) y la última      |
-//|    vela cerrada la recuperó. Venta: espejo.                       |
+//| MOTOR DE ESTRUCTURA SMC (adaptado de smc2.mq5)                   |
+//| L1/L2 = máximo/mínimo del rango; EQ = punto medio (equilibrio);  |
+//| L3/L4 = zona de reacción; bias por color de vela;                |
+//| CHoCH = cambio de bias al romper L1/L2.                          |
 //+------------------------------------------------------------------+
-int CheckTrendRetraceSignal(int si)
+bool SE_Init(StructureEngine &SE, string sym, ENUM_TIMEFRAMES tf)
+{
+   SE.TF=tf; SE.Valid=false;
+   SE.L1=0; SE.L2=0; SE.L3=0; SE.L4=0; SE.EQ=0;
+   SE.L3L4_Active=false; SE.Bias=BIAS_UNDEFINED; SE.Phase=PHASE_CONTINUATION;
+   double p =SymbolInfoDouble(sym,SYMBOL_BID);
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+   if(p<=0.0||pt<=0.0) return false;
+   SE.L1=p+2.0*pt; SE.L2=p-2.0*pt;
+   MqlRates R[]; ArraySetAsSeries(R,true);
+   int n=CopyRates(sym,tf,1,InpLookbackBars,R);
+   if(n<2) return false;
+   for(int i=0;i<n;i++)
+   { if(R[i].high>SE.L1) SE.L1=R[i].high;
+     if(R[i].low <SE.L2) SE.L2=R[i].low; }
+   if(R[0].close>R[0].open)      SE.Bias=BIAS_BULLISH;
+   else if(R[0].close<R[0].open) SE.Bias=BIAS_BEARISH;
+   SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+   SE.Valid=true;
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Procesa la vela cerrada: swap, extremos/CHoCH, trigger y         |
+//| activación de L3/L4. Devuelve señales choch/trig por referencia. |
+//+------------------------------------------------------------------+
+void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
+{
+   choch=0; trig=0;
+   if(!SE.Valid) return;
+   double O=iOpen(sym,SE.TF,1), C=iClose(sym,SE.TF,1);
+   double H=iHigh(sym,SE.TF,1), L=iLow(sym,SE.TF,1);
+   if(O<=0.0||C<=0.0) return;
+   bool green=C>O, red=C<O;
+
+   //--- Trigger pendiente → swap al cierre
+   if(SE.Phase==PHASE_TRIGGERED)
+   { SE.L1=SE.L3; SE.L2=SE.L4; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+     SE.L3=0; SE.L4=0; SE.L3L4_Active=false; SE.Phase=PHASE_CONTINUATION;
+     return; }
+
+   double oL1=SE.L1, oL2=SE.L2;
+
+   //--- Nuevos extremos y CHoCH
+   if(H>SE.L1)
+   { SE.L1=H; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+     if(SE.Bias==BIAS_BEARISH)
+     { SE.Bias=BIAS_BULLISH; SE.L3L4_Active=false; SE.L3=0; SE.L4=0;
+       SE.Phase=PHASE_CONTINUATION; choch=+1; } }
+   if(L<SE.L2)
+   { SE.L2=L; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+     if(SE.Bias==BIAS_BULLISH)
+     { SE.Bias=BIAS_BEARISH; SE.L3L4_Active=false; SE.L3=0; SE.L4=0;
+       SE.Phase=PHASE_CONTINUATION; choch=-1; } }
+   if(choch!=0) return;
+
+   //--- Trigger: cierre más allá de L1/L2 con reacción activa
+   if(SE.L3L4_Active)
+   { if(C>oL1)      { trig=+1; SE.Phase=PHASE_TRIGGERED; }
+     else if(C<oL2) { trig=-1; SE.Phase=PHASE_TRIGGERED; }
+     else { if(L<SE.L4) SE.L4=L; if(H>SE.L3) SE.L3=H; }
+     return; }
+
+   //--- Activación de L3/L4 con vela contraria dentro del rango
+   if(SE.Bias==BIAS_BULLISH&&red&&L>SE.L2&&L<SE.L1)
+   { SE.L3L4_Active=true; SE.L3=SE.L1; SE.L4=L; SE.Phase=PHASE_REACTION; }
+   else if(SE.Bias==BIAS_BEARISH&&green&&H>SE.L2&&H<SE.L1)
+   { SE.L3L4_Active=true; SE.L4=SE.L2; SE.L3=H; SE.Phase=PHASE_REACTION; }
+}
+
+//+------------------------------------------------------------------+
+//| Zonas H1: order blocks y FVGs filtrados por D1                   |
+//+------------------------------------------------------------------+
+void EvalZonesAtBar(int si, int i)
 {
    string sym=g_Symbols[si].name;
-   int hF=g_SysState[si].handleFast, hS=g_SysState[si].handleSlow;
-   if(hF==INVALID_HANDLE||hS==INVALID_HANDLE) return 0;
-   double fN[1],sN[1],fP[1],sP[1],CN[1],CP[1];
-   if(CopyBuffer(hF,0,1,1,fN)<=0||CopyBuffer(hS,0,1,1,sN)<=0) return 0;
-   if(CopyBuffer(hF,0,2,1,fP)<=0||CopyBuffer(hS,0,2,1,sP)<=0) return 0;
-   if(CopyClose(sym,PERIOD_CURRENT,1,1,CN)<=0||
-      CopyClose(sym,PERIOD_CURRENT,2,1,CP)<=0) return 0;
-   bool upT=fN[0]>sN[0], dnT=fN[0]<sN[0];
-   if(upT && CP[0]<fP[0] && CN[0]>fN[0] && CN[0]>sN[0]) return +1;
-   if(dnT && CP[0]>fP[0] && CN[0]<fN[0] && CN[0]<sN[0]) return -1;
+   double O1=iOpen(sym,PERIOD_H1,i),  C1=iClose(sym,PERIOD_H1,i);
+   double H1v=iHigh(sym,PERIOD_H1,i), L1v=iLow(sym,PERIOD_H1,i);
+   double O2=iOpen(sym,PERIOD_H1,i+1), C2=iClose(sym,PERIOD_H1,i+1);
+   if(O1<=0||O2<=0) return;
+   bool green=C1>O1, red=C1<O1;
+   bool G2=C2>O2,   R2=C2<O2;
+   double eq =g_SysState[si].SE_D1.EQ;
+   double dL1=g_SysState[si].SE_D1.L1, dL2=g_SysState[si].SE_D1.L2;
+
+   //--- Order block H1 (vela que toca zona discount/premium de D1)
+   if(red   && L1v<eq && L1v>dL2)
+   { g_SysState[si].obBullActive=true; g_SysState[si].obBullHigh=H1v; g_SysState[si].obBullLow=L1v; }
+   if(green && H1v>eq && H1v<dL1)
+   { g_SysState[si].obBearActive=true; g_SysState[si].obBearHigh=H1v; g_SysState[si].obBearLow=L1v; }
+
+   //--- FVG H1 (hueco de 3 velas) filtrado por D1
+   if(green&&R2&&L1v>O2&&L1v<eq&&L1v>dL2)
+   { g_SysState[si].fvgBullActive=true; g_SysState[si].fvgBullTop=L1v; g_SysState[si].fvgBullBot=O2; }
+   if(red  &&G2&&H1v<O2&&H1v>eq&&H1v<dL1)
+   { g_SysState[si].fvgBearActive=true; g_SysState[si].fvgBearTop=O2; g_SysState[si].fvgBearBot=H1v; }
+}
+
+void DetectZones_H1(int si){ EvalZonesAtBar(si,1); }
+
+void ScanHistoricalZones(int si)
+{ for(int i=2;i<=InpZoneScanBars;i++) EvalZonesAtBar(si,i); }
+
+void InvalidateZones(int si, double price)
+{
+   if(price<=0) return;
+   if(g_SysState[si].obBullActive  && price<g_SysState[si].obBullLow)  g_SysState[si].obBullActive=false;
+   if(g_SysState[si].obBearActive  && price>g_SysState[si].obBearHigh) g_SysState[si].obBearActive=false;
+   if(g_SysState[si].fvgBullActive && price<g_SysState[si].fvgBullBot) g_SysState[si].fvgBullActive=false;
+   if(g_SysState[si].fvgBearActive && price>g_SysState[si].fvgBearTop) g_SysState[si].fvgBearActive=false;
+}
+
+//+------------------------------------------------------------------+
+//| Actualiza motores SMC por símbolo (llamar en cada tick)          |
+//+------------------------------------------------------------------+
+void UpdateSMCState(int si)
+{
+   string sym=g_Symbols[si].name;
+   g_SysState[si].sigSMC=0; g_SysState[si].sigPersonal=0;
+
+   datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
+   if(bt!=g_SysState[si].structLastBar)
+   { g_SysState[si].structLastBar=bt;
+     if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
+     if(!g_SysState[si].SE.Valid)    SE_Init(g_SysState[si].SE,sym,PERIOD_CURRENT);
+     if(g_SysState[si].SE_D1.Valid&&!g_SysState[si].zonesScanned)
+     { ScanHistoricalZones(si); g_SysState[si].zonesScanned=true; }
+     int c1=0,t1=0,c2=0,t2=0;
+     if(g_SysState[si].SE_D1.Valid) SE_OnClose(g_SysState[si].SE_D1,sym,c1,t1);
+     if(g_SysState[si].SE.Valid)
+     { SE_OnClose(g_SysState[si].SE,sym,c2,t2);
+       g_SysState[si].sigSMC=c2; g_SysState[si].sigPersonal=t2; } }
+
+   datetime h1=(datetime)SeriesInfoInteger(sym,PERIOD_H1,SERIES_LASTBAR_DATE);
+   if(h1!=g_SysState[si].h1LastBar)
+   { g_SysState[si].h1LastBar=h1; if(g_SysState[si].SE_D1.Valid) DetectZones_H1(si); }
+
+   InvalidateZones(si,SymbolInfoDouble(sym,SYMBOL_BID));
+}
+
+//+------------------------------------------------------------------+
+//| 1) SMC — CHoCH: entra en dirección del cambio de estructura      |
+//+------------------------------------------------------------------+
+int CheckSMCSignal(int si)
+{ return g_SysState[si].sigSMC; }
+
+//+------------------------------------------------------------------+
+//| 2) FVG — retest del último fair value gap H1 activo              |
+//|    Compra: la vela entra al gap alcista y cierra sobre su piso   |
+//+------------------------------------------------------------------+
+int CheckFVGSignal(int si)
+{
+   string sym=g_Symbols[si].name;
+   double O=iOpen(sym,PERIOD_CURRENT,1), C=iClose(sym,PERIOD_CURRENT,1);
+   double H=iHigh(sym,PERIOD_CURRENT,1), L=iLow(sym,PERIOD_CURRENT,1);
+   if(C<=0) return 0;
+   if(g_SysState[si].fvgBullActive&&L<=g_SysState[si].fvgBullTop&&C>=g_SysState[si].fvgBullBot)
+   { g_SysState[si].fvgBullActive=false; return +1; }
+   if(g_SysState[si].fvgBearActive&&H>=g_SysState[si].fvgBearBot&&C<=g_SysState[si].fvgBearTop)
+   { g_SysState[si].fvgBearActive=false; return -1; }
    return 0;
 }
 
 //+------------------------------------------------------------------+
-//| 2) BO-RT — Ruptura de rango con retest                           |
-//|    Ruptura del rango de N velas con volumen y retest del nivel    |
-//|    roto antes de entrar.                                          |
+//| 3) OB-H1 — rebote en order block: toca la zona y cierra a favor  |
+//|    (como si el precio rebotara en el bloque)                     |
 //+------------------------------------------------------------------+
-void UpdateBreakoutRange(int si)
+int CheckOBBounceSignal(int si)
 {
    string sym=g_Symbols[si].name;
-   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
-   double H[],L[];
-   if(CopyHigh(sym,PERIOD_CURRENT,2,InpBR_Bars,H)<=0||
-      CopyLow (sym,PERIOD_CURRENT,2,InpBR_Bars,L)<=0) return;
-   double hi=H[0],lo=L[0];
-   for(int i=1;i<InpBR_Bars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
-   g_SysState[si].boRangeHigh=NormalizeDouble(hi,dg);
-   g_SysState[si].boRangeLow =NormalizeDouble(lo,dg);
-}
-
-int CheckBreakoutSignal(int si)
-{
-   if(g_SysState[si].boRangeHigh==0||g_SysState[si].boRangeLow==0) return 0;
-   string sym=g_Symbols[si].name;
-   double tol=InpBR_RetestTol*SymbolInfoDouble(sym,SYMBOL_POINT);
-   double C[],H[],L[]; long TV[];
-   if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0||
-      CopyHigh (sym,PERIOD_CURRENT,1,2,H)<=0||
-      CopyLow  (sym,PERIOD_CURRENT,1,2,L)<=0||
-      CopyTickVolume(sym,PERIOD_CURRENT,1,2,TV)<=0) return 0;
-   long va[]; double avg=0;
-   if(CopyTickVolume(sym,PERIOD_CURRENT,2,InpBR_Bars,va)>0)
-   { long vs=0; for(int i=0;i<InpBR_Bars;i++) vs+=va[i]; avg=(double)vs/InpBR_Bars; }
-   bool vOK=(avg>0&&TV[0]>=(long)(avg*InpBR_VolMult));
-   double hi=g_SysState[si].boRangeHigh, lo=g_SysState[si].boRangeLow;
-   if(g_SysState[si].boWaitRetestBuy)
-   { if(L[0]<=g_SysState[si].boRetestLevel+tol&&
-        L[0]>=g_SysState[si].boRetestLevel-tol&&
-        C[0]>g_SysState[si].boRetestLevel)
-     { g_SysState[si].boWaitRetestBuy=false; return +1; }
-     if(C[0]<lo) g_SysState[si].boWaitRetestBuy=false; return 0; }
-   if(g_SysState[si].boWaitRetestSell)
-   { if(H[0]>=g_SysState[si].boRetestLevel-tol&&
-        H[0]<=g_SysState[si].boRetestLevel+tol&&
-        C[0]<g_SysState[si].boRetestLevel)
-     { g_SysState[si].boWaitRetestSell=false; return -1; }
-     if(C[0]>hi) g_SysState[si].boWaitRetestSell=false; return 0; }
-   if(C[0]>hi&&vOK){g_SysState[si].boWaitRetestBuy=true; g_SysState[si].boRetestLevel=hi; return 0;}
-   if(C[0]<lo&&vOK){g_SysState[si].boWaitRetestSell=true;g_SysState[si].boRetestLevel=lo; return 0;}
+   double O=iOpen(sym,PERIOD_CURRENT,1), C=iClose(sym,PERIOD_CURRENT,1);
+   double H=iHigh(sym,PERIOD_CURRENT,1), L=iLow(sym,PERIOD_CURRENT,1);
+   if(C<=0) return 0;
+   if(g_SysState[si].obBullActive&&L<=g_SysState[si].obBullHigh&&C>=g_SysState[si].obBullLow&&C>O)
+      return +1;
+   if(g_SysState[si].obBearActive&&H>=g_SysState[si].obBearLow&&C<=g_SysState[si].obBearHigh&&C<O)
+      return -1;
    return 0;
 }
 
 //+------------------------------------------------------------------+
-//| 3) S/R-FLIP — Ruptura y retest de nivel fractal                  |
-//|    Ruptura de un máximo/mínimo fractal reciente y retest del      |
-//|    nivel roto (la resistencia se vuelve soporte y viceversa).     |
+//| 4) PERSONAL — lógica de líneas smc2: entra en el trigger         |
+//|    (cierre sobre L1 o bajo L2 con L3/L4 activos)                 |
 //+------------------------------------------------------------------+
-int CheckSRFlipSignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   double tol=InpSRF_Tol*SymbolInfoDouble(sym,SYMBOL_POINT);
-   int    nB=MathMax(6,InpSRF_Lookback);
-   double H[],L[],C1[1],C2[1];
-   if(CopyHigh(sym,PERIOD_CURRENT,1,nB,H)<=0) return 0;
-   if(CopyLow (sym,PERIOD_CURRENT,1,nB,L)<=0) return 0;
-   if(CopyClose(sym,PERIOD_CURRENT,1,1,C1)<=0||
-      CopyClose(sym,PERIOD_CURRENT,2,1,C2)<=0) return 0;
-   double sH=0,sL=0;
-   for(int i=1;i<nB-1;i++)
-   { if(H[i]>H[i-1]&&H[i]>=H[i+1]&&sH==0) sH=H[i];
-     if(L[i]<L[i-1]&&L[i]<=L[i+1]&&sL==0) sL=L[i];
-     if(sH!=0&&sL!=0) break; }
-   if(sH>0&&C2[0]>sH+tol&&L[0]<=sH+tol&&C1[0]>sH) return +1;
-   if(sL>0&&C2[0]<sL-tol&&H[0]>=sL-tol&&C1[0]<sL) return -1;
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| 4) MOM-ADX — Momentum con ADX y ruptura de extremos              |
-//|    ADX alto y creciente + cierre por encima del máximo de N velas|
-//+------------------------------------------------------------------+
-int CheckMomentumSignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   int hA=g_SysState[si].handleADX;
-   if(hA==INVALID_HANDLE) return 0;
-   double A[2];
-   if(CopyBuffer(hA,0,2,2,A)<=0) return 0;
-   if(A[1]<InpMO_AdxMin||A[1]<A[0]) return 0;
-   double H[],L[],CN[1];
-   if(CopyHigh(sym,PERIOD_CURRENT,2,InpMO_SwingBars,H)<=0) return 0;
-   if(CopyLow (sym,PERIOD_CURRENT,2,InpMO_SwingBars,L)<=0) return 0;
-   if(CopyClose(sym,PERIOD_CURRENT,1,1,CN)<=0) return 0;
-   double hi=H[0],lo=L[0];
-   for(int i=1;i<InpMO_SwingBars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
-   if(CN[0]>hi) return +1;
-   if(CN[0]<lo) return -1;
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| 5) PERSONAL — TU ESTRATEGIA (PENDIENTE DE DEFINIR)               |
-//+------------------------------------------------------------------+
-//  Implementa aquí tus propias reglas de entrada. Debe devolver:
-//    +1  → señal de COMPRA
-//    -1  → señal de VENTA
-//     0  → sin señal
-//
-//  La gestión de riesgo YA está integrada y NO se toca:
-//    - Tabla de riesgo de 20 niveles (InpRiskStep1..20)
-//    - Sistema virtual → LIVE (CV / CR)
-//    - SL/TP con gestión 1:2 y SL protegido
-//    - Circuit breaker diario y base dinámica de capital
-//
 int CheckPersonalSignal(int si)
+{ return g_SysState[si].sigPersonal; }
+
+//+------------------------------------------------------------------+
+//| DIBUJO DE LÍNEAS DE ESTRUCTURA EN EL GRÁFICO (visual de smc2)    |
+//+------------------------------------------------------------------+
+void SE_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,int w)
 {
-   if(si<0||si>=g_SymCount) return 0;
-   string sym=g_Symbols[si].name;
+   if(price<=0){ ObjectDelete(0,name); return; }
+   if(ObjectFind(0,name)<0)
+   { ObjectCreate(0,name,OBJ_HLINE,0,0,price);
+     ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+     ObjectSetInteger(0,name,OBJPROP_STYLE,sty);
+     ObjectSetInteger(0,name,OBJPROP_WIDTH,w);
+     ObjectSetInteger(0,name,OBJPROP_BACK,true);
+     ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false); }
+   else ObjectSetDouble(0,name,OBJPROP_PRICE,price);
+}
 
-   // ══════════════════════════════════════════════════════════════
-   //  AQUÍ VAN LAS REGLAS DE ENTRADA DE TU ESTRATEGIA.
-   // ══════════════════════════════════════════════════════════════
+void DrawStructureLines(int si)
+{
+   SE_HLine("GQP_SE_D1L1",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L1:0,C'30,30,30',STYLE_SOLID,3);
+   SE_HLine("GQP_SE_D1L2",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L2:0,C'30,30,30',STYLE_SOLID,3);
+   SE_HLine("GQP_SE_D1EQ",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.EQ:0,C'180,180,180',STYLE_DOT,1);
+   SE_HLine("GQP_SE_TFL1",g_SysState[si].SE.Valid?g_SysState[si].SE.L1:0,C'150,150,150',STYLE_SOLID,1);
+   SE_HLine("GQP_SE_TFL2",g_SysState[si].SE.Valid?g_SysState[si].SE.L2:0,C'150,150,150',STYLE_SOLID,1);
+   SE_HLine("GQP_SE_TFEQ",g_SysState[si].SE.Valid?g_SysState[si].SE.EQ:0,C'180,180,180',STYLE_DOT,1);
+   SE_HLine("GQP_SE_TFL3",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L3:0,C'100,100,180',STYLE_DASH,2);
+   SE_HLine("GQP_SE_TFL4",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L4:0,C'180,100,100',STYLE_DASH,2);
+   ChartRedraw();
+}
 
-   return 0;
+void RemoveStructureLines()
+{
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   { string n=ObjectName(0,i,0,-1);
+     if(StringFind(n,"GQP_SE_")==0) ObjectDelete(0,n); }
+   ChartRedraw();
 }
 
 int CheckStrategySignal(int si, int st)
 {
    if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
    switch(st)
-   { case STRAT_TREND_RETRACE: return CheckTrendRetraceSignal(si);
-     case STRAT_BREAKOUT:      UpdateBreakoutRange(si); return CheckBreakoutSignal(si);
-     case STRAT_SR_FLIP:       return CheckSRFlipSignal(si);
-     case STRAT_MOMENTUM:      return CheckMomentumSignal(si);
-     case STRAT_PERSONAL:      return CheckPersonalSignal(si);
-     default:                  return 0; }
+   { case STRAT_SMC:       return CheckSMCSignal(si);
+     case STRAT_FVG:       return CheckFVGSignal(si);
+     case STRAT_OB_BOUNCE: return CheckOBBounceSignal(si);
+     case STRAT_PERSONAL:  return CheckPersonalSignal(si);
+     default:              return 0; }
 }
 
 //+------------------------------------------------------------------+
@@ -1763,7 +1822,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.20  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.30  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2655,7 +2714,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.20           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.30           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -2695,7 +2754,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.20 === X=",InpXActivacion,
+   Print("=== DIAG v8.30 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -2751,15 +2810,13 @@ int OnInit()
 
    if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
 
-   if(!InitStrategyHandles()) return INIT_FAILED;
-
    SyncAllTrades();
 
    if(!IsTester())
    { BuildStaticStructure(); RebuildActiveTab(); UpdateInfoBar();
      if(g_LimitPrice>0) UpdateLimitLine(); }
 
-   Print("EA v8.20 | Símbolos:",g_SymCount,
+   Print("EA v8.30 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -2772,10 +2829,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(!IsTester()) SaveState();
-   ReleaseStrategyHandles();
-   if(!IsTester()){ DeletePanel(); RemoveLimitLine(); }
+   if(!IsTester()){ DeletePanel(); RemoveLimitLine(); RemoveStructureLines(); }
    Comment("");
-   Print("EA v8.20 cerrado | Razón:",reason);
+   Print("EA v8.30 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -2790,6 +2846,9 @@ void OnTick()
    SyncAllTrades();
    ProcessClosedQueue();
    CheckCircuitBreaker();
+
+   //--- Motores SMC (estructura, OB, FVG) por símbolo
+   for(int si=0;si<g_SymCount;si++) UpdateSMCState(si);
 
    if(!g_CircuitBreakerOn)
    { EnforceSLTP();
@@ -2815,6 +2874,10 @@ void OnTick()
       PrintDiag();
       UpdateInfoBar();
       SyncLimitLinePrice();
+      { int cs=-1;
+        for(int s2=0;s2<g_SymCount;s2++)
+           if(g_Symbols[s2].name==_Symbol){cs=s2;break;}
+        if(cs>=0) DrawStructureLines(cs); else RemoveStructureLines(); }
       g_SaveCounter++;
       if(g_SaveCounter>=300){ SaveState(); g_SaveCounter=0; }
       if(g_TradeCount!=prevCount)
