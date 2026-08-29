@@ -2,16 +2,14 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.00"
+#property version   "8.10"
 #property strict
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
-input group "=== SEÑALES EMA ==="
-input int    InpEmaFast          = 14;
-input int    InpEmaSlow          = 50;
-input ENUM_APPLIED_PRICE InpEmaPrice = PRICE_CLOSE;
+input group "=== ESTRATEGIA PERSONAL ==="
+input bool   InpUsePersonalStrategy = true;
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input double InpSL_Points        = 95.0;
@@ -189,34 +187,10 @@ input int    InpPanelY           = 50;
 input long   InpMagicNumber      = 123456;
 input string InpComment          = "QA_EA";
 
-input group "=== SISTEMA MULTI-ESTRATEGIA ==="
+input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
 input int    InpTableSize        = 20;
 
-input group "=== ESTRATEGIAS ACTIVAS ==="
-input bool   InpUseEMA           = true;
-input bool   InpUsePriceAction   = true;
-input bool   InpUseFractales     = true;
-input bool   InpUseSR            = true;
-input bool   InpUsePivot         = true;
-input bool   InpUseBreakout      = true;
-
-input group "=== PARAMETROS PRICE ACTION ==="
-input double InpPA_PinBarRatio   = 2.0;
-input double InpPA_DojiBodyPct   = 10.0;
-
-input group "=== PARAMETROS FRACTALES ==="
-input int    InpFractalBars      = 3;
-
-input group "=== PARAMETROS S/R ==="
-input int    InpSR_Lookback      = 30;
-input double InpSR_Tolerance     = 10.0;
-input int    InpSR_MinToques     = 2;
-
-input group "=== PARAMETROS BREAKOUT ==="
-input int    InpBO_Bars          = 10;
-input double InpBO_VolMultiplier = 1.5;
-input double InpBO_RetestTol     = 10.0;
 
 //+------------------------------------------------------------------+
 //| CONSTANTES                                                       |
@@ -237,7 +211,7 @@ input double InpBO_RetestTol     = 10.0;
 #define TAB_CONFIG       3
 #define TAB_ESTRAT       4
 #define N_TABS           5
-#define STRAT_COUNT      6
+#define STRAT_COUNT      1
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -258,12 +232,7 @@ input double InpBO_RetestTol     = 10.0;
 //+------------------------------------------------------------------+
 enum ENUM_STRATEGY_ID
 {
-   STRAT_EMA    = 0,
-   STRAT_PA     = 1,
-   STRAT_FRAC   = 2,
-   STRAT_SR     = 3,
-   STRAT_PIVOT  = 4,
-   STRAT_BO     = 5
+   STRAT_PERSONAL = 0
 };
 
 //+------------------------------------------------------------------+
@@ -295,11 +264,7 @@ struct StrategyState
    bool     virtualSLMoved;
    long     magicNumber;
    string   name;
-   int      handle1;
-   int      handle2;
    datetime lastBarTime;
-   bool     signalInited;
-   bool     prevSignalState;
    bool     cbPaused;
    int      cbPausedCV;
    int      cbPausedCR;
@@ -310,21 +275,6 @@ struct SymbolSystemState
    bool     hasLive;
    int      activeLiveStrategy;
    StrategyState strategies[STRAT_COUNT];
-   int      handleFast;
-   int      handleSlow;
-   double   boRangeHigh, boRangeLow;
-   bool     boWaitRetestBuy, boWaitRetestSell;
-   double   boRetestLevel;
-   datetime boRangeBarTime;
-   bool     fracHasBullish, fracHasBearish;
-   double   fracBullishPrice, fracBearishPrice;
-   datetime fracBullishTime, fracBearishTime;
-   double   pivPP, pivR1, pivR2, pivR3, pivS1, pivS2, pivS3;
-   datetime pivCalcTime;
-   double   srLevels[];
-   int      srTouches[];
-   bool     srIsRes[];
-   int      srCount;
 };
 
 struct TradeRecord
@@ -464,13 +414,8 @@ long MagicManual(int symIdx)
 string GetStrategyName(int sid)
 {
    switch(sid)
-   { case STRAT_EMA:   return "EMA";
-     case STRAT_PA:    return "PA";
-     case STRAT_FRAC:  return "FRAC";
-     case STRAT_SR:    return "S/R";
-     case STRAT_PIVOT: return "PIVOT";
-     case STRAT_BO:    return "BO";
-     default:          return "???"; }
+   { case STRAT_PERSONAL: return "PERSONAL";
+     default:             return "PERSONAL"; }
 }
 
 int FindTrade(ulong ticket)
@@ -796,23 +741,9 @@ void InitSystemState(int si)
 {
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
-   g_SysState[si].handleFast=INVALID_HANDLE;
-   g_SysState[si].handleSlow=INVALID_HANDLE;
-   g_SysState[si].boRangeHigh=0; g_SysState[si].boRangeLow=0;
-   g_SysState[si].boWaitRetestBuy=false; g_SysState[si].boWaitRetestSell=false;
-   g_SysState[si].boRetestLevel=0; g_SysState[si].boRangeBarTime=0;
-   g_SysState[si].fracHasBullish=false; g_SysState[si].fracHasBearish=false;
-   g_SysState[si].fracBullishPrice=0; g_SysState[si].fracBearishPrice=0;
-   g_SysState[si].pivPP=0; g_SysState[si].pivCalcTime=0;
-   g_SysState[si].srCount=0;
-   ArrayResize(g_SysState[si].srLevels,0);
-   ArrayResize(g_SysState[si].srTouches,0);
-   ArrayResize(g_SysState[si].srIsRes,0);
 
-   bool ena[STRAT_COUNT]={InpUseEMA,InpUsePriceAction,InpUseFractales,
-                           InpUseSR,InpUsePivot,InpUseBreakout};
    for(int st=0;st<STRAT_COUNT;st++)
-   { g_SysState[si].strategies[st].enabled        = ena[st];
+   { g_SysState[si].strategies[st].enabled        = InpUsePersonalStrategy;
      g_SysState[si].strategies[st].isLive         = false;
      g_SysState[si].strategies[st].CV             = 1;
      g_SysState[si].strategies[st].CR             = 1;
@@ -825,42 +756,12 @@ void InitSystemState(int si)
      g_SysState[si].strategies[st].virtualSLMoved = false;
      g_SysState[si].strategies[st].magicNumber    = GetStrategyMagic(si,st);
      g_SysState[si].strategies[st].name           = GetStrategyName(st);
-     g_SysState[si].strategies[st].handle1        = INVALID_HANDLE;
-     g_SysState[si].strategies[st].handle2        = INVALID_HANDLE;
      g_SysState[si].strategies[st].lastBarTime    = 0;
-     g_SysState[si].strategies[st].signalInited   = false;
-     g_SysState[si].strategies[st].prevSignalState= false;
      g_SysState[si].strategies[st].cbPaused       = false;
      g_SysState[si].strategies[st].cbPausedCV     = 1;
      g_SysState[si].strategies[st].cbPausedCR     = 1; }
 }
 
-bool InitStrategyHandles()
-{
-   for(int si=0;si<g_SymCount;si++)
-   { string sym=g_Symbols[si].name;
-     if(InpUseEMA)
-     { int hF=iMA(sym,PERIOD_CURRENT,InpEmaFast,0,MODE_EMA,InpEmaPrice);
-       int hS=iMA(sym,PERIOD_CURRENT,InpEmaSlow, 0,MODE_EMA,InpEmaPrice);
-       if(hF==INVALID_HANDLE||hS==INVALID_HANDLE)
-       { Print("ERROR handles EMA [",sym,"]"); return false; }
-       double tmp[]; CopyBuffer(hF,0,0,200,tmp); CopyBuffer(hS,0,0,200,tmp);
-       g_SysState[si].handleFast=hF; g_SysState[si].handleSlow=hS;
-       g_SysState[si].strategies[STRAT_EMA].handle1=hF;
-       g_SysState[si].strategies[STRAT_EMA].handle2=hS; } }
-   return true;
-}
-
-void ReleaseStrategyHandles()
-{
-   for(int si=0;si<g_SymCount;si++)
-   { if(g_SysState[si].handleFast!=INVALID_HANDLE)
-     { IndicatorRelease(g_SysState[si].handleFast);
-       g_SysState[si].handleFast=INVALID_HANDLE; }
-     if(g_SysState[si].handleSlow!=INVALID_HANDLE)
-     { IndicatorRelease(g_SysState[si].handleSlow);
-       g_SysState[si].handleSlow=INVALID_HANDLE; } }
-}
 
 //+------------------------------------------------------------------+
 //| PERSISTENCIA                                                     |
@@ -875,7 +776,7 @@ void InitGlobalVarKeys()
 }
 
 string GetStateFileName()
-{ return "GQP_v8_"+IntegerToString(InpMagicNumber)+".dat"; }
+{ return "GQP_v810_"+IntegerToString(InpMagicNumber)+".dat"; }
 
 void SaveState()
 {
@@ -919,7 +820,7 @@ void SaveStateToFile()
        FileWriteString(h,pp+"VSL="     +DoubleToString(g_SysState[si].strategies[st].virtualSL_price,8)+"\n");
        FileWriteString(h,pp+"VTP="     +DoubleToString(g_SysState[si].strategies[st].virtualTP_price,8)+"\n");
        FileWriteString(h,pp+"VSLMOV="  +(g_SysState[si].strategies[st].virtualSLMoved?"1":"0") +"\n");
-       FileWriteString(h,pp+"SINIT="   +(g_SysState[si].strategies[st].signalInited?"1":"0")   +"\n");
+
        FileWriteString(h,pp+"CBPAUSE=" +(g_SysState[si].strategies[st].cbPaused?"1":"0")       +"\n");
        FileWriteString(h,pp+"CBCV="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCV)+"\n");
        FileWriteString(h,pp+"CBCR="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCR)+"\n"); } }
@@ -982,7 +883,7 @@ void LoadStateFromFile()
              else if(field=="VSL")    g_SysState[si].strategies[st].virtualSL_price=StringToDouble(val);
              else if(field=="VTP")    g_SysState[si].strategies[st].virtualTP_price=StringToDouble(val);
              else if(field=="VSLMOV") g_SysState[si].strategies[st].virtualSLMoved=(StringToInteger(val)>0);
-             else if(field=="SINIT")  g_SysState[si].strategies[st].signalInited=(StringToInteger(val)>0);
+
              else if(field=="CBPAUSE")g_SysState[si].strategies[st].cbPaused=(StringToInteger(val)>0);
              else if(field=="CBCV")   g_SysState[si].strategies[st].cbPausedCV=(int)StringToInteger(val);
              else if(field=="CBCR")   g_SysState[si].strategies[st].cbPausedCR=(int)StringToInteger(val);
@@ -1167,7 +1068,7 @@ void UpdateStrategyVirtual(int si, int st)
 }
 
 //+------------------------------------------------------------------+
-//| SEÑALES                                                          |
+//| SEÑAL — ESTRATEGIA PERSONAL                                      |
 //+------------------------------------------------------------------+
 bool IsNewBar(int si, int st)
 {
@@ -1176,234 +1077,47 @@ bool IsNewBar(int si, int st)
    g_SysState[si].strategies[st].lastBarTime=bt; return true;
 }
 
-int CheckEMASignal(int si)
-{
-   int h1=g_SysState[si].strategies[STRAT_EMA].handle1;
-   int h2=g_SysState[si].strategies[STRAT_EMA].handle2;
-   if(h1==INVALID_HANDLE||h2==INVALID_HANDLE) return 0;
-   double fN[1],sN[1],fP[1],sP[1];
-   if(CopyBuffer(h1,0,1,1,fN)<=0||CopyBuffer(h2,0,1,1,sN)<=0) return 0;
-   if(CopyBuffer(h1,0,2,1,fP)<=0||CopyBuffer(h2,0,2,1,sP)<=0) return 0;
-   if(!g_SysState[si].strategies[STRAT_EMA].signalInited)
-   { g_SysState[si].strategies[STRAT_EMA].prevSignalState=(fN[0]>sN[0]);
-     g_SysState[si].strategies[STRAT_EMA].signalInited=true; return 0; }
-   bool ca=(fN[0]>sN[0]),pa=(fP[0]>sP[0]);
-   int  sig=(!pa&&ca)?+1:(pa&&!ca)?-1:0;
-   g_SysState[si].strategies[STRAT_EMA].prevSignalState=ca;
-   return sig;
-}
-
-int CheckPASignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   double O[],H[],L[],C[];
-   if(CopyOpen(sym,PERIOD_CURRENT,1,4,O)<=0||CopyHigh(sym,PERIOD_CURRENT,1,4,H)<=0) return 0;
-   if(CopyLow(sym,PERIOD_CURRENT,1,4,L)<=0||CopyClose(sym,PERIOD_CURRENT,1,4,C)<=0) return 0;
-   double b0=MathAbs(C[0]-O[0]),r0=H[0]-L[0];
-   double b1=MathAbs(C[1]-O[1]);
-   double b2=MathAbs(C[2]-O[2]),r2=H[2]-L[2];
-   int bs=0,brs=0;
-   if(C[1]<O[1]&&C[0]>O[0]&&O[0]<C[1]&&C[0]>O[1]) bs++;
-   if(C[1]>O[1]&&C[0]<O[0]&&O[0]>C[1]&&C[0]<O[1]) brs++;
-   if(r0>0&&b0>0)
-   { double lw=MathMin(O[0],C[0])-L[0],uw=H[0]-MathMax(O[0],C[0]);
-     if(lw>=InpPA_PinBarRatio*b0&&uw<b0) bs++;
-     if(uw>=InpPA_PinBarRatio*b0&&lw<b0) brs++; }
-   double m2=(O[2]+C[2])/2.0;
-   if(C[2]<O[2]&&b2>r2*0.5&&b1<b2*0.3&&C[0]>O[0]&&C[0]>m2) bs++;
-   if(C[2]>O[2]&&b2>r2*0.5&&b1<b2*0.3&&C[0]<O[0]&&C[0]<m2) brs++;
-   if(H[0]<H[1]&&L[0]>L[1]){if(C[0]>=(H[1]+L[1])/2.0)bs++;else brs++;}
-   if(bs>0&&bs>brs)return+1; if(brs>0&&brs>bs)return-1; return 0;
-}
-
-int CheckFractalSignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   int bars=MathMax(2,InpFractalBars),needed=bars*2+2;
-   double H[],L[];
-   if(CopyHigh(sym,PERIOD_CURRENT,1,needed,H)<=0||
-      CopyLow (sym,PERIOD_CURRENT,1,needed,L)<=0) return 0;
-   int mid=bars; bool isBull=true,isBear=true;
-   for(int i=0;i<bars*2+1;i++)
-   { if(i==mid) continue;
-     if(L[i]<=L[mid]) isBull=false;
-     if(H[i]>=H[mid]) isBear=false; }
-   datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
-   if(isBear)
-   { g_SysState[si].fracHasBullish=false;
-     if(!g_SysState[si].fracHasBearish||g_SysState[si].fracBearishPrice!=H[mid])
-     { g_SysState[si].fracHasBearish=true;
-       g_SysState[si].fracBearishPrice=H[mid];
-       g_SysState[si].fracBearishTime=bt; return -1; } }
-   else if(isBull)
-   { g_SysState[si].fracHasBearish=false;
-     if(!g_SysState[si].fracHasBullish||g_SysState[si].fracBullishPrice!=L[mid])
-     { g_SysState[si].fracHasBullish=true;
-       g_SysState[si].fracBullishPrice=L[mid];
-       g_SysState[si].fracBullishTime=bt; return +1; } }
-   return 0;
-}
-
-void CalcSRZones(int si)
-{
-   string sym=g_Symbols[si].name;
-   int dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
-   double pt=SymbolInfoDouble(sym,SYMBOL_POINT),tol=InpSR_Tolerance*pt;
-   double H[],L[],C[];
-   if(CopyHigh(sym,PERIOD_CURRENT,1,InpSR_Lookback,H)<=0) return;
-   if(CopyLow (sym,PERIOD_CURRENT,1,InpSR_Lookback,L)<=0) return;
-   if(CopyClose(sym,PERIOD_CURRENT,1,InpSR_Lookback,C)<=0) return;
-   double cands[]; int cc=0;
-   for(int i=1;i<InpSR_Lookback-1;i++)
-   { if(H[i]>=H[i-1]&&H[i]>=H[i+1]){ArrayResize(cands,cc+1);cands[cc]=H[i];cc++;}
-     if(L[i]<=L[i-1]&&L[i]<=L[i+1]){ArrayResize(cands,cc+1);cands[cc]=L[i];cc++;} }
-   ArrayResize(g_SysState[si].srLevels,0);
-   ArrayResize(g_SysState[si].srTouches,0);
-   ArrayResize(g_SysState[si].srIsRes,0);
-   g_SysState[si].srCount=0;
-   for(int i=0;i<cc;i++)
-   { double lvl=cands[i]; bool merged=false;
-     for(int z=0;z<g_SysState[si].srCount;z++)
-     { if(MathAbs(g_SysState[si].srLevels[z]-lvl)<=tol)
-       { g_SysState[si].srLevels[z]=(g_SysState[si].srLevels[z]*g_SysState[si].srTouches[z]+lvl)/
-                                     (g_SysState[si].srTouches[z]+1);
-         g_SysState[si].srTouches[z]++; merged=true; break; } }
-     if(!merged)
-     { int zi=g_SysState[si].srCount;
-       ArrayResize(g_SysState[si].srLevels, zi+1);
-       ArrayResize(g_SysState[si].srTouches,zi+1);
-       ArrayResize(g_SysState[si].srIsRes,  zi+1);
-       g_SysState[si].srLevels[zi] =NormalizeDouble(lvl,dg);
-       g_SysState[si].srTouches[zi]=1;
-       g_SysState[si].srIsRes[zi]  =(lvl>C[0]);
-       g_SysState[si].srCount++; } }
-   double vL[]; int vT[]; bool vR[]; int vc=0;
-   for(int z=0;z<g_SysState[si].srCount;z++)
-   { if(g_SysState[si].srTouches[z]>=InpSR_MinToques)
-     { ArrayResize(vL,vc+1); ArrayResize(vT,vc+1); ArrayResize(vR,vc+1);
-       vL[vc]=g_SysState[si].srLevels[z];
-       vT[vc]=g_SysState[si].srTouches[z];
-       vR[vc]=g_SysState[si].srIsRes[z]; vc++; } }
-   ArrayResize(g_SysState[si].srLevels, vc);
-   ArrayResize(g_SysState[si].srTouches,vc);
-   ArrayResize(g_SysState[si].srIsRes,  vc);
-   g_SysState[si].srCount=vc;
-}
-
-int CheckSRSignal(int si)
-{
-   if(g_SysState[si].srCount==0) return 0;
-   string sym=g_Symbols[si].name;
-   double tol=InpSR_Tolerance*SymbolInfoDouble(sym,SYMBOL_POINT);
-   double C[]; if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
-   for(int z=0;z<g_SysState[si].srCount;z++)
-   { double lvl=g_SysState[si].srLevels[z];
-     if(C[1]<=lvl+tol&&C[0]>lvl+tol) return +1;
-     if(C[1]>=lvl-tol&&C[0]<lvl-tol) return -1; }
-   return 0;
-}
-
-void CalcPivots(int si)
-{
-   string sym=g_Symbols[si].name;
-   double H4H[],H4L[],H4C[];
-   if(CopyHigh(sym,PERIOD_H4,1,1,H4H)<=0||
-      CopyLow (sym,PERIOD_H4,1,1,H4L)<=0||
-      CopyClose(sym,PERIOD_H4,1,1,H4C)<=0) return;
-   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
-   double ph=H4H[0],pl=H4L[0],pc=H4C[0];
-   g_SysState[si].pivPP=NormalizeDouble((ph+pl+pc)/3.0,dg);
-   double pp=g_SysState[si].pivPP;
-   g_SysState[si].pivR1=NormalizeDouble(2*pp-pl,dg);
-   g_SysState[si].pivR2=NormalizeDouble(pp+(ph-pl),dg);
-   g_SysState[si].pivR3=NormalizeDouble(ph+2*(pp-pl),dg);
-   g_SysState[si].pivS1=NormalizeDouble(2*pp-ph,dg);
-   g_SysState[si].pivS2=NormalizeDouble(pp-(ph-pl),dg);
-   g_SysState[si].pivS3=NormalizeDouble(pl-2*(ph-pp),dg);
-   g_SysState[si].pivCalcTime=(datetime)SeriesInfoInteger(sym,PERIOD_H4,SERIES_LASTBAR_DATE);
-}
-
-int CheckPivotSignal(int si)
-{
-   if(g_SysState[si].pivPP==0) return 0;
-   string sym=g_Symbols[si].name;
-   double tol=InpSR_Tolerance*SymbolInfoDouble(sym,SYMBOL_POINT);
-   double H[],L[],C[];
-   if(CopyHigh(sym,PERIOD_CURRENT,1,2,H)<=0||
-      CopyLow (sym,PERIOD_CURRENT,1,2,L)<=0||
-      CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
-   double rL[4]={g_SysState[si].pivPP,g_SysState[si].pivR1,
-                 g_SysState[si].pivR2,g_SysState[si].pivR3};
-   double sL[4]={g_SysState[si].pivPP,g_SysState[si].pivS1,
-                 g_SysState[si].pivS2,g_SysState[si].pivS3};
-   for(int i=0;i<4;i++){if(rL[i]==0)continue;
-     if(H[1]>=rL[i]-tol&&L[1]<=rL[i]+tol&&C[0]<rL[i]-tol)return -1;}
-   for(int i=0;i<4;i++){if(sL[i]==0)continue;
-     if(L[1]<=sL[i]+tol&&H[1]>=sL[i]-tol&&C[0]>sL[i]+tol)return +1;}
-   return 0;
-}
-
-void UpdateBreakoutRange(int si)
-{
-   string sym=g_Symbols[si].name;
-   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
-   double H[],L[];
-   if(CopyHigh(sym,PERIOD_CURRENT,2,InpBO_Bars,H)<=0||
-      CopyLow (sym,PERIOD_CURRENT,2,InpBO_Bars,L)<=0) return;
-   double hi=H[0],lo=L[0];
-   for(int i=1;i<InpBO_Bars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
-   g_SysState[si].boRangeHigh=NormalizeDouble(hi,dg);
-   g_SysState[si].boRangeLow =NormalizeDouble(lo,dg);
-}
-
-int CheckBreakoutSignal(int si)
-{
-   if(g_SysState[si].boRangeHigh==0||g_SysState[si].boRangeLow==0) return 0;
-   string sym=g_Symbols[si].name;
-   double tol=InpBO_RetestTol*SymbolInfoDouble(sym,SYMBOL_POINT);
-   double C[],H[],L[]; long TV[];
-   if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0||
-      CopyHigh (sym,PERIOD_CURRENT,1,2,H)<=0||
-      CopyLow  (sym,PERIOD_CURRENT,1,2,L)<=0||
-      CopyTickVolume(sym,PERIOD_CURRENT,1,2,TV)<=0) return 0;
-   long va[]; double avg=0;
-   if(CopyTickVolume(sym,PERIOD_CURRENT,2,InpBO_Bars,va)>0)
-   { long vs=0; for(int i=0;i<InpBO_Bars;i++) vs+=va[i]; avg=(double)vs/InpBO_Bars; }
-   bool vOK=(avg>0&&TV[0]>=(long)(avg*InpBO_VolMultiplier));
-   double hi=g_SysState[si].boRangeHigh,lo=g_SysState[si].boRangeLow;
-   if(g_SysState[si].boWaitRetestBuy)
-   { if(L[0]<=g_SysState[si].boRetestLevel+tol&&
-        L[0]>=g_SysState[si].boRetestLevel-tol&&
-        C[0]>g_SysState[si].boRetestLevel)
-     { g_SysState[si].boWaitRetestBuy=false; return +1; }
-     if(C[0]<lo) g_SysState[si].boWaitRetestBuy=false; return 0; }
-   if(g_SysState[si].boWaitRetestSell)
-   { if(H[0]>=g_SysState[si].boRetestLevel-tol&&
-        H[0]<=g_SysState[si].boRetestLevel+tol&&
-        C[0]<g_SysState[si].boRetestLevel)
-     { g_SysState[si].boWaitRetestSell=false; return -1; }
-     if(C[0]>hi) g_SysState[si].boWaitRetestSell=false; return 0; }
-   if(C[0]>hi&&vOK){g_SysState[si].boWaitRetestBuy=true; g_SysState[si].boRetestLevel=hi; return 0;}
-   if(C[0]<lo&&vOK){g_SysState[si].boWaitRetestSell=true;g_SysState[si].boRetestLevel=lo; return 0;}
-   return 0;
-}
-
 int CheckStrategySignal(int si, int st)
 {
    if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
-   if(st==STRAT_SR)    CalcSRZones(si);
-   if(st==STRAT_BO)    UpdateBreakoutRange(si);
-   if(st==STRAT_PIVOT)
-   { datetime h4b=(datetime)SeriesInfoInteger(g_Symbols[si].name,PERIOD_H4,SERIES_LASTBAR_DATE);
-     if(h4b!=g_SysState[si].pivCalcTime) CalcPivots(si); }
-   switch(st)
-   { case STRAT_EMA:   return CheckEMASignal(si);
-     case STRAT_PA:    return CheckPASignal(si);
-     case STRAT_FRAC:  return CheckFractalSignal(si);
-     case STRAT_SR:    return CheckSRSignal(si);
-     case STRAT_PIVOT: return CheckPivotSignal(si);
-     case STRAT_BO:    return CheckBreakoutSignal(si);
-     default:          return 0; }
+   return CheckPersonalSignal(si);
+}
+
+//+------------------------------------------------------------------+
+//| CheckPersonalSignal — REGLAS DE ENTRADA (PENDIENTES DE DEFINIR)  |
+//+------------------------------------------------------------------+
+//  Esta función implementa la lógica de entrada de la ESTRATEGIA
+//  PERSONAL. Se llama 1 vez por cada NUEVA VELA y por cada símbolo.
+//
+//  Debe devolver:
+//    +1  → señal de COMPRA
+//    -1  → señal de VENTA
+//     0  → sin señal
+//
+//  La gestión de riesgo YA está integrada y NO se toca:
+//    - Tabla de riesgo de 20 niveles (InpRiskStep1..20)
+//    - Sistema virtual → LIVE (CV / CR)
+//    - SL/TP con gestión 1:2 y SL protegido
+//    - Circuit breaker diario y base dinámica de capital
+//
+int CheckPersonalSignal(int si)
+{
+   if(si<0||si>=g_SymCount) return 0;
+   string sym=g_Symbols[si].name;
+
+   // ══════════════════════════════════════════════════════════════
+   //  AQUÍ VAN LAS REGLAS DE ENTRADA DE TU ESTRATEGIA.
+   //
+   //  Ejemplo de estructura (borrar/adaptar):
+   //
+   //  double C[];
+   //  if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
+   //  if(C[0]>C[1]) return +1;   // vela alcista → compra
+   //  if(C[0]<C[1]) return -1;   // vela bajista → venta
+   //  return 0;
+   // ══════════════════════════════════════════════════════════════
+
+   return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -1853,7 +1567,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.00  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.10  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2745,7 +2459,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.00           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.10           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -2785,7 +2499,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.00 === X=",InpXActivacion,
+   Print("=== DIAG v8.10 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -2841,18 +2555,13 @@ int OnInit()
 
    if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
 
-   if(!InitStrategyHandles()) return INIT_FAILED;
-
-   for(int si=0;si<g_SymCount;si++)
-   { CalcPivots(si); CalcSRZones(si); UpdateBreakoutRange(si); }
-
    SyncAllTrades();
 
    if(!IsTester())
    { BuildStaticStructure(); RebuildActiveTab(); UpdateInfoBar();
      if(g_LimitPrice>0) UpdateLimitLine(); }
 
-   Print("EA v8.00 | Símbolos:",g_SymCount,
+   Print("EA v8.10 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -2865,10 +2574,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(!IsTester()) SaveState();
-   ReleaseStrategyHandles();
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); }
    Comment("");
-   Print("EA v8.00 cerrado | Razón:",reason);
+   Print("EA v8.10 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -3088,7 +2796,6 @@ void OnChartEvent(const int id,const long &lparam,
           g_SysState[s].strategies[st].virtualActive =false;
           g_SysState[s].strategies[st].isLive        =false;
           g_SysState[s].strategies[st].virtualSLMoved=false;
-          g_SysState[s].strategies[st].signalInited  =false;
           g_SysState[s].strategies[st].cbPaused      =false; }
         g_SysState[s].hasLive=false;
         g_SysState[s].activeLiveStrategy=-1; }
