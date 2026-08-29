@@ -1,0 +1,3125 @@
+//+------------------------------------------------------------------+
+//|                    EA_GestionCuantitativa.mq5                    |
+//+------------------------------------------------------------------+
+#property copyright "Gestión Cuantitativa EA"
+#property version   "8.00"
+#property strict
+
+//+------------------------------------------------------------------+
+//| INPUTS — GENERALES                                               |
+//+------------------------------------------------------------------+
+input group "=== SEÑALES EMA ==="
+input int    InpEmaFast          = 14;
+input int    InpEmaSlow          = 50;
+input ENUM_APPLIED_PRICE InpEmaPrice = PRICE_CLOSE;
+
+input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
+input double InpSL_Points        = 95.0;
+input double InpSL_Offset        = 0.0;
+input double InpTP_Points        = 305.0;
+input double InpActivationPoints = 210.0;
+input double InpProtectedSL      = 205.0;
+
+input group "=== FILTRO DE HORARIO ==="
+input bool   InpUseTimeFilter    = false;
+input int    InpStartHour        = 8;
+input int    InpStartMinute      = 0;
+input int    InpEndHour          = 20;
+input int    InpEndMinute        = 0;
+
+input group "=== TABLA DE RIESGO (% de Base) — 20 niveles ==="
+input double InpRiskStep1        = 1.0;
+input double InpRiskStep2        = 2.0;
+input double InpRiskStep3        = 3.0;
+input double InpRiskStep4        = 4.0;
+input double InpRiskStep5        = 6.0;
+input double InpRiskStep6        = 9.0;
+input double InpRiskStep7        = 13.0;
+input double InpRiskStep8        = 19.0;
+input double InpRiskStep9        = 28.0;
+input double InpRiskStep10       = 42.0;
+input double InpRiskStep11       = 63.0;
+input double InpRiskStep12       = 94.0;
+input double InpRiskStep13       = 141.0;
+input double InpRiskStep14       = 212.0;
+input double InpRiskStep15       = 318.0;
+input double InpRiskStep16       = 477.0;
+input double InpRiskStep17       = 715.0;
+input double InpRiskStep18       = 1073.0;
+input double InpRiskStep19       = 1609.0;
+input double InpRiskStep20       = 2414.0;
+
+input group "=== BASE DINÁMICA DE CAPITAL ==="
+input double InpBaseCapital      = 1000.0;
+
+input group "=== SPLIT DE LOTES ==="
+input double InpMaxLotsPerOrder  = 100.0;
+input int    InpSplitDelayMs     = 200;
+
+input group "=== CIRCUIT BREAKER DIARIO ==="
+input double InpMaxDailyLossPct  = 4.5;
+
+input group "=== SÍMBOLOS (vacío = no usar) ==="
+input string InpSymbol1          = "";
+input string InpSymbol2          = "";
+input string InpSymbol3          = "";
+input string InpSymbol4          = "";
+input string InpSymbol5          = "";
+input string InpSymbol6          = "";
+input string InpSymbol7          = "";
+input string InpSymbol8          = "";
+input string InpSymbol9          = "";
+input string InpSymbol10         = "";
+input string InpSymbol11         = "";
+input string InpSymbol12         = "";
+input string InpSymbol13         = "";
+input string InpSymbol14         = "";
+input string InpSymbol15         = "";
+input string InpSymbol16         = "";
+input string InpSymbol17         = "";
+input string InpSymbol18         = "";
+input string InpSymbol19         = "";
+input string InpSymbol20         = "";
+
+input group "=== SL/TP POR SÍMBOLO (0 = usar global) ==="
+input double InpSym1_SL          = 0.0;
+input double InpSym1_SLOffset    = 0.0;
+input double InpSym1_TP          = 0.0;
+input double InpSym1_Activation  = 0.0;
+input double InpSym1_ProtSL      = 0.0;
+input double InpSym2_SL          = 0.0;
+input double InpSym2_SLOffset    = 0.0;
+input double InpSym2_TP          = 0.0;
+input double InpSym2_Activation  = 0.0;
+input double InpSym2_ProtSL      = 0.0;
+input double InpSym3_SL          = 0.0;
+input double InpSym3_SLOffset    = 0.0;
+input double InpSym3_TP          = 0.0;
+input double InpSym3_Activation  = 0.0;
+input double InpSym3_ProtSL      = 0.0;
+input double InpSym4_SL          = 0.0;
+input double InpSym4_SLOffset    = 0.0;
+input double InpSym4_TP          = 0.0;
+input double InpSym4_Activation  = 0.0;
+input double InpSym4_ProtSL      = 0.0;
+input double InpSym5_SL          = 0.0;
+input double InpSym5_SLOffset    = 0.0;
+input double InpSym5_TP          = 0.0;
+input double InpSym5_Activation  = 0.0;
+input double InpSym5_ProtSL      = 0.0;
+input double InpSym6_SL          = 0.0;
+input double InpSym6_SLOffset    = 0.0;
+input double InpSym6_TP          = 0.0;
+input double InpSym6_Activation  = 0.0;
+input double InpSym6_ProtSL      = 0.0;
+input double InpSym7_SL          = 0.0;
+input double InpSym7_SLOffset    = 0.0;
+input double InpSym7_TP          = 0.0;
+input double InpSym7_Activation  = 0.0;
+input double InpSym7_ProtSL      = 0.0;
+input double InpSym8_SL          = 0.0;
+input double InpSym8_SLOffset    = 0.0;
+input double InpSym8_TP          = 0.0;
+input double InpSym8_Activation  = 0.0;
+input double InpSym8_ProtSL      = 0.0;
+input double InpSym9_SL          = 0.0;
+input double InpSym9_SLOffset    = 0.0;
+input double InpSym9_TP          = 0.0;
+input double InpSym9_Activation  = 0.0;
+input double InpSym9_ProtSL      = 0.0;
+input double InpSym10_SL         = 0.0;
+input double InpSym10_SLOffset   = 0.0;
+input double InpSym10_TP         = 0.0;
+input double InpSym10_Activation = 0.0;
+input double InpSym10_ProtSL     = 0.0;
+input double InpSym11_SL         = 0.0;
+input double InpSym11_SLOffset   = 0.0;
+input double InpSym11_TP         = 0.0;
+input double InpSym11_Activation = 0.0;
+input double InpSym11_ProtSL     = 0.0;
+input double InpSym12_SL         = 0.0;
+input double InpSym12_SLOffset   = 0.0;
+input double InpSym12_TP         = 0.0;
+input double InpSym12_Activation = 0.0;
+input double InpSym12_ProtSL     = 0.0;
+input double InpSym13_SL         = 0.0;
+input double InpSym13_SLOffset   = 0.0;
+input double InpSym13_TP         = 0.0;
+input double InpSym13_Activation = 0.0;
+input double InpSym13_ProtSL     = 0.0;
+input double InpSym14_SL         = 0.0;
+input double InpSym14_SLOffset   = 0.0;
+input double InpSym14_TP         = 0.0;
+input double InpSym14_Activation = 0.0;
+input double InpSym14_ProtSL     = 0.0;
+input double InpSym15_SL         = 0.0;
+input double InpSym15_SLOffset   = 0.0;
+input double InpSym15_TP         = 0.0;
+input double InpSym15_Activation = 0.0;
+input double InpSym15_ProtSL     = 0.0;
+input double InpSym16_SL         = 0.0;
+input double InpSym16_SLOffset   = 0.0;
+input double InpSym16_TP         = 0.0;
+input double InpSym16_Activation = 0.0;
+input double InpSym16_ProtSL     = 0.0;
+input double InpSym17_SL         = 0.0;
+input double InpSym17_SLOffset   = 0.0;
+input double InpSym17_TP         = 0.0;
+input double InpSym17_Activation = 0.0;
+input double InpSym17_ProtSL     = 0.0;
+input double InpSym18_SL         = 0.0;
+input double InpSym18_SLOffset   = 0.0;
+input double InpSym18_TP         = 0.0;
+input double InpSym18_Activation = 0.0;
+input double InpSym18_ProtSL     = 0.0;
+input double InpSym19_SL         = 0.0;
+input double InpSym19_SLOffset   = 0.0;
+input double InpSym19_TP         = 0.0;
+input double InpSym19_Activation = 0.0;
+input double InpSym19_ProtSL     = 0.0;
+input double InpSym20_SL         = 0.0;
+input double InpSym20_SLOffset   = 0.0;
+input double InpSym20_TP         = 0.0;
+input double InpSym20_Activation = 0.0;
+input double InpSym20_ProtSL     = 0.0;
+
+input group "=== CONFIGURACIÓN PANEL ==="
+input int    InpPanelX           = 20;
+input int    InpPanelY           = 50;
+input long   InpMagicNumber      = 123456;
+input string InpComment          = "QA_EA";
+
+input group "=== SISTEMA MULTI-ESTRATEGIA ==="
+input int    InpXActivacion      = 4;
+input int    InpTableSize        = 20;
+
+input group "=== ESTRATEGIAS ACTIVAS ==="
+input bool   InpUseEMA           = true;
+input bool   InpUsePriceAction   = true;
+input bool   InpUseFractales     = true;
+input bool   InpUseSR            = true;
+input bool   InpUsePivot         = true;
+input bool   InpUseBreakout      = true;
+
+input group "=== PARAMETROS PRICE ACTION ==="
+input double InpPA_PinBarRatio   = 2.0;
+input double InpPA_DojiBodyPct   = 10.0;
+
+input group "=== PARAMETROS FRACTALES ==="
+input int    InpFractalBars      = 3;
+
+input group "=== PARAMETROS S/R ==="
+input int    InpSR_Lookback      = 30;
+input double InpSR_Tolerance     = 10.0;
+input int    InpSR_MinToques     = 2;
+
+input group "=== PARAMETROS BREAKOUT ==="
+input int    InpBO_Bars          = 10;
+input double InpBO_VolMultiplier = 1.5;
+input double InpBO_RetestTol     = 10.0;
+
+//+------------------------------------------------------------------+
+//| CONSTANTES                                                       |
+//+------------------------------------------------------------------+
+#define MAX_SYMBOLS      20
+#define MAX_TABLE_SIZE   20
+#define PNL_W            360
+#define PNL_H            660
+#define TITLE_H          36
+#define INFOBAR_H        52
+#define SYMBAR_H         30
+#define TAB_H            30
+#define CONTENT_Y0       (TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H)
+#define CONTENT_H        (PNL_H-CONTENT_Y0-6)
+#define TAB_OPERAR       0
+#define TAB_CUENTA       1
+#define TAB_POSIC        2
+#define TAB_CONFIG       3
+#define TAB_ESTRAT       4
+#define N_TABS           5
+#define STRAT_COUNT      6
+#define DRAG_ZONE        "GQP_DRAG"
+#define GV_PREFIX        "GQP_"
+#define OBJ_TITLE        "GQP_TITLE"
+#define OBJ_IB_PL        "GQP_IB_PL"
+#define OBJ_IB_EQ        "GQP_IB_EQ"
+#define OBJ_IB_CV        "GQP_IB_CV"
+#define OBJ_IB_CVMAX     "GQP_IB_CVMAX"
+#define OBJ_IB_LOT       "GQP_IB_LOT"
+#define OBJ_IB_CB        "GQP_IB_CB"
+#define EDIT_PRICE_NAME  "GQP_EDITPRICE"
+#define LINE_LIMIT_NAME  "GQP_LIMIT_LINE"
+#define LINE_LIMIT_LABEL "GQP_LIMIT_LABEL"
+#define LINE_LIMIT_SL    "GQP_LIMIT_SL"
+#define LINE_LIMIT_TP    "GQP_LIMIT_TP"
+
+//+------------------------------------------------------------------+
+//| ENUMS                                                            |
+//+------------------------------------------------------------------+
+enum ENUM_STRATEGY_ID
+{
+   STRAT_EMA    = 0,
+   STRAT_PA     = 1,
+   STRAT_FRAC   = 2,
+   STRAT_SR     = 3,
+   STRAT_PIVOT  = 4,
+   STRAT_BO     = 5
+};
+
+//+------------------------------------------------------------------+
+//| STRUCTS                                                          |
+//+------------------------------------------------------------------+
+struct SymbolParams
+{
+   string   name;
+   bool     active;
+   double   sl_points;
+   double   sl_offset;
+   double   tp_points;
+   double   activation;
+   double   protectedSL;
+};
+
+struct StrategyState
+{
+   bool     enabled;
+   bool     isLive;
+   int      CV;
+   int      CR;
+   int      CV_Max;
+   bool     virtualActive;
+   int      virtualDir;
+   double   virtualOpen;
+   double   virtualSL_price;
+   double   virtualTP_price;
+   bool     virtualSLMoved;
+   long     magicNumber;
+   string   name;
+   int      handle1;
+   int      handle2;
+   datetime lastBarTime;
+   bool     signalInited;
+   bool     prevSignalState;
+   bool     cbPaused;
+   int      cbPausedCV;
+   int      cbPausedCR;
+};
+
+struct SymbolSystemState
+{
+   bool     hasLive;
+   int      activeLiveStrategy;
+   StrategyState strategies[STRAT_COUNT];
+   int      handleFast;
+   int      handleSlow;
+   double   boRangeHigh, boRangeLow;
+   bool     boWaitRetestBuy, boWaitRetestSell;
+   double   boRetestLevel;
+   datetime boRangeBarTime;
+   bool     fracHasBullish, fracHasBearish;
+   double   fracBullishPrice, fracBearishPrice;
+   datetime fracBullishTime, fracBearishTime;
+   double   pivPP, pivR1, pivR2, pivR3, pivS1, pivS2, pivS3;
+   datetime pivCalcTime;
+   double   srLevels[];
+   int      srTouches[];
+   bool     srIsRes[];
+   int      srCount;
+};
+
+struct TradeRecord
+{
+   ulong    ticket;
+   bool     isPending;
+   int      orderType;
+   double   lots;
+   double   openPrice;
+   double   sl, tp, profit;
+   int      CR_level, CV_level;
+   bool     advActive, slMoved;
+   ulong    splitGroupId;
+   bool     isManual;
+   int      strategyId;
+   int      symbolIdx;
+};
+
+struct ClosedSnap
+{
+   ulong    ticket;
+   double   openPrice, sl, tp;
+   int      CR_level, CV_level;
+   bool     slMoved;
+   int      orderType;
+   long     dealReason;
+   bool     isManual;
+   int      strategyId;
+   int      symbolIdx;
+};
+
+//+------------------------------------------------------------------+
+//| GLOBALES                                                         |
+//+------------------------------------------------------------------+
+SymbolParams       g_Symbols[MAX_SYMBOLS];
+int                g_SymCount        = 0;
+int                g_PanelSymIdx     = 0;
+SymbolSystemState  g_SysState[MAX_SYMBOLS];
+
+double   g_BaseCapital             = 1000.0;
+double   g_BaseMaxBalance          = 0.0;
+double   g_RiskTable[MAX_TABLE_SIZE];
+
+double   g_DayStartEquity          = 0.0;
+datetime g_DayStartTime            = 0;
+bool     g_CircuitBreakerOn        = false;
+datetime g_CircuitBreakerUntil     = 0;
+
+TradeRecord  g_Trades[];
+int          g_TradeCount          = 0;
+int          g_ScrollOffset        = 0;
+ClosedSnap   g_ClosedQueue[];
+int          g_ClosedCount         = 0;
+
+int      ActiveTab                 = TAB_OPERAR;
+int      PNL_X, PNL_Y;
+bool     g_Dragging                = false;
+int      g_DragOffX                = 0;
+int      g_DragOffY                = 0;
+int      g_PanelTableSize          = 20;
+int      g_SaveCounter             = 0;
+datetime g_LastDiagTime            = 0;
+double   g_LimitPrice              = 0.0;
+bool     g_AdvancedMode            = false;
+bool     g_PendingRebuild          = false;
+
+string   TAB_NAMES[N_TABS];
+string   PFX      = "GQP_";
+string   PFX_OP   = "GQP_OP_";
+string   PFX_ACC  = "GQP_ACC_";
+string   PFX_POS  = "GQP_POS_";
+string   PFX_CFG  = "GQP_CFG_";
+string   PFX_EST  = "GQP_EST_";
+
+string   GV_ADV_MODE, GV_LIMIT_PRICE, GV_PANEL_X, GV_PANEL_Y;
+
+//+------------------------------------------------------------------+
+//| FORWARD DECLARATIONS                                             |
+//+------------------------------------------------------------------+
+void RebuildPanel();
+void RebuildActiveTab();
+void UpdateInfoBar();
+void DeletePanel();
+void DeleteContentObjects();
+void BuildTabOperar();
+void BuildTabCuenta();
+void BuildTabPosiciones();
+void BuildTabConfig();
+void BuildTabEstrategias();
+void RefreshTabBar();
+void SaveState();
+void SaveStateToFile();
+void SelectNextLiveStrategy(int si);
+void ActivateLiveStrategy(int si, int st);
+void OnLiveSL_Original(int si, int st);
+void OnLiveSL_Protected(int si, int st);
+void OnLiveTP(int si, int st);
+void CloseAllSymbolsPositions();
+void ClosePosition(ulong ticket);
+void UpdateLimitLine();
+void RemoveLimitLine();
+bool SendMarketOrderEx(int si, int st, ENUM_ORDER_TYPE ot, double lots, long magic);
+void _SendLimitManual(int si, ENUM_ORDER_TYPE ot, double lots, double lp);
+
+//+------------------------------------------------------------------+
+//| HELPERS BÁSICOS                                                  |
+//+------------------------------------------------------------------+
+bool IsTester()
+{ return(MQLInfoInteger(MQL_TESTER)==1||MQLInfoInteger(MQL_OPTIMIZATION)==1); }
+
+bool IsTradeTimeAllowed()
+{
+   if(!InpUseTimeFilter) return true;
+   MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
+   int now=dt.hour*60+dt.min;
+   int s=InpStartHour*60+InpStartMinute;
+   int e=InpEndHour*60+InpEndMinute;
+   return(s<=e)?(now>=s&&now<e):(now>=s||now<e);
+}
+
+bool IsAnyMagic(long magic)
+{
+   for(int si=0;si<g_SymCount;si++)
+      for(int st=0;st<STRAT_COUNT;st++)
+         if(magic==g_SysState[si].strategies[st].magicNumber) return true;
+   for(int si=0;si<g_SymCount;si++)
+      if(magic==InpMagicNumber+(long)(si*10)+9) return true;
+   return false;
+}
+
+long GetStrategyMagic(int symIdx, int sid)
+{ return InpMagicNumber+(long)(symIdx*10)+(long)sid; }
+
+long MagicManual(int symIdx)
+{ return InpMagicNumber+(long)(symIdx*10)+9; }
+
+string GetStrategyName(int sid)
+{
+   switch(sid)
+   { case STRAT_EMA:   return "EMA";
+     case STRAT_PA:    return "PA";
+     case STRAT_FRAC:  return "FRAC";
+     case STRAT_SR:    return "S/R";
+     case STRAT_PIVOT: return "PIVOT";
+     case STRAT_BO:    return "BO";
+     default:          return "???"; }
+}
+
+int FindTrade(ulong ticket)
+{ for(int i=0;i<g_TradeCount;i++) if(g_Trades[i].ticket==ticket) return i; return -1; }
+
+bool IsTrailingActive(int si, int st)
+{ return(g_SysState[si].strategies[st].CV>=5); }
+
+int ApplyRetroceso(int val, int ret)
+{ return MathMax(1,val-ret); }
+
+void UpdateCVMax(int si, int st)
+{
+   if(g_SysState[si].strategies[st].CV > g_SysState[si].strategies[st].CV_Max)
+      g_SysState[si].strategies[st].CV_Max = g_SysState[si].strategies[st].CV;
+}
+
+void SetCR(int si, int sid, int newCR)
+{
+   if(newCR > g_PanelTableSize)
+   { g_SysState[si].strategies[sid].CR=1;
+     Print("TABLA REINICIADA [",g_Symbols[si].name,"/",
+           g_SysState[si].strategies[sid].name,"] → op1"); }
+   else
+      g_SysState[si].strategies[sid].CR=MathMax(1,newCR);
+}
+
+//+------------------------------------------------------------------+
+//| PARÁMETROS POR SÍMBOLO                                           |
+//+------------------------------------------------------------------+
+double SymSL(int si)
+{ if(si<0||si>=g_SymCount) return InpSL_Points;
+  return(g_Symbols[si].sl_points>0)?g_Symbols[si].sl_points:InpSL_Points; }
+
+double SymSLOffset(int si)
+{ if(si<0||si>=g_SymCount) return InpSL_Offset;
+  return(g_Symbols[si].sl_offset>0)?g_Symbols[si].sl_offset:InpSL_Offset; }
+
+double SymTP(int si)
+{ if(si<0||si>=g_SymCount) return InpTP_Points;
+  return(g_Symbols[si].tp_points>0)?g_Symbols[si].tp_points:InpTP_Points; }
+
+double SymActivation(int si)
+{ if(si<0||si>=g_SymCount) return InpActivationPoints;
+  return(g_Symbols[si].activation>0)?g_Symbols[si].activation:InpActivationPoints; }
+
+double SymProtectedSL(int si)
+{ if(si<0||si>=g_SymCount) return InpProtectedSL;
+  return(g_Symbols[si].protectedSL>0)?g_Symbols[si].protectedSL:InpProtectedSL; }
+
+//+------------------------------------------------------------------+
+//| LOTAJE DINÁMICO                                                  |
+//+------------------------------------------------------------------+
+double PointValue(string symbol)
+{
+   double tickVal  = SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+   double point    = SymbolInfoDouble(symbol,SYMBOL_POINT);
+   if(tickSize<=0) return tickVal;
+   return tickVal*(point/tickSize);
+}
+
+double CalcLotByRisk(int si, int cr)
+{
+   if(si<0||si>=g_SymCount) return 0.01;
+   int    lvl      = MathMax(1,MathMin(g_PanelTableSize,cr))-1;
+   double riskPct  = g_RiskTable[lvl];
+   double riskMoney= g_BaseCapital*riskPct/100.0;
+   double slPts    = SymSL(si);
+   double ptVal    = PointValue(g_Symbols[si].name);
+   if(slPts<=0||ptVal<=0) return 0.01;
+   double lots=riskMoney/(slPts*ptVal);
+   double minL =SymbolInfoDouble(g_Symbols[si].name,SYMBOL_VOLUME_MIN);
+   double maxL =SymbolInfoDouble(g_Symbols[si].name,SYMBOL_VOLUME_MAX);
+   double stepL=SymbolInfoDouble(g_Symbols[si].name,SYMBOL_VOLUME_STEP);
+   if(stepL>0) lots=MathFloor(lots/stepL)*stepL;
+   lots=MathMax(minL,MathMin(maxL,lots));
+   return NormalizeDouble(lots,2);
+}
+
+double GetLotByCR(int si, int cr)
+{ return CalcLotByRisk(si,cr); }
+
+//+------------------------------------------------------------------+
+//| BASE DINÁMICA                                                    |
+//+------------------------------------------------------------------+
+void UpdateDynamicBase()
+{
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   if(bal>g_BaseMaxBalance)
+   { double inc=bal-g_BaseMaxBalance;
+     g_BaseCapital+=inc;
+     g_BaseMaxBalance=bal;
+     Print("Base actualizada: +",DoubleToString(inc,2),
+           " → Base=",DoubleToString(g_BaseCapital,2)); }
+}
+
+//+------------------------------------------------------------------+
+//| CIRCUIT BREAKER                                                  |
+//+------------------------------------------------------------------+
+double GetDailyLossPct()
+{
+   if(g_DayStartEquity<=0) return 0.0;
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+   return MathMax(0.0,(g_DayStartEquity-eq)/g_DayStartEquity*100.0);
+}
+
+void ReactivatePausedStrategies()
+{
+   for(int si=0;si<g_SymCount;si++)
+   { for(int st=0;st<STRAT_COUNT;st++)
+     { if(!g_SysState[si].strategies[st].cbPaused) continue;
+       g_SysState[si].strategies[st].cbPaused=false;
+       g_SysState[si].strategies[st].CV=g_SysState[si].strategies[st].cbPausedCV;
+       g_SysState[si].strategies[st].CR=g_SysState[si].strategies[st].cbPausedCR;
+       if(g_SysState[si].strategies[st].isLive)
+       { g_SysState[si].hasLive=true;
+         g_SysState[si].activeLiveStrategy=st;
+         Print("Reactivando LIVE [",g_Symbols[si].name,"/",
+               g_SysState[si].strategies[st].name,
+               "] CV=",g_SysState[si].strategies[st].CV,
+               " CR=",g_SysState[si].strategies[st].CR); } } }
+}
+
+void CheckDayReset()
+{
+   MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
+   MqlDateTime ds; TimeToStruct(g_DayStartTime,ds);
+   if(dt.day!=ds.day||dt.mon!=ds.mon||dt.year!=ds.year)
+   { g_DayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+     g_DayStartTime=TimeCurrent();
+     Print("Nuevo día — Equity ref: ",DoubleToString(g_DayStartEquity,2));
+     if(g_CircuitBreakerOn)
+     { g_CircuitBreakerOn=false;
+       Print("Circuit breaker LEVANTADO");
+       ReactivatePausedStrategies();
+       if(!IsTester()) RebuildPanel(); } }
+}
+
+void CheckCircuitBreaker()
+{
+   if(g_DayStartEquity<=0) return;
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+   double lossPct=(g_DayStartEquity-eq)/g_DayStartEquity*100.0;
+   if(!g_CircuitBreakerOn&&lossPct>=InpMaxDailyLossPct)
+   { g_CircuitBreakerOn=true;
+     g_CircuitBreakerUntil=g_DayStartTime+86400;
+     Print("⚠ CIRCUIT BREAKER — Pérdida: ",DoubleToString(lossPct,2),"%");
+     CloseAllSymbolsPositions();
+     for(int si=0;si<g_SymCount;si++)
+     { for(int st=0;st<STRAT_COUNT;st++)
+       { if(!g_SysState[si].strategies[st].enabled) continue;
+         if(g_SysState[si].strategies[st].isLive)
+         { g_SysState[si].strategies[st].cbPausedCV=g_SysState[si].strategies[st].CV;
+           g_SysState[si].strategies[st].cbPausedCR=g_SysState[si].strategies[st].CR;
+           OnLiveSL_Original(si,st);
+           g_SysState[si].strategies[st].isLive=false;
+           g_SysState[si].strategies[st].cbPaused=true;
+           g_SysState[si].hasLive=false;
+           g_SysState[si].activeLiveStrategy=-1;
+           Print("CB: LIVE pausada [",g_Symbols[si].name,"/",
+                 g_SysState[si].strategies[st].name,"]"); } } }
+     SaveState();
+     if(!IsTester()) RebuildPanel(); }
+}
+
+//+------------------------------------------------------------------+
+//| SL / TP                                                          |
+//+------------------------------------------------------------------+
+double CalcSL(string symbol, int si, double openPrice, int posType)
+{
+   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
+   double slP=SymSL(si)-SymSLOffset(si);
+   if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
+      posType==ORDER_TYPE_BUY_LIMIT||posType==ORDER_TYPE_BUY_STOP)
+      return NormalizeDouble(openPrice-slP*pt,dg);
+   return NormalizeDouble(openPrice+slP*pt,dg);
+}
+
+double CalcTP(string symbol, int si, double openPrice, int posType)
+{
+   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
+   double tpP=SymTP(si);
+   if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
+      posType==ORDER_TYPE_BUY_LIMIT||posType==ORDER_TYPE_BUY_STOP)
+      return NormalizeDouble(openPrice+tpP*pt,dg);
+   return NormalizeDouble(openPrice-tpP*pt,dg);
+}
+
+bool RestoreSLTP(ulong ticket, double sl, double tp)
+{
+   if(!PositionSelectByTicket(ticket)) return false;
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_SLTP; req.position=ticket;
+   req.symbol=PositionGetString(POSITION_SYMBOL);
+   req.sl=sl; req.tp=tp;
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE) return false;
+   return true;
+}
+
+void EnforceSLTP()
+{
+   for(int i=0;i<PositionsTotal();i++)
+   { ulong t=PositionGetTicket(i);
+     if(t==0||!PositionSelectByTicket(t)) continue;
+     string sym=PositionGetString(POSITION_SYMBOL);
+     if(!IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+     double cSL=PositionGetDouble(POSITION_SL);
+     double cTP=PositionGetDouble(POSITION_TP);
+     if(cSL!=0&&cTP!=0) continue;
+     int symIdx=-1;
+     for(int s=0;s<g_SymCount;s++) if(g_Symbols[s].name==sym){symIdx=s;break;}
+     double op=PositionGetDouble(POSITION_PRICE_OPEN);
+     int    ptype=(int)PositionGetInteger(POSITION_TYPE);
+     int    k=FindTrade(t);
+     double tSL,tTP;
+     if(k>=0&&g_Trades[k].slMoved)
+     { double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+       int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+       double psl=SymProtectedSL(symIdx);
+       tSL=(ptype==POSITION_TYPE_BUY)?NormalizeDouble(op+psl*pt,dg):NormalizeDouble(op-psl*pt,dg);
+       tTP=CalcTP(sym,symIdx,op,ptype); }
+     else
+     { tSL=CalcSL(sym,symIdx,op,ptype);
+       tTP=CalcTP(sym,symIdx,op,ptype); }
+     RestoreSLTP(t,(cSL==0)?tSL:cSL,(cTP==0)?tTP:cTP); }
+}
+
+//+------------------------------------------------------------------+
+//| SPLIT                                                            |
+//+------------------------------------------------------------------+
+int CalcSplitCount(double lots)
+{ return(lots<=InpMaxLotsPerOrder)?1:(int)MathCeil(lots/InpMaxLotsPerOrder); }
+
+double CalcSplitLot(string symbol, double totalLots, int idx, int parts)
+{
+   double maxL=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double minL=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
+   double stp =SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+   double cap =MathMin(InpMaxLotsPerOrder,maxL);
+   double full=MathFloor(totalLots/cap);
+   double rem =totalLots-full*cap;
+   double lot =(idx<(int)full)?cap:((rem>0)?rem:cap);
+   if(stp>0) lot=MathFloor(lot/stp)*stp;
+   return NormalizeDouble(MathMax(lot,minL),2);
+}
+
+//+------------------------------------------------------------------+
+//| INICIALIZACIÓN SÍMBOLOS                                          |
+//+------------------------------------------------------------------+
+void LoadSymbolInputParams()
+{
+   string names[MAX_SYMBOLS];
+   names[0]=InpSymbol1;  names[1]=InpSymbol2;  names[2]=InpSymbol3;
+   names[3]=InpSymbol4;  names[4]=InpSymbol5;  names[5]=InpSymbol6;
+   names[6]=InpSymbol7;  names[7]=InpSymbol8;  names[8]=InpSymbol9;
+   names[9]=InpSymbol10; names[10]=InpSymbol11; names[11]=InpSymbol12;
+   names[12]=InpSymbol13;names[13]=InpSymbol14; names[14]=InpSymbol15;
+   names[15]=InpSymbol16;names[16]=InpSymbol17; names[17]=InpSymbol18;
+   names[18]=InpSymbol19;names[19]=InpSymbol20;
+
+   double sl_a[MAX_SYMBOLS]={InpSym1_SL,InpSym2_SL,InpSym3_SL,InpSym4_SL,InpSym5_SL,
+                              InpSym6_SL,InpSym7_SL,InpSym8_SL,InpSym9_SL,InpSym10_SL,
+                              InpSym11_SL,InpSym12_SL,InpSym13_SL,InpSym14_SL,InpSym15_SL,
+                              InpSym16_SL,InpSym17_SL,InpSym18_SL,InpSym19_SL,InpSym20_SL};
+   double slo[MAX_SYMBOLS]={InpSym1_SLOffset,InpSym2_SLOffset,InpSym3_SLOffset,
+                             InpSym4_SLOffset,InpSym5_SLOffset,InpSym6_SLOffset,
+                             InpSym7_SLOffset,InpSym8_SLOffset,InpSym9_SLOffset,
+                             InpSym10_SLOffset,InpSym11_SLOffset,InpSym12_SLOffset,
+                             InpSym13_SLOffset,InpSym14_SLOffset,InpSym15_SLOffset,
+                             InpSym16_SLOffset,InpSym17_SLOffset,InpSym18_SLOffset,
+                             InpSym19_SLOffset,InpSym20_SLOffset};
+   double tp_a[MAX_SYMBOLS]={InpSym1_TP,InpSym2_TP,InpSym3_TP,InpSym4_TP,InpSym5_TP,
+                              InpSym6_TP,InpSym7_TP,InpSym8_TP,InpSym9_TP,InpSym10_TP,
+                              InpSym11_TP,InpSym12_TP,InpSym13_TP,InpSym14_TP,InpSym15_TP,
+                              InpSym16_TP,InpSym17_TP,InpSym18_TP,InpSym19_TP,InpSym20_TP};
+   double ac_a[MAX_SYMBOLS]={InpSym1_Activation,InpSym2_Activation,InpSym3_Activation,
+                              InpSym4_Activation,InpSym5_Activation,InpSym6_Activation,
+                              InpSym7_Activation,InpSym8_Activation,InpSym9_Activation,
+                              InpSym10_Activation,InpSym11_Activation,InpSym12_Activation,
+                              InpSym13_Activation,InpSym14_Activation,InpSym15_Activation,
+                              InpSym16_Activation,InpSym17_Activation,InpSym18_Activation,
+                              InpSym19_Activation,InpSym20_Activation};
+   double ps_a[MAX_SYMBOLS]={InpSym1_ProtSL,InpSym2_ProtSL,InpSym3_ProtSL,
+                              InpSym4_ProtSL,InpSym5_ProtSL,InpSym6_ProtSL,
+                              InpSym7_ProtSL,InpSym8_ProtSL,InpSym9_ProtSL,
+                              InpSym10_ProtSL,InpSym11_ProtSL,InpSym12_ProtSL,
+                              InpSym13_ProtSL,InpSym14_ProtSL,InpSym15_ProtSL,
+                              InpSym16_ProtSL,InpSym17_ProtSL,InpSym18_ProtSL,
+                              InpSym19_ProtSL,InpSym20_ProtSL};
+   g_SymCount=0;
+   for(int i=0;i<MAX_SYMBOLS;i++)
+   { string sn=names[i]; StringTrimLeft(sn); StringTrimRight(sn);
+     if(StringLen(sn)==0) continue;
+     if(!SymbolSelect(sn,true)){Print("WARNING: No se pudo agregar ",sn);continue;}
+     int idx=g_SymCount;
+     g_Symbols[idx].name=sn; g_Symbols[idx].active=true;
+     g_Symbols[idx].sl_points=sl_a[i]; g_Symbols[idx].sl_offset=slo[i];
+     g_Symbols[idx].tp_points=tp_a[i]; g_Symbols[idx].activation=ac_a[i];
+     g_Symbols[idx].protectedSL=ps_a[i];
+     g_SymCount++;
+     Print("Símbolo [",idx,"]: ",sn," SL=",sl_a[i]," Offset=",slo[i],
+           " TP=",tp_a[i]," Act=",ac_a[i]," ProtSL=",ps_a[i]); }
+}
+
+void InitRiskTable()
+{
+   g_RiskTable[0] =InpRiskStep1;  g_RiskTable[1] =InpRiskStep2;
+   g_RiskTable[2] =InpRiskStep3;  g_RiskTable[3] =InpRiskStep4;
+   g_RiskTable[4] =InpRiskStep5;  g_RiskTable[5] =InpRiskStep6;
+   g_RiskTable[6] =InpRiskStep7;  g_RiskTable[7] =InpRiskStep8;
+   g_RiskTable[8] =InpRiskStep9;  g_RiskTable[9] =InpRiskStep10;
+   g_RiskTable[10]=InpRiskStep11; g_RiskTable[11]=InpRiskStep12;
+   g_RiskTable[12]=InpRiskStep13; g_RiskTable[13]=InpRiskStep14;
+   g_RiskTable[14]=InpRiskStep15; g_RiskTable[15]=InpRiskStep16;
+   g_RiskTable[16]=InpRiskStep17; g_RiskTable[17]=InpRiskStep18;
+   g_RiskTable[18]=InpRiskStep19; g_RiskTable[19]=InpRiskStep20;
+}
+
+void InitSystemState(int si)
+{
+   g_SysState[si].hasLive=false;
+   g_SysState[si].activeLiveStrategy=-1;
+   g_SysState[si].handleFast=INVALID_HANDLE;
+   g_SysState[si].handleSlow=INVALID_HANDLE;
+   g_SysState[si].boRangeHigh=0; g_SysState[si].boRangeLow=0;
+   g_SysState[si].boWaitRetestBuy=false; g_SysState[si].boWaitRetestSell=false;
+   g_SysState[si].boRetestLevel=0; g_SysState[si].boRangeBarTime=0;
+   g_SysState[si].fracHasBullish=false; g_SysState[si].fracHasBearish=false;
+   g_SysState[si].fracBullishPrice=0; g_SysState[si].fracBearishPrice=0;
+   g_SysState[si].pivPP=0; g_SysState[si].pivCalcTime=0;
+   g_SysState[si].srCount=0;
+   ArrayResize(g_SysState[si].srLevels,0);
+   ArrayResize(g_SysState[si].srTouches,0);
+   ArrayResize(g_SysState[si].srIsRes,0);
+
+   bool ena[STRAT_COUNT]={InpUseEMA,InpUsePriceAction,InpUseFractales,
+                           InpUseSR,InpUsePivot,InpUseBreakout};
+   for(int st=0;st<STRAT_COUNT;st++)
+   { g_SysState[si].strategies[st].enabled        = ena[st];
+     g_SysState[si].strategies[st].isLive         = false;
+     g_SysState[si].strategies[st].CV             = 1;
+     g_SysState[si].strategies[st].CR             = 1;
+     g_SysState[si].strategies[st].CV_Max         = 1;
+     g_SysState[si].strategies[st].virtualActive  = false;
+     g_SysState[si].strategies[st].virtualDir     = 0;
+     g_SysState[si].strategies[st].virtualOpen    = 0;
+     g_SysState[si].strategies[st].virtualSL_price= 0;
+     g_SysState[si].strategies[st].virtualTP_price= 0;
+     g_SysState[si].strategies[st].virtualSLMoved = false;
+     g_SysState[si].strategies[st].magicNumber    = GetStrategyMagic(si,st);
+     g_SysState[si].strategies[st].name           = GetStrategyName(st);
+     g_SysState[si].strategies[st].handle1        = INVALID_HANDLE;
+     g_SysState[si].strategies[st].handle2        = INVALID_HANDLE;
+     g_SysState[si].strategies[st].lastBarTime    = 0;
+     g_SysState[si].strategies[st].signalInited   = false;
+     g_SysState[si].strategies[st].prevSignalState= false;
+     g_SysState[si].strategies[st].cbPaused       = false;
+     g_SysState[si].strategies[st].cbPausedCV     = 1;
+     g_SysState[si].strategies[st].cbPausedCR     = 1; }
+}
+
+bool InitStrategyHandles()
+{
+   for(int si=0;si<g_SymCount;si++)
+   { string sym=g_Symbols[si].name;
+     if(InpUseEMA)
+     { int hF=iMA(sym,PERIOD_CURRENT,InpEmaFast,0,MODE_EMA,InpEmaPrice);
+       int hS=iMA(sym,PERIOD_CURRENT,InpEmaSlow, 0,MODE_EMA,InpEmaPrice);
+       if(hF==INVALID_HANDLE||hS==INVALID_HANDLE)
+       { Print("ERROR handles EMA [",sym,"]"); return false; }
+       double tmp[]; CopyBuffer(hF,0,0,200,tmp); CopyBuffer(hS,0,0,200,tmp);
+       g_SysState[si].handleFast=hF; g_SysState[si].handleSlow=hS;
+       g_SysState[si].strategies[STRAT_EMA].handle1=hF;
+       g_SysState[si].strategies[STRAT_EMA].handle2=hS; } }
+   return true;
+}
+
+void ReleaseStrategyHandles()
+{
+   for(int si=0;si<g_SymCount;si++)
+   { if(g_SysState[si].handleFast!=INVALID_HANDLE)
+     { IndicatorRelease(g_SysState[si].handleFast);
+       g_SysState[si].handleFast=INVALID_HANDLE; }
+     if(g_SysState[si].handleSlow!=INVALID_HANDLE)
+     { IndicatorRelease(g_SysState[si].handleSlow);
+       g_SysState[si].handleSlow=INVALID_HANDLE; } }
+}
+
+//+------------------------------------------------------------------+
+//| PERSISTENCIA                                                     |
+//+------------------------------------------------------------------+
+void InitGlobalVarKeys()
+{
+   string s=IntegerToString(InpMagicNumber);
+   GV_ADV_MODE   =GV_PREFIX+"ADV_"  +s;
+   GV_LIMIT_PRICE=GV_PREFIX+"LIMIT_"+s;
+   GV_PANEL_X    =GV_PREFIX+"PNLX_" +s;
+   GV_PANEL_Y    =GV_PREFIX+"PNLY_" +s;
+}
+
+string GetStateFileName()
+{ return "GQP_v8_"+IntegerToString(InpMagicNumber)+".dat"; }
+
+void SaveState()
+{
+   if(IsTester()) return;
+   GlobalVariableSet(GV_ADV_MODE,   g_AdvancedMode?1.0:0.0);
+   GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice);
+   GlobalVariableSet(GV_PANEL_X,    (double)PNL_X);
+   GlobalVariableSet(GV_PANEL_Y,    (double)PNL_Y);
+   SaveStateToFile();
+}
+
+void SaveStateToFile()
+{
+   int h=FileOpen(GetStateFileName(),FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h==INVALID_HANDLE) return;
+   FileWriteString(h,"ADV_MODE="      +(g_AdvancedMode?"1":"0")          +"\n");
+   FileWriteString(h,"LIMIT_PRICE="   +DoubleToString(g_LimitPrice,8)    +"\n");
+   FileWriteString(h,"PANEL_X="       +IntegerToString(PNL_X)            +"\n");
+   FileWriteString(h,"PANEL_Y="       +IntegerToString(PNL_Y)            +"\n");
+   FileWriteString(h,"TABLE_SIZE="    +IntegerToString(g_PanelTableSize) +"\n");
+   FileWriteString(h,"PANEL_SYM_IDX="+IntegerToString(g_PanelSymIdx)    +"\n");
+   FileWriteString(h,"BASE_CAPITAL="  +DoubleToString(g_BaseCapital,8)   +"\n");
+   FileWriteString(h,"BASE_MAX_BAL="  +DoubleToString(g_BaseMaxBalance,8)+"\n");
+   FileWriteString(h,"DAY_START_EQ="  +DoubleToString(g_DayStartEquity,8)+"\n");
+   FileWriteString(h,"DAY_START_TIME="+IntegerToString(g_DayStartTime)   +"\n");
+   FileWriteString(h,"CB_ON="         +(g_CircuitBreakerOn?"1":"0")      +"\n");
+   for(int si=0;si<g_SymCount;si++)
+   { string sp="SYM"+IntegerToString(si)+"_";
+     FileWriteString(h,sp+"NAME="    +g_Symbols[si].name                                +"\n");
+     FileWriteString(h,sp+"HASLIVE="+(g_SysState[si].hasLive?"1":"0")                  +"\n");
+     FileWriteString(h,sp+"ALIVE="  +IntegerToString(g_SysState[si].activeLiveStrategy)+"\n");
+     for(int st=0;st<STRAT_COUNT;st++)
+     { string pp=sp+"ST"+IntegerToString(st)+"_";
+       FileWriteString(h,pp+"LIVE="    +(g_SysState[si].strategies[st].isLive?"1":"0")         +"\n");
+       FileWriteString(h,pp+"CV="      +IntegerToString(g_SysState[si].strategies[st].CV)      +"\n");
+       FileWriteString(h,pp+"CR="      +IntegerToString(g_SysState[si].strategies[st].CR)      +"\n");
+       FileWriteString(h,pp+"CVMAX="   +IntegerToString(g_SysState[si].strategies[st].CV_Max)  +"\n");
+       FileWriteString(h,pp+"VACT="    +(g_SysState[si].strategies[st].virtualActive?"1":"0")  +"\n");
+       FileWriteString(h,pp+"VDIR="    +IntegerToString(g_SysState[si].strategies[st].virtualDir)+"\n");
+       FileWriteString(h,pp+"VOP="     +DoubleToString(g_SysState[si].strategies[st].virtualOpen,8)+"\n");
+       FileWriteString(h,pp+"VSL="     +DoubleToString(g_SysState[si].strategies[st].virtualSL_price,8)+"\n");
+       FileWriteString(h,pp+"VTP="     +DoubleToString(g_SysState[si].strategies[st].virtualTP_price,8)+"\n");
+       FileWriteString(h,pp+"VSLMOV="  +(g_SysState[si].strategies[st].virtualSLMoved?"1":"0") +"\n");
+       FileWriteString(h,pp+"SINIT="   +(g_SysState[si].strategies[st].signalInited?"1":"0")   +"\n");
+       FileWriteString(h,pp+"CBPAUSE=" +(g_SysState[si].strategies[st].cbPaused?"1":"0")       +"\n");
+       FileWriteString(h,pp+"CBCV="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCV)+"\n");
+       FileWriteString(h,pp+"CBCR="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCR)+"\n"); } }
+   FileWriteString(h,"SAVED_AT="+TimeToString(TimeCurrent())+"\n");
+   FileClose(h);
+}
+
+void LoadState()
+{
+   if(GlobalVariableCheck(GV_ADV_MODE))    g_AdvancedMode=(GlobalVariableGet(GV_ADV_MODE)>0.5);
+   if(GlobalVariableCheck(GV_LIMIT_PRICE)){ double lp=GlobalVariableGet(GV_LIMIT_PRICE); if(lp>0) g_LimitPrice=lp; }
+   if(GlobalVariableCheck(GV_PANEL_X))     PNL_X=(int)GlobalVariableGet(GV_PANEL_X);
+   if(GlobalVariableCheck(GV_PANEL_Y))     PNL_Y=(int)GlobalVariableGet(GV_PANEL_Y);
+   LoadStateFromFile();
+}
+
+void LoadStateFromFile()
+{
+   string fname=GetStateFileName();
+   if(!FileIsExist(fname)) return;
+   int h=FileOpen(fname,FILE_READ|FILE_TXT|FILE_ANSI);
+   if(h==INVALID_HANDLE) return;
+   while(!FileIsEnding(h))
+   { string line=FileReadString(h);
+     StringTrimLeft(line); StringTrimRight(line);
+     if(StringLen(line)==0) continue;
+     int sep=StringFind(line,"="); if(sep<0) continue;
+     string key=StringSubstr(line,0,sep);
+     string val=StringSubstr(line,sep+1);
+     if(key=="ADV_MODE")        g_AdvancedMode=(StringToInteger(val)>0);
+     else if(key=="LIMIT_PRICE"){ double lp=StringToDouble(val); if(lp>0) g_LimitPrice=lp; }
+     else if(key=="PANEL_X")    PNL_X=(int)StringToInteger(val);
+     else if(key=="PANEL_Y")    PNL_Y=(int)StringToInteger(val);
+     else if(key=="TABLE_SIZE") g_PanelTableSize=MathMax(1,MathMin(MAX_TABLE_SIZE,(int)StringToInteger(val)));
+     else if(key=="PANEL_SYM_IDX")  g_PanelSymIdx=(int)StringToInteger(val);
+     else if(key=="BASE_CAPITAL")   g_BaseCapital=MathMax(0.01,StringToDouble(val));
+     else if(key=="BASE_MAX_BAL")   g_BaseMaxBalance=StringToDouble(val);
+     else if(key=="DAY_START_EQ")   g_DayStartEquity=StringToDouble(val);
+     else if(key=="DAY_START_TIME") g_DayStartTime=(datetime)StringToInteger(val);
+     else if(key=="CB_ON")          g_CircuitBreakerOn=(StringToInteger(val)>0);
+     else
+     { for(int si=0;si<g_SymCount;si++)
+       { string sp="SYM"+IntegerToString(si)+"_";
+         if(StringFind(key,sp)!=0) continue;
+         string rest=StringSubstr(key,StringLen(sp));
+         if(rest=="HASLIVE") g_SysState[si].hasLive=(StringToInteger(val)>0);
+         else if(rest=="ALIVE") g_SysState[si].activeLiveStrategy=(int)StringToInteger(val);
+         else
+         { for(int st=0;st<STRAT_COUNT;st++)
+           { string pp="ST"+IntegerToString(st)+"_";
+             if(StringFind(rest,pp)!=0) continue;
+             string field=StringSubstr(rest,StringLen(pp));
+             if(field=="LIVE")     g_SysState[si].strategies[st].isLive=(StringToInteger(val)>0);
+             else if(field=="CV")  g_SysState[si].strategies[st].CV=MathMax(1,(int)StringToInteger(val));
+             else if(field=="CR")  g_SysState[si].strategies[st].CR=MathMax(1,(int)StringToInteger(val));
+             else if(field=="CVMAX")  g_SysState[si].strategies[st].CV_Max=(int)StringToInteger(val);
+             else if(field=="VACT")   g_SysState[si].strategies[st].virtualActive=(StringToInteger(val)>0);
+             else if(field=="VDIR")   g_SysState[si].strategies[st].virtualDir=(int)StringToInteger(val);
+             else if(field=="VOP")    g_SysState[si].strategies[st].virtualOpen=StringToDouble(val);
+             else if(field=="VSL")    g_SysState[si].strategies[st].virtualSL_price=StringToDouble(val);
+             else if(field=="VTP")    g_SysState[si].strategies[st].virtualTP_price=StringToDouble(val);
+             else if(field=="VSLMOV") g_SysState[si].strategies[st].virtualSLMoved=(StringToInteger(val)>0);
+             else if(field=="SINIT")  g_SysState[si].strategies[st].signalInited=(StringToInteger(val)>0);
+             else if(field=="CBPAUSE")g_SysState[si].strategies[st].cbPaused=(StringToInteger(val)>0);
+             else if(field=="CBCV")   g_SysState[si].strategies[st].cbPausedCV=(int)StringToInteger(val);
+             else if(field=="CBCR")   g_SysState[si].strategies[st].cbPausedCR=(int)StringToInteger(val);
+             break; } }
+         break; } } }
+   FileClose(h);
+   if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
+}//+------------------------------------------------------------------+
+//| LÓGICA CV/CR                                                     |
+//+------------------------------------------------------------------+
+void OnVirtualSL_Original(int si, int st)
+{
+   g_SysState[si].strategies[st].CV++;
+   UpdateCVMax(si,st);
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+         "→",g_SysState[si].strategies[st].CV);
+   if(!g_SysState[si].hasLive&&
+      g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
+      SelectNextLiveStrategy(si);
+}
+
+void OnVirtualSL_Protected(int si, int st)
+{
+   int cv=g_SysState[si].strategies[st].CV;
+   int r=(cv>=10)?4:3;
+   g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
+   UpdateCVMax(si,st);
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV);
+}
+
+void OnVirtualTP(int si, int st)
+{
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1");
+   g_SysState[si].strategies[st].CV=1;
+}
+
+void OnLiveSL_Original(int si, int st)
+{
+   int cv=g_SysState[si].strategies[st].CV;
+   int cr=g_SysState[si].strategies[st].CR;
+   g_SysState[si].strategies[st].CV++;
+   UpdateCVMax(si,st);
+   SetCR(si,st,cr+1);
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] LIVE SL orig CV:",cv,"→",g_SysState[si].strategies[st].CV,
+         " CR:",cr,"→",g_SysState[si].strategies[st].CR,
+         " Lot:",GetLotByCR(si,g_SysState[si].strategies[st].CR));
+}
+
+void OnLiveSL_Protected(int si, int st)
+{
+   int cv=g_SysState[si].strategies[st].CV;
+   int cr=g_SysState[si].strategies[st].CR;
+   int r=(cv>=10)?4:3;
+   g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
+   UpdateCVMax(si,st);
+   SetCR(si,st,ApplyRetroceso(cr,r));
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] LIVE SL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+         " CR:",cr,"→",g_SysState[si].strategies[st].CR,
+         " Lot:",GetLotByCR(si,g_SysState[si].strategies[st].CR));
+}
+
+void OnLiveTP(int si, int st)
+{
+   Print("★ TP LIVE [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] CV:",g_SysState[si].strategies[st].CV,
+         "→1 CR:",g_SysState[si].strategies[st].CR,"→1");
+   g_SysState[si].strategies[st].CV=1;
+   g_SysState[si].strategies[st].CR=1;
+   g_SysState[si].strategies[st].isLive=false;
+   g_SysState[si].hasLive=false;
+   g_SysState[si].activeLiveStrategy=-1;
+   SelectNextLiveStrategy(si);
+   SaveState();
+   if(!IsTester()) RebuildPanel();
+}
+
+void OnStrategyLiveTP(int si, int st)  { OnLiveTP(si,st); }
+void OnStrategyLiveSL(int si, int st, bool slMoved)
+{ if(slMoved) OnLiveSL_Protected(si,st); else OnLiveSL_Original(si,st); SaveState(); }
+
+//+------------------------------------------------------------------+
+//| SELECCIÓN LIVE                                                   |
+//+------------------------------------------------------------------+
+void SelectNextLiveStrategy(int si)
+{
+   int thr=InpXActivacion+1;
+   int cand[STRAT_COUNT]; int cc=0,mx=0;
+   for(int st=0;st<STRAT_COUNT;st++)
+   { if(!g_SysState[si].strategies[st].enabled)  continue;
+     if(g_SysState[si].strategies[st].CV<thr)     continue;
+     if(g_SysState[si].strategies[st].cbPaused)   continue;
+     cand[cc]=st; cc++;
+     if(g_SysState[si].strategies[st].CV>mx) mx=g_SysState[si].strategies[st].CV; }
+   if(cc==0)
+   { Print("SelectNextLive [",g_Symbols[si].name,"]: ninguna CV>=",thr);
+     g_SysState[si].hasLive=false; g_SysState[si].activeLiveStrategy=-1; return; }
+   int top[STRAT_COUNT]; int tc=0;
+   for(int i=0;i<cc;i++)
+      if(g_SysState[si].strategies[cand[i]].CV==mx){top[tc]=cand[i];tc++;}
+   int chosen=(tc==1)?top[0]:top[MathRand()%tc];
+   ActivateLiveStrategy(si,chosen);
+}
+
+void ActivateLiveStrategy(int si, int st)
+{
+   for(int s=0;s<STRAT_COUNT;s++) g_SysState[si].strategies[s].isLive=false;
+   g_SysState[si].strategies[st].isLive=true;
+   g_SysState[si].strategies[st].CR=1;
+   g_SysState[si].hasLive=true;
+   g_SysState[si].activeLiveStrategy=st;
+   Print("★ LIVE [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] CV=",g_SysState[si].strategies[st].CV,
+         " CR=1 Lot=",GetLotByCR(si,1),
+         " 1:2=",IsTrailingActive(si,st)?"ON":"OFF");
+   SaveState(); if(!IsTester()) RebuildPanel();
+}
+
+//+------------------------------------------------------------------+
+//| VIRTUAL                                                          |
+//+------------------------------------------------------------------+
+void StartStrategyVirtual(int si, int st, int signal)
+{
+   if(signal==0||g_SysState[si].strategies[st].virtualActive) return;
+   string sym=g_Symbols[si].name;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double openPrice=(signal>0)?ask:bid;
+   int    ptypeEq=(signal>0)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   g_SysState[si].strategies[st].virtualDir       =signal;
+   g_SysState[si].strategies[st].virtualOpen      =openPrice;
+   g_SysState[si].strategies[st].virtualSL_price  =CalcSL(sym,si,openPrice,ptypeEq);
+   g_SysState[si].strategies[st].virtualTP_price  =CalcTP(sym,si,openPrice,ptypeEq);
+   g_SysState[si].strategies[st].virtualSLMoved   =false;
+   g_SysState[si].strategies[st].virtualActive    =true;
+   Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
+         (signal>0?"BUY":"SELL"),
+         " @",DoubleToString(openPrice,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS)),
+         " CV=",g_SysState[si].strategies[st].CV,
+         " 1:2=",IsTrailingActive(si,st)?"ON":"OFF");
+}
+
+void UpdateStrategyVirtual(int si, int st)
+{
+   if(!g_SysState[si].strategies[st].enabled)       return;
+   if(!g_SysState[si].strategies[st].virtualActive) return;
+   string sym=g_Symbols[si].name;
+   int    dir=g_SysState[si].strategies[st].virtualDir;
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double checkPrice=(dir>0)?SymbolInfoDouble(sym,SYMBOL_BID)
+                            :SymbolInfoDouble(sym,SYMBOL_ASK);
+   if(!g_SysState[si].strategies[st].virtualSLMoved&&IsTrailingActive(si,st))
+   { double op=g_SysState[si].strategies[st].virtualOpen;
+     double delta=(dir>0)?(checkPrice-op)/pt:(op-checkPrice)/pt;
+     if(delta>=SymActivation(si))
+     { double psl=SymProtectedSL(si);
+       double nSL=(dir>0)?NormalizeDouble(op+psl*pt,dg):NormalizeDouble(op-psl*pt,dg);
+       g_SysState[si].strategies[st].virtualSL_price=nSL;
+       g_SysState[si].strategies[st].virtualSLMoved=true; } }
+   bool win=false,loss=false;
+   double vSL=g_SysState[si].strategies[st].virtualSL_price;
+   double vTP=g_SysState[si].strategies[st].virtualTP_price;
+   if(dir>0){if(checkPrice>=vTP)win=true;else if(checkPrice<=vSL)loss=true;}
+   else     {if(checkPrice<=vTP)win=true;else if(checkPrice>=vSL)loss=true;}
+   if(!win&&!loss) return;
+   bool wasProtected=g_SysState[si].strategies[st].virtualSLMoved;
+   g_SysState[si].strategies[st].virtualActive   =false;
+   g_SysState[si].strategies[st].virtualOpen     =0;
+   g_SysState[si].strategies[st].virtualSL_price =0;
+   g_SysState[si].strategies[st].virtualTP_price =0;
+   g_SysState[si].strategies[st].virtualDir      =0;
+   g_SysState[si].strategies[st].virtualSLMoved  =false;
+   if(win){OnVirtualTP(si,st);SaveState();if(!IsTester())RebuildActiveTab();return;}
+   if(loss)
+   { if(wasProtected) OnVirtualSL_Protected(si,st); else OnVirtualSL_Original(si,st);
+     SaveState(); if(!IsTester()) RebuildActiveTab(); }
+}
+
+//+------------------------------------------------------------------+
+//| SEÑALES                                                          |
+//+------------------------------------------------------------------+
+bool IsNewBar(int si, int st)
+{
+   datetime bt=(datetime)SeriesInfoInteger(g_Symbols[si].name,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
+   if(bt==g_SysState[si].strategies[st].lastBarTime) return false;
+   g_SysState[si].strategies[st].lastBarTime=bt; return true;
+}
+
+int CheckEMASignal(int si)
+{
+   int h1=g_SysState[si].strategies[STRAT_EMA].handle1;
+   int h2=g_SysState[si].strategies[STRAT_EMA].handle2;
+   if(h1==INVALID_HANDLE||h2==INVALID_HANDLE) return 0;
+   double fN[1],sN[1],fP[1],sP[1];
+   if(CopyBuffer(h1,0,1,1,fN)<=0||CopyBuffer(h2,0,1,1,sN)<=0) return 0;
+   if(CopyBuffer(h1,0,2,1,fP)<=0||CopyBuffer(h2,0,2,1,sP)<=0) return 0;
+   if(!g_SysState[si].strategies[STRAT_EMA].signalInited)
+   { g_SysState[si].strategies[STRAT_EMA].prevSignalState=(fN[0]>sN[0]);
+     g_SysState[si].strategies[STRAT_EMA].signalInited=true; return 0; }
+   bool ca=(fN[0]>sN[0]),pa=(fP[0]>sP[0]);
+   int  sig=(!pa&&ca)?+1:(pa&&!ca)?-1:0;
+   g_SysState[si].strategies[STRAT_EMA].prevSignalState=ca;
+   return sig;
+}
+
+int CheckPASignal(int si)
+{
+   string sym=g_Symbols[si].name;
+   double O[],H[],L[],C[];
+   if(CopyOpen(sym,PERIOD_CURRENT,1,4,O)<=0||CopyHigh(sym,PERIOD_CURRENT,1,4,H)<=0) return 0;
+   if(CopyLow(sym,PERIOD_CURRENT,1,4,L)<=0||CopyClose(sym,PERIOD_CURRENT,1,4,C)<=0) return 0;
+   double b0=MathAbs(C[0]-O[0]),r0=H[0]-L[0];
+   double b1=MathAbs(C[1]-O[1]);
+   double b2=MathAbs(C[2]-O[2]),r2=H[2]-L[2];
+   int bs=0,brs=0;
+   if(C[1]<O[1]&&C[0]>O[0]&&O[0]<C[1]&&C[0]>O[1]) bs++;
+   if(C[1]>O[1]&&C[0]<O[0]&&O[0]>C[1]&&C[0]<O[1]) brs++;
+   if(r0>0&&b0>0)
+   { double lw=MathMin(O[0],C[0])-L[0],uw=H[0]-MathMax(O[0],C[0]);
+     if(lw>=InpPA_PinBarRatio*b0&&uw<b0) bs++;
+     if(uw>=InpPA_PinBarRatio*b0&&lw<b0) brs++; }
+   double m2=(O[2]+C[2])/2.0;
+   if(C[2]<O[2]&&b2>r2*0.5&&b1<b2*0.3&&C[0]>O[0]&&C[0]>m2) bs++;
+   if(C[2]>O[2]&&b2>r2*0.5&&b1<b2*0.3&&C[0]<O[0]&&C[0]<m2) brs++;
+   if(H[0]<H[1]&&L[0]>L[1]){if(C[0]>=(H[1]+L[1])/2.0)bs++;else brs++;}
+   if(bs>0&&bs>brs)return+1; if(brs>0&&brs>bs)return-1; return 0;
+}
+
+int CheckFractalSignal(int si)
+{
+   string sym=g_Symbols[si].name;
+   int bars=MathMax(2,InpFractalBars),needed=bars*2+2;
+   double H[],L[];
+   if(CopyHigh(sym,PERIOD_CURRENT,1,needed,H)<=0||
+      CopyLow (sym,PERIOD_CURRENT,1,needed,L)<=0) return 0;
+   int mid=bars; bool isBull=true,isBear=true;
+   for(int i=0;i<bars*2+1;i++)
+   { if(i==mid) continue;
+     if(L[i]<=L[mid]) isBull=false;
+     if(H[i]>=H[mid]) isBear=false; }
+   datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
+   if(isBear)
+   { g_SysState[si].fracHasBullish=false;
+     if(!g_SysState[si].fracHasBearish||g_SysState[si].fracBearishPrice!=H[mid])
+     { g_SysState[si].fracHasBearish=true;
+       g_SysState[si].fracBearishPrice=H[mid];
+       g_SysState[si].fracBearishTime=bt; return -1; } }
+   else if(isBull)
+   { g_SysState[si].fracHasBearish=false;
+     if(!g_SysState[si].fracHasBullish||g_SysState[si].fracBullishPrice!=L[mid])
+     { g_SysState[si].fracHasBullish=true;
+       g_SysState[si].fracBullishPrice=L[mid];
+       g_SysState[si].fracBullishTime=bt; return +1; } }
+   return 0;
+}
+
+void CalcSRZones(int si)
+{
+   string sym=g_Symbols[si].name;
+   int dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT),tol=InpSR_Tolerance*pt;
+   double H[],L[],C[];
+   if(CopyHigh(sym,PERIOD_CURRENT,1,InpSR_Lookback,H)<=0) return;
+   if(CopyLow (sym,PERIOD_CURRENT,1,InpSR_Lookback,L)<=0) return;
+   if(CopyClose(sym,PERIOD_CURRENT,1,InpSR_Lookback,C)<=0) return;
+   double cands[]; int cc=0;
+   for(int i=1;i<InpSR_Lookback-1;i++)
+   { if(H[i]>=H[i-1]&&H[i]>=H[i+1]){ArrayResize(cands,cc+1);cands[cc]=H[i];cc++;}
+     if(L[i]<=L[i-1]&&L[i]<=L[i+1]){ArrayResize(cands,cc+1);cands[cc]=L[i];cc++;} }
+   ArrayResize(g_SysState[si].srLevels,0);
+   ArrayResize(g_SysState[si].srTouches,0);
+   ArrayResize(g_SysState[si].srIsRes,0);
+   g_SysState[si].srCount=0;
+   for(int i=0;i<cc;i++)
+   { double lvl=cands[i]; bool merged=false;
+     for(int z=0;z<g_SysState[si].srCount;z++)
+     { if(MathAbs(g_SysState[si].srLevels[z]-lvl)<=tol)
+       { g_SysState[si].srLevels[z]=(g_SysState[si].srLevels[z]*g_SysState[si].srTouches[z]+lvl)/
+                                     (g_SysState[si].srTouches[z]+1);
+         g_SysState[si].srTouches[z]++; merged=true; break; } }
+     if(!merged)
+     { int zi=g_SysState[si].srCount;
+       ArrayResize(g_SysState[si].srLevels, zi+1);
+       ArrayResize(g_SysState[si].srTouches,zi+1);
+       ArrayResize(g_SysState[si].srIsRes,  zi+1);
+       g_SysState[si].srLevels[zi] =NormalizeDouble(lvl,dg);
+       g_SysState[si].srTouches[zi]=1;
+       g_SysState[si].srIsRes[zi]  =(lvl>C[0]);
+       g_SysState[si].srCount++; } }
+   double vL[]; int vT[]; bool vR[]; int vc=0;
+   for(int z=0;z<g_SysState[si].srCount;z++)
+   { if(g_SysState[si].srTouches[z]>=InpSR_MinToques)
+     { ArrayResize(vL,vc+1); ArrayResize(vT,vc+1); ArrayResize(vR,vc+1);
+       vL[vc]=g_SysState[si].srLevels[z];
+       vT[vc]=g_SysState[si].srTouches[z];
+       vR[vc]=g_SysState[si].srIsRes[z]; vc++; } }
+   ArrayResize(g_SysState[si].srLevels, vc);
+   ArrayResize(g_SysState[si].srTouches,vc);
+   ArrayResize(g_SysState[si].srIsRes,  vc);
+   g_SysState[si].srCount=vc;
+}
+
+int CheckSRSignal(int si)
+{
+   if(g_SysState[si].srCount==0) return 0;
+   string sym=g_Symbols[si].name;
+   double tol=InpSR_Tolerance*SymbolInfoDouble(sym,SYMBOL_POINT);
+   double C[]; if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
+   for(int z=0;z<g_SysState[si].srCount;z++)
+   { double lvl=g_SysState[si].srLevels[z];
+     if(C[1]<=lvl+tol&&C[0]>lvl+tol) return +1;
+     if(C[1]>=lvl-tol&&C[0]<lvl-tol) return -1; }
+   return 0;
+}
+
+void CalcPivots(int si)
+{
+   string sym=g_Symbols[si].name;
+   double H4H[],H4L[],H4C[];
+   if(CopyHigh(sym,PERIOD_H4,1,1,H4H)<=0||
+      CopyLow (sym,PERIOD_H4,1,1,H4L)<=0||
+      CopyClose(sym,PERIOD_H4,1,1,H4C)<=0) return;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double ph=H4H[0],pl=H4L[0],pc=H4C[0];
+   g_SysState[si].pivPP=NormalizeDouble((ph+pl+pc)/3.0,dg);
+   double pp=g_SysState[si].pivPP;
+   g_SysState[si].pivR1=NormalizeDouble(2*pp-pl,dg);
+   g_SysState[si].pivR2=NormalizeDouble(pp+(ph-pl),dg);
+   g_SysState[si].pivR3=NormalizeDouble(ph+2*(pp-pl),dg);
+   g_SysState[si].pivS1=NormalizeDouble(2*pp-ph,dg);
+   g_SysState[si].pivS2=NormalizeDouble(pp-(ph-pl),dg);
+   g_SysState[si].pivS3=NormalizeDouble(pl-2*(ph-pp),dg);
+   g_SysState[si].pivCalcTime=(datetime)SeriesInfoInteger(sym,PERIOD_H4,SERIES_LASTBAR_DATE);
+}
+
+int CheckPivotSignal(int si)
+{
+   if(g_SysState[si].pivPP==0) return 0;
+   string sym=g_Symbols[si].name;
+   double tol=InpSR_Tolerance*SymbolInfoDouble(sym,SYMBOL_POINT);
+   double H[],L[],C[];
+   if(CopyHigh(sym,PERIOD_CURRENT,1,2,H)<=0||
+      CopyLow (sym,PERIOD_CURRENT,1,2,L)<=0||
+      CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0) return 0;
+   double rL[4]={g_SysState[si].pivPP,g_SysState[si].pivR1,
+                 g_SysState[si].pivR2,g_SysState[si].pivR3};
+   double sL[4]={g_SysState[si].pivPP,g_SysState[si].pivS1,
+                 g_SysState[si].pivS2,g_SysState[si].pivS3};
+   for(int i=0;i<4;i++){if(rL[i]==0)continue;
+     if(H[1]>=rL[i]-tol&&L[1]<=rL[i]+tol&&C[0]<rL[i]-tol)return -1;}
+   for(int i=0;i<4;i++){if(sL[i]==0)continue;
+     if(L[1]<=sL[i]+tol&&H[1]>=sL[i]-tol&&C[0]>sL[i]+tol)return +1;}
+   return 0;
+}
+
+void UpdateBreakoutRange(int si)
+{
+   string sym=g_Symbols[si].name;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double H[],L[];
+   if(CopyHigh(sym,PERIOD_CURRENT,2,InpBO_Bars,H)<=0||
+      CopyLow (sym,PERIOD_CURRENT,2,InpBO_Bars,L)<=0) return;
+   double hi=H[0],lo=L[0];
+   for(int i=1;i<InpBO_Bars;i++){if(H[i]>hi)hi=H[i];if(L[i]<lo)lo=L[i];}
+   g_SysState[si].boRangeHigh=NormalizeDouble(hi,dg);
+   g_SysState[si].boRangeLow =NormalizeDouble(lo,dg);
+}
+
+int CheckBreakoutSignal(int si)
+{
+   if(g_SysState[si].boRangeHigh==0||g_SysState[si].boRangeLow==0) return 0;
+   string sym=g_Symbols[si].name;
+   double tol=InpBO_RetestTol*SymbolInfoDouble(sym,SYMBOL_POINT);
+   double C[],H[],L[]; long TV[];
+   if(CopyClose(sym,PERIOD_CURRENT,1,2,C)<=0||
+      CopyHigh (sym,PERIOD_CURRENT,1,2,H)<=0||
+      CopyLow  (sym,PERIOD_CURRENT,1,2,L)<=0||
+      CopyTickVolume(sym,PERIOD_CURRENT,1,2,TV)<=0) return 0;
+   long va[]; double avg=0;
+   if(CopyTickVolume(sym,PERIOD_CURRENT,2,InpBO_Bars,va)>0)
+   { long vs=0; for(int i=0;i<InpBO_Bars;i++) vs+=va[i]; avg=(double)vs/InpBO_Bars; }
+   bool vOK=(avg>0&&TV[0]>=(long)(avg*InpBO_VolMultiplier));
+   double hi=g_SysState[si].boRangeHigh,lo=g_SysState[si].boRangeLow;
+   if(g_SysState[si].boWaitRetestBuy)
+   { if(L[0]<=g_SysState[si].boRetestLevel+tol&&
+        L[0]>=g_SysState[si].boRetestLevel-tol&&
+        C[0]>g_SysState[si].boRetestLevel)
+     { g_SysState[si].boWaitRetestBuy=false; return +1; }
+     if(C[0]<lo) g_SysState[si].boWaitRetestBuy=false; return 0; }
+   if(g_SysState[si].boWaitRetestSell)
+   { if(H[0]>=g_SysState[si].boRetestLevel-tol&&
+        H[0]<=g_SysState[si].boRetestLevel+tol&&
+        C[0]<g_SysState[si].boRetestLevel)
+     { g_SysState[si].boWaitRetestSell=false; return -1; }
+     if(C[0]>hi) g_SysState[si].boWaitRetestSell=false; return 0; }
+   if(C[0]>hi&&vOK){g_SysState[si].boWaitRetestBuy=true; g_SysState[si].boRetestLevel=hi; return 0;}
+   if(C[0]<lo&&vOK){g_SysState[si].boWaitRetestSell=true;g_SysState[si].boRetestLevel=lo; return 0;}
+   return 0;
+}
+
+int CheckStrategySignal(int si, int st)
+{
+   if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
+   if(st==STRAT_SR)    CalcSRZones(si);
+   if(st==STRAT_BO)    UpdateBreakoutRange(si);
+   if(st==STRAT_PIVOT)
+   { datetime h4b=(datetime)SeriesInfoInteger(g_Symbols[si].name,PERIOD_H4,SERIES_LASTBAR_DATE);
+     if(h4b!=g_SysState[si].pivCalcTime) CalcPivots(si); }
+   switch(st)
+   { case STRAT_EMA:   return CheckEMASignal(si);
+     case STRAT_PA:    return CheckPASignal(si);
+     case STRAT_FRAC:  return CheckFractalSignal(si);
+     case STRAT_SR:    return CheckSRSignal(si);
+     case STRAT_PIVOT: return CheckPivotSignal(si);
+     case STRAT_BO:    return CheckBreakoutSignal(si);
+     default:          return 0; }
+}
+
+//+------------------------------------------------------------------+
+//| UPDATE ESTRATEGIAS                                               |
+//+------------------------------------------------------------------+
+void UpdateAllStrategies()
+{
+   if(g_CircuitBreakerOn) return;
+   for(int si=0;si<g_SymCount;si++)
+   { for(int st=0;st<STRAT_COUNT;st++)
+     { if(!g_SysState[si].strategies[st].enabled) continue;
+       if(g_SysState[si].strategies[st].cbPaused) continue;
+       if(g_SysState[si].strategies[st].isLive)
+       { bool hasPos=false;
+         for(int k=0;k<g_TradeCount;k++)
+            if(g_Trades[k].symbolIdx==si&&g_Trades[k].strategyId==st&&!g_Trades[k].isPending)
+            { hasPos=true; break; }
+         if(!hasPos&&IsTradeTimeAllowed())
+         { int sig=CheckStrategySignal(si,st); if(sig!=0) OpenByStrategy(si,st,sig); } }
+       else
+       { UpdateStrategyVirtual(si,st);
+         if(!g_SysState[si].strategies[st].virtualActive)
+         { int sig=CheckStrategySignal(si,st);
+           if(sig!=0) StartStrategyVirtual(si,st,sig); } } } }
+}
+
+//+------------------------------------------------------------------+
+//| TRAILING                                                         |
+//+------------------------------------------------------------------+
+bool ModifySL(ulong ticket, double newSL)
+{
+   if(!PositionSelectByTicket(ticket)) return false;
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_SLTP; req.position=ticket;
+   req.symbol=PositionGetString(POSITION_SYMBOL);
+   req.sl=newSL; req.tp=PositionGetDouble(POSITION_TP);
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
+   { Print("ERROR ModifySL #",ticket); return false; }
+   return true;
+}
+
+void ManageOpenPositions()
+{
+   bool changed=false;
+   for(int k=0;k<g_TradeCount;k++)
+   { if(g_Trades[k].isPending||g_Trades[k].slMoved) continue;
+     int si=g_Trades[k].symbolIdx; int st=g_Trades[k].strategyId;
+     if(si<0||st<0||!IsTrailingActive(si,st)) continue;
+     ulong t=g_Trades[k].ticket;
+     if(!PositionSelectByTicket(t)) continue;
+     string sym=g_Symbols[si].name;
+     double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+     int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+     double op =g_Trades[k].openPrice;
+     double cSL=PositionGetDouble(POSITION_SL);
+     int    ptype=g_Trades[k].orderType;
+     double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+     double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+     double mid=(bid+ask)/2.0;
+     double delta=(ptype==POSITION_TYPE_BUY)?(mid-op)/pt:(op-mid)/pt;
+     double actPts=SymActivation(si);
+     if(delta>=actPts)
+     { double psl=SymProtectedSL(si);
+       double nSL=(ptype==POSITION_TYPE_BUY)?NormalizeDouble(op+psl*pt,dg):NormalizeDouble(op-psl*pt,dg);
+       bool ok=(ptype==POSITION_TYPE_BUY)?(cSL<nSL||cSL==0):(cSL>nSL||cSL==0);
+       if(ok&&ModifySL(t,nSL))
+       { g_Trades[k].slMoved=true; g_Trades[k].sl=nSL;
+         for(int q=0;q<g_ClosedCount;q++)
+            if(g_ClosedQueue[q].ticket==t)
+            { g_ClosedQueue[q].slMoved=true; g_ClosedQueue[q].sl=nSL; break; }
+         changed=true;
+         Print("Trailing [",sym,"/",g_SysState[si].strategies[st].name,
+               "] CV=",g_SysState[si].strategies[st].CV," newSL=",nSL); } } }
+   if(changed&&!IsTester()) RebuildActiveTab();
+}
+
+//+------------------------------------------------------------------+
+//| TRADING                                                          |
+//+------------------------------------------------------------------+
+bool _SendSingle(string sym, ENUM_ORDER_TYPE ot, double lots,
+                 double sl, double tp, long magic, int si, int st)
+{
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_DEAL; req.symbol=sym;
+   req.volume=lots; req.type=ot;
+   req.price=(ot==ORDER_TYPE_BUY)?SymbolInfoDouble(sym,SYMBOL_ASK):SymbolInfoDouble(sym,SYMBOL_BID);
+   req.sl=sl; req.tp=tp; req.deviation=20; req.magic=magic;
+   req.type_filling=ORDER_FILLING_IOC;
+   int cvN=(si>=0&&st>=0)?g_SysState[si].strategies[st].CV:1;
+   int crN=(si>=0&&st>=0)?g_SysState[si].strategies[st].CR:1;
+   string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
+   req.comment=StringFormat("%s_%s_%s_CV%d_CR%d",InpComment,sym,sn,cvN,crN);
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
+   { Print("ERROR Send [",sym,"]: ",res.retcode); return false; }
+   return true;
+}
+
+bool SendMarketOrderEx(int si, int st, ENUM_ORDER_TYPE ot, double totalLots, long magic)
+{
+   string sym=g_Symbols[si].name;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double mid=(ask+bid)/2.0;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    posType=(ot==ORDER_TYPE_BUY)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   double sl=CalcSL(sym,si,mid,posType);
+   double tp=CalcTP(sym,si,mid,posType);
+   int parts=CalcSplitCount(totalLots); ulong gid=(ulong)TimeCurrent(); bool ok=true;
+   for(int i=0;i<parts;i++)
+   { double pl=CalcSplitLot(sym,totalLots,i,parts); if(pl<=0) continue;
+     if(i>0&&!IsTester()) Sleep(InpSplitDelayMs);
+     if(!_SendSingle(sym,ot,pl,sl,tp,magic,si,st)) ok=false; }
+   return ok;
+}
+
+void OpenByStrategy(int si, int st, int signal)
+{
+   if(signal==0||!g_SysState[si].strategies[st].isLive) return;
+   for(int i=0;i<g_TradeCount;i++)
+      if(g_Trades[i].symbolIdx==si&&g_Trades[i].strategyId==st&&!g_Trades[i].isPending) return;
+   double lots=GetLotByCR(si,g_SysState[si].strategies[st].CR);
+   ENUM_ORDER_TYPE ot=(signal>0)?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   Print("Orden [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,"] ",
+         (signal>0?"BUY":"SELL"),
+         " CV=",g_SysState[si].strategies[st].CV,
+         " CR=",g_SysState[si].strategies[st].CR," Lot=",lots);
+   SendMarketOrderEx(si,st,ot,lots,GetStrategyMagic(si,st));
+}
+
+void ClosePosition(ulong ticket)
+{
+   if(!PositionSelectByTicket(ticket)) return;
+   string sym=PositionGetString(POSITION_SYMBOL);
+   long   magic=(long)PositionGetInteger(POSITION_MAGIC);
+   long   ptype=PositionGetInteger(POSITION_TYPE);
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_DEAL; req.position=ticket;
+   req.symbol=sym; req.volume=PositionGetDouble(POSITION_VOLUME);
+   req.deviation=20; req.magic=magic; req.comment="CLOSE_ONE";
+   req.type_filling=ORDER_FILLING_IOC;
+   if(ptype==POSITION_TYPE_BUY)
+   { req.type=ORDER_TYPE_SELL; req.price=SymbolInfoDouble(sym,SYMBOL_BID); }
+   else
+   { req.type=ORDER_TYPE_BUY;  req.price=SymbolInfoDouble(sym,SYMBOL_ASK); }
+   OrderSend(req,res);
+}
+
+void CloseAllSymbolsPositions()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+     ClosePosition(t); }
+}
+
+void _SendLimitManual(int si, ENUM_ORDER_TYPE ot, double lots, double lp)
+{
+   if(si<0||si>=g_SymCount) return;
+   string sym=g_Symbols[si].name;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(lp<=0) lp=NormalizeDouble((ask+bid)/2.0,dg);
+   lp=NormalizeDouble(lp,dg);
+   int posType=(ot==ORDER_TYPE_BUY_LIMIT||ot==ORDER_TYPE_BUY_STOP)?
+               POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   double sl=CalcSL(sym,si,lp,posType);
+   double tp=CalcTP(sym,si,lp,posType);
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_PENDING; req.symbol=sym;
+   req.volume=lots; req.type=ot; req.price=lp;
+   req.sl=sl; req.tp=tp; req.magic=MagicManual(si);
+   req.comment=StringFormat("%s_%s_MAN_LMT",InpComment,sym);
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
+      Print("ERROR LimitManual [",sym,"]: ",res.retcode);
+}
+
+//+------------------------------------------------------------------+
+//| SYNC TRADES                                                      |
+//+------------------------------------------------------------------+
+void SyncAllTrades()
+{
+   ulong  pTkt[]; bool pAdv[],pMov[],pMan[];
+   int    pCR[],pCV[],pSid[],pSi[];
+   ulong  pGrp[]; int pType[];
+   double pOP[],pSL[],pTP[];
+   int pN=g_TradeCount;
+   ArrayResize(pTkt,pN);  ArrayResize(pAdv,pN);  ArrayResize(pMov,pN);
+   ArrayResize(pCR,pN);   ArrayResize(pCV,pN);   ArrayResize(pGrp,pN);
+   ArrayResize(pType,pN); ArrayResize(pOP,pN);   ArrayResize(pSL,pN);
+   ArrayResize(pTP,pN);   ArrayResize(pMan,pN);  ArrayResize(pSid,pN);
+   ArrayResize(pSi,pN);
+   for(int i=0;i<pN;i++)
+   { pTkt[i]=g_Trades[i].ticket;    pAdv[i]=g_Trades[i].advActive;
+     pMov[i]=g_Trades[i].slMoved;   pCR[i]=g_Trades[i].CR_level;
+     pCV[i]=g_Trades[i].CV_level;   pGrp[i]=g_Trades[i].splitGroupId;
+     pType[i]=g_Trades[i].orderType;pOP[i]=g_Trades[i].openPrice;
+     pSL[i]=g_Trades[i].sl;         pTP[i]=g_Trades[i].tp;
+     pMan[i]=g_Trades[i].isManual;  pSid[i]=g_Trades[i].strategyId;
+     pSi[i]=g_Trades[i].symbolIdx; }
+   g_TradeCount=0; ArrayResize(g_Trades,0);
+   for(int i=0;i<PositionsTotal();i++)
+   { ulong t=PositionGetTicket(i);
+     if(t==0||!PositionSelectByTicket(t)) continue;
+     string sym=PositionGetString(POSITION_SYMBOL);
+     long   magic=(long)PositionGetInteger(POSITION_MAGIC);
+     if(!IsAnyMagic(magic)) continue;
+     int symIdx=-1;
+     for(int s=0;s<g_SymCount;s++) if(g_Symbols[s].name==sym){symIdx=s;break;}
+     if(symIdx<0) continue;
+     int sid=-1;
+     for(int s=0;s<STRAT_COUNT;s++)
+        if(magic==GetStrategyMagic(symIdx,s)){sid=s;break;}
+     bool isMan=(magic==MagicManual(symIdx));
+     int idx=g_TradeCount; ArrayResize(g_Trades,idx+1);
+     g_Trades[idx].ticket    =t;
+     g_Trades[idx].isPending =false;
+     g_Trades[idx].isManual  =isMan;
+     g_Trades[idx].strategyId=sid;
+     g_Trades[idx].symbolIdx =symIdx;
+     g_Trades[idx].orderType =(int)PositionGetInteger(POSITION_TYPE);
+     g_Trades[idx].lots      =PositionGetDouble(POSITION_VOLUME);
+     g_Trades[idx].openPrice =PositionGetDouble(POSITION_PRICE_OPEN);
+     g_Trades[idx].profit    =PositionGetDouble(POSITION_PROFIT);
+     g_Trades[idx].splitGroupId=0;
+     double srvSL=PositionGetDouble(POSITION_SL);
+     double srvTP=PositionGetDouble(POSITION_TP);
+     bool found=false;
+     for(int s=0;s<pN;s++)
+     { if(pTkt[s]!=t) continue;
+       g_Trades[idx].advActive    =pAdv[s];
+       g_Trades[idx].slMoved      =pMov[s];
+       g_Trades[idx].CR_level     =pCR[s];
+       g_Trades[idx].CV_level     =pCV[s];
+       g_Trades[idx].splitGroupId =pGrp[s];
+       g_Trades[idx].sl=(pMov[s]&&pSL[s]>0)?pSL[s]:((srvSL>0)?srvSL:pSL[s]);
+       g_Trades[idx].tp=(srvTP>0)?srvTP:pTP[s];
+       found=true; break; }
+     if(!found)
+     { int cvN=(sid>=0)?g_SysState[symIdx].strategies[sid].CV:1;
+       int crN=(sid>=0)?g_SysState[symIdx].strategies[sid].CR:1;
+       g_Trades[idx].CR_level =crN; g_Trades[idx].CV_level=cvN;
+       g_Trades[idx].advActive=IsTrailingActive(symIdx,sid);
+       g_Trades[idx].slMoved  =false; g_Trades[idx].splitGroupId=0;
+       g_Trades[idx].sl=srvSL; g_Trades[idx].tp=srvTP; }
+     g_TradeCount++; }
+   for(int s=0;s<pN;s++)
+   { int pt=pType[s];
+     if(pt==ORDER_TYPE_BUY_LIMIT||pt==ORDER_TYPE_SELL_LIMIT||
+        pt==ORDER_TYPE_BUY_STOP||pt==ORDER_TYPE_SELL_STOP) continue;
+     bool still=false;
+     for(int k=0;k<g_TradeCount;k++) if(g_Trades[k].ticket==pTkt[s]){still=true;break;}
+     if(!still)
+     { bool q=false;
+       for(int qq=0;qq<g_ClosedCount;qq++) if(g_ClosedQueue[qq].ticket==pTkt[s]){q=true;break;}
+       if(!q)
+       { int qi=g_ClosedCount; ArrayResize(g_ClosedQueue,qi+1);
+         g_ClosedQueue[qi].ticket    =pTkt[s];
+         g_ClosedQueue[qi].openPrice =pOP[s];
+         g_ClosedQueue[qi].sl        =pSL[s];
+         g_ClosedQueue[qi].tp        =pTP[s];
+         g_ClosedQueue[qi].CR_level  =pCR[s];
+         g_ClosedQueue[qi].CV_level  =pCV[s];
+         g_ClosedQueue[qi].slMoved   =pMov[s];
+         g_ClosedQueue[qi].orderType =pt;
+         g_ClosedQueue[qi].dealReason=-1;
+         g_ClosedQueue[qi].isManual  =pMan[s];
+         g_ClosedQueue[qi].strategyId=pSid[s];
+         g_ClosedQueue[qi].symbolIdx =pSi[s];
+         g_ClosedCount++;
+         string sn=(pSid[s]>=0)?g_SysState[pSi[s]].strategies[pSid[s]].name:"MAN";
+         Print("Cierre detectado #",pTkt[s]," [",
+               (pSi[s]>=0?g_Symbols[pSi[s]].name:"?"),"/",sn,"]"); } } }
+   if(g_ScrollOffset>=g_TradeCount&&g_ScrollOffset>0)
+      g_ScrollOffset=MathMax(0,g_TradeCount-1);
+}
+
+//+------------------------------------------------------------------+
+//| PROCESAR CIERRES                                                 |
+//+------------------------------------------------------------------+
+void ProcessClosedQueue()
+{
+   if(g_ClosedCount==0) return;
+   HistorySelect(TimeCurrent()-86400,TimeCurrent());
+   ClosedSnap pending[]; int pc=0; bool anyP=false;
+   for(int q=0;q<g_ClosedCount;q++)
+   { ClosedSnap snap=g_ClosedQueue[q]; if(snap.ticket==0) continue;
+     double cPL=0,cPr=0; long dR=-1; bool found=false;
+     for(int d=HistoryDealsTotal()-1;d>=0;d--)
+     { ulong dt=HistoryDealGetTicket(d); if(dt==0) continue;
+       if(!IsAnyMagic((long)HistoryDealGetInteger(dt,DEAL_MAGIC))) continue;
+       if((long)HistoryDealGetInteger(dt,DEAL_ENTRY)!=DEAL_ENTRY_OUT) continue;
+       if((long)HistoryDealGetInteger(dt,DEAL_POSITION_ID)!=(long)snap.ticket) continue;
+       cPL=HistoryDealGetDouble(dt,DEAL_PROFIT);
+       cPr=HistoryDealGetDouble(dt,DEAL_PRICE);
+       dR=(long)HistoryDealGetInteger(dt,DEAL_REASON);
+       found=true; break; }
+     if(!found){ArrayResize(pending,pc+1);pending[pc]=snap;pc++;continue;}
+     int si=snap.symbolIdx; int st=snap.strategyId;
+     double tol=(si>=0)?SymbolInfoDouble(g_Symbols[si].name,SYMBOL_POINT)*5:0.00001;
+     bool hTP=(dR==DEAL_REASON_TP)||(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
+     bool hSL=(dR==DEAL_REASON_SL)||(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
+     if(!hTP&&!hSL&&!snap.slMoved){hTP=(cPL>0);hSL=(cPL<=0);}
+     string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
+     string sym=(si>=0)?g_Symbols[si].name:"?";
+     Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL);
+     if(!snap.isManual&&si>=0&&st>=0&&g_SysState[si].strategies[st].isLive)
+     { if(hTP) OnStrategyLiveTP(si,st);
+       else    OnStrategyLiveSL(si,st,snap.slMoved); }
+     anyP=true; }
+   ArrayResize(g_ClosedQueue,pc);
+   for(int i=0;i<pc;i++) g_ClosedQueue[i]=pending[i];
+   g_ClosedCount=pc;
+   if(anyP){SaveState(); if(!IsTester()) RebuildPanel();}
+}//+------------------------------------------------------------------+
+//| HELPERS GRÁFICOS                                                 |
+//+------------------------------------------------------------------+
+void ObjRect(string n,int x,int y,int w,int h,color bg,color brd,int bw=1)
+{
+   ObjectDelete(0,n);
+   ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,brd);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_WIDTH,bw);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,0);
+}
+
+void ObjLbl(string n,int x,int y,string txt,color clr,int fs=9,
+            string font="Arial Bold",ENUM_ANCHOR_POINT anc=ANCHOR_LEFT_UPPER)
+{
+   ObjectDelete(0,n);
+   ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);
+   ObjectSetString(0,n,OBJPROP_FONT,font);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_ANCHOR,anc);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,10);
+}
+
+void ObjBtn(string n,int x,int y,int w,int h,string txt,
+            color bg,color fg,int fs=9,string font="Arial Bold")
+{
+   ObjectDelete(0,n);
+   ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,fg);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);
+   ObjectSetString(0,n,OBJPROP_FONT,font);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,20);
+   ObjectSetInteger(0,n,OBJPROP_STATE,false);
+}
+
+void ObjEdit(string n,int x,int y,int w,int h,string txt,color bg,color fg,int fs=10)
+{
+   ObjectDelete(0,n);
+   ObjectCreate(0,n,OBJ_EDIT,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,fg);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);
+   ObjectSetString(0,n,OBJPROP_FONT,"Arial Bold");
+   ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_CENTER);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,30);
+   ObjectSetInteger(0,n,OBJPROP_READONLY,false);
+}
+
+void ObjSep(string n,int x,int y,int w)
+{ ObjRect(n,x,y,w,1,C'60,60,90',C'60,60,90',0); }
+
+string GetTypeName(int otype,bool isPending)
+{
+   if(!isPending) return(otype==POSITION_TYPE_BUY)?"BUY":"SELL";
+   switch(otype)
+   { case ORDER_TYPE_BUY_LIMIT:  return "BUY LMT";
+     case ORDER_TYPE_SELL_LIMIT: return "SELL LMT";
+     case ORDER_TYPE_BUY_STOP:   return "BUY STP";
+     case ORDER_TYPE_SELL_STOP:  return "SELL STP";
+     default:                    return "PENDING"; }
+}
+
+color GetTypeColor(int otype,bool isPending)
+{
+   if(!isPending) return(otype==POSITION_TYPE_BUY)?clrLimeGreen:clrTomato;
+   return(otype==ORDER_TYPE_BUY_LIMIT||otype==ORDER_TYPE_BUY_STOP)?
+          C'100,220,100':C'220,100,100';
+}
+
+//+------------------------------------------------------------------+
+//| PANEL — DRAG ZONE                                                |
+//+------------------------------------------------------------------+
+void BuildDragZone()
+{
+   ObjectDelete(0,DRAG_ZONE);
+   ObjectCreate(0,DRAG_ZONE,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_XDISTANCE,PNL_X);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_YDISTANCE,PNL_Y);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_XSIZE,PNL_W);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_YSIZE,TITLE_H);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_BGCOLOR,C'8,8,42');
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_BORDER_COLOR,C'70,70,200');
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_BACK,false);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,DRAG_ZONE,OBJPROP_ZORDER,5);
+}
+
+//+------------------------------------------------------------------+
+//| PANEL — ESTRUCTURA ESTÁTICA                                      |
+//+------------------------------------------------------------------+
+void BuildStaticStructure()
+{
+   int x=PNL_X,y=PNL_Y,W=PNL_W;
+
+   ObjRect(PFX+"BG",x,y,W,PNL_H,C'15,15,25',C'60,60,150',2);
+
+   BuildDragZone();
+   ObjLbl(OBJ_TITLE,x+W/2,y+10,
+          "▲▼  GESTIÓN CUANTITATIVA  v8.00  ▲▼",
+          clrGold,10,"Arial Bold",ANCHOR_CENTER);
+   ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
+          C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
+
+   // ── InfoBar ──────────────────────────────────────────────────
+   int ibY=y+TITLE_H;
+   ObjRect(PFX+"IB_BG",x,ibY,W,INFOBAR_H,C'12,18,12',C'35,75,35',1);
+
+   int cw=W/5;
+
+   ObjRect(PFX+"IB_C0",x+2,ibY+2,cw-2,INFOBAR_H-4,C'16,24,16',C'40,80,40',1);
+   ObjLbl(PFX+"IB_H0",x+2+cw/2,ibY+5,"P&L FLOTANTE",C'150,150,150',6,"Arial",ANCHOR_CENTER);
+   ObjLbl(OBJ_IB_PL,  x+2+cw/2,ibY+18,"---",clrWhite,10,"Arial Bold",ANCHOR_CENTER);
+
+   int c2x=x+cw+2;
+   ObjRect(PFX+"IB_C1",c2x,ibY+2,cw-2,INFOBAR_H-4,C'16,24,16',C'40,80,40',1);
+   ObjLbl(PFX+"IB_H1",c2x+cw/2,ibY+5,"EQUIDAD",C'150,150,150',6,"Arial",ANCHOR_CENTER);
+   ObjLbl(OBJ_IB_EQ,  c2x+cw/2,ibY+18,"---",clrWhite,10,"Arial Bold",ANCHOR_CENTER);
+
+   int c3x=x+2*cw+2;
+   ObjRect(PFX+"IB_C2",c3x,ibY+2,cw-2,INFOBAR_H-4,C'16,24,16',C'40,80,40',1);
+   ObjLbl(PFX+"IB_H2",c3x+cw/2,ibY+5,"CV LIVE",C'150,150,150',6,"Arial",ANCHOR_CENTER);
+   ObjLbl(OBJ_IB_CV,  c3x+cw/2,ibY+18,"---",clrWhite,10,"Arial Bold",ANCHOR_CENTER);
+
+   int c4x=x+3*cw+2;
+   ObjRect(PFX+"IB_C3",c4x,ibY+2,cw-2,INFOBAR_H-4,C'16,24,16',C'40,80,40',1);
+   ObjLbl(PFX+"IB_H3",c4x+cw/2,ibY+5,"CV MAX",C'150,150,150',6,"Arial",ANCHOR_CENTER);
+   ObjLbl(OBJ_IB_CVMAX,c4x+cw/2,ibY+18,"---",clrGold,10,"Arial Bold",ANCHOR_CENTER);
+
+   int c5x=x+4*cw+2;
+   int c5w=W-4*cw-4;
+   ObjRect(PFX+"IB_C4",c5x,ibY+2,c5w,INFOBAR_H-4,C'16,16,28',C'50,50,90',1);
+   ObjLbl(PFX+"IB_H4",c5x+c5w/2,ibY+5,"PÉRD.DÍA",C'150,150,150',6,"Arial",ANCHOR_CENTER);
+   ObjLbl(OBJ_IB_CB,  c5x+c5w/2,ibY+18,"---",C'120,120,180',9,"Arial Bold",ANCHOR_CENTER);
+   ObjRect(PFX+"IB_CBBG",c5x+2,ibY+38,c5w-4,8,C'25,25,35',C'50,50,70',1);
+   ObjRect(PFX+"IB_CBFG",c5x+2,ibY+38,2,     8,clrGray,clrGray,0);
+
+   // ── Barra navegación símbolos ─────────────────────────────────
+   int sbY=ibY+INFOBAR_H;
+   ObjRect(PFX+"SB_BG",x,sbY,W,SYMBAR_H,C'10,10,22',C'40,40,120',1);
+   ObjBtn(PFX+"SB_PREV",x+2,      sbY+3,28,24,"◄",C'25,25,55',clrWhite,11,"Arial Bold");
+   ObjBtn(PFX+"SB_NEXT",x+W-30,   sbY+3,28,24,"►",C'25,25,55',clrWhite,11,"Arial Bold");
+   ObjRect(PFX+"SB_NMBG",x+32,sbY+3,W-64,24,C'18,18,40',C'55,55,130',1);
+   ObjLbl(PFX+"SB_NAME",x+W/2,sbY+8,"---",clrGold,10,"Arial Bold",ANCHOR_CENTER);
+   ObjLbl(PFX+"SB_IDX", x+W-32,sbY+8,"---",C'100,100,150',7,"Arial",ANCHOR_RIGHT_UPPER);
+
+   // ── Tabs ──────────────────────────────────────────────────────
+   int tabY=sbY+SYMBAR_H;
+   int tabW=W/N_TABS;
+   for(int t=0;t<N_TABS;t++)
+   {
+      bool active=(t==ActiveTab);
+      ObjBtn(PFX+"TAB"+IntegerToString(t),
+             x+t*tabW,tabY,tabW,TAB_H,TAB_NAMES[t],
+             active?C'35,35,75':C'18,18,35',
+             active?clrGold:C'140,140,160',7,"Arial Bold");
+      if(active)
+         ObjRect(PFX+"TABU"+IntegerToString(t),
+                 x+t*tabW+2,tabY+TAB_H-3,tabW-4,3,clrGold,clrGold,0);
+   }
+
+   ObjRect(PFX+"CONTENT_BG",x,tabY+TAB_H,W,CONTENT_H,C'18,18,28',C'50,50,100',1);
+}
+
+//+------------------------------------------------------------------+
+//| INFOBAR                                                          |
+//+------------------------------------------------------------------+
+void UpdateInfoBar()
+{
+   int si=g_PanelSymIdx;
+   int    dispCV=1, dispCVMax=0;
+   double dispLot=0.01;
+
+   if(si>=0&&si<g_SymCount)
+   {
+      int alive=g_SysState[si].activeLiveStrategy;
+      if(alive>=0)
+      { dispCV  = g_SysState[si].strategies[alive].CV;
+        dispLot = GetLotByCR(si,g_SysState[si].strategies[alive].CR); }
+      for(int s=0;s<STRAT_COUNT;s++)
+         if(g_SysState[si].strategies[s].CV_Max>dispCVMax)
+            dispCVMax=g_SysState[si].strategies[s].CV_Max;
+   }
+
+   double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double fPL = eq-bal;
+
+   ObjectSetString(0,OBJ_IB_PL,OBJPROP_TEXT,
+                   StringFormat("%s%.2f",(fPL>=0)?"+":"",fPL));
+   ObjectSetInteger(0,OBJ_IB_PL,OBJPROP_COLOR,(fPL>=0)?clrLimeGreen:clrTomato);
+
+   ObjectSetString(0,OBJ_IB_EQ,OBJPROP_TEXT,StringFormat("%.2f",eq));
+   ObjectSetInteger(0,OBJ_IB_EQ,OBJPROP_COLOR,(eq>=bal)?clrLimeGreen:clrTomato);
+
+   ObjectSetString(0,OBJ_IB_CV,   OBJPROP_TEXT,StringFormat("%d",dispCV));
+   ObjectSetString(0,OBJ_IB_CVMAX,OBJPROP_TEXT,StringFormat("%d",dispCVMax));
+
+   double lossPct = GetDailyLossPct();
+   double limPct  = InpMaxDailyLossPct;
+   string cbTxt;
+   color  cbClr;
+   if(g_CircuitBreakerOn)
+   { cbTxt="⛔ BLOQUEADO"; cbClr=clrTomato; }
+   else
+   { cbTxt=StringFormat("%.2f%% / %.1f%%",lossPct,limPct);
+     cbClr=(lossPct>=limPct*0.8)?clrOrange:
+           (lossPct>=limPct*0.5)?clrYellow:C'120,180,120'; }
+   ObjectSetString(0,OBJ_IB_CB, OBJPROP_TEXT,cbTxt);
+   ObjectSetInteger(0,OBJ_IB_CB,OBJPROP_COLOR,cbClr);
+
+   // Mini barra CB
+   int W=PNL_W;
+   int cw=W/5;
+   int c5x=PNL_X+4*cw+2;
+   int c5w=W-4*cw-4;
+   int ibY=PNL_Y+TITLE_H;
+   int barW=MathMax(2,(int)MathMin((double)(c5w-4)*lossPct/MathMax(limPct,0.001),
+                                    (double)(c5w-4)));
+   color barC=g_CircuitBreakerOn?clrTomato:
+              (lossPct>=limPct*0.8)?clrTomato:
+              (lossPct>=limPct*0.5)?clrOrange:clrDodgerBlue;
+   ObjRect(PFX+"IB_CBFG",c5x+2,ibY+38,barW,8,barC,barC,0);
+
+   // Barra de símbolos
+   if(si>=0&&si<g_SymCount)
+   {
+      bool hasLive=g_SysState[si].hasLive;
+      ObjectSetString(0,PFX+"SB_NAME",OBJPROP_TEXT,g_Symbols[si].name);
+      ObjectSetString(0,PFX+"SB_IDX", OBJPROP_TEXT,
+                      StringFormat("%d/%d",si+1,g_SymCount));
+      ObjectSetInteger(0,PFX+"SB_NAME",OBJPROP_COLOR,
+                       hasLive?clrLimeGreen:clrGold);
+   }
+   else
+   {
+      ObjectSetString(0,PFX+"SB_NAME",OBJPROP_TEXT,"Sin símbolo");
+      ObjectSetString(0,PFX+"SB_IDX", OBJPROP_TEXT,"0/0");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| TABS — GESTIÓN                                                   |
+//+------------------------------------------------------------------+
+void RefreshTabBar()
+{
+   int x=PNL_X,W=PNL_W,tabW=W/N_TABS;
+   int tabY=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H;
+   for(int t=0;t<N_TABS;t++)
+   {
+      bool active=(t==ActiveTab);
+      ObjectSetInteger(0,PFX+"TAB"+IntegerToString(t),OBJPROP_BGCOLOR,
+                       active?C'35,35,75':C'18,18,35');
+      ObjectSetInteger(0,PFX+"TAB"+IntegerToString(t),OBJPROP_COLOR,
+                       active?clrGold:C'140,140,160');
+      if(active)
+         ObjRect(PFX+"TABU"+IntegerToString(t),
+                 x+t*tabW+2,tabY+TAB_H-3,tabW-4,3,clrGold,clrGold,0);
+      else
+         ObjectDelete(0,PFX+"TABU"+IntegerToString(t));
+   }
+}
+
+void DeleteContentObjects()
+{
+   string pfxList[5]={PFX_OP,PFX_ACC,PFX_POS,PFX_CFG,PFX_EST};
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i,0,-1);
+      for(int p=0;p<5;p++)
+         if(StringFind(name,pfxList[p])==0){ObjectDelete(0,name);break;}
+   }
+   ObjectDelete(0,EDIT_PRICE_NAME);
+}
+
+void DeletePanel()
+{
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i,0,-1);
+      if(StringFind(name,PFX)==0) ObjectDelete(0,name);
+   }
+   ObjectDelete(0,EDIT_PRICE_NAME);
+   ObjectDelete(0,DRAG_ZONE);
+   ChartRedraw();
+}
+
+void RebuildPanel()
+{
+   DeletePanel();
+   BuildStaticStructure();
+   RebuildActiveTab();
+   UpdateInfoBar();
+   ChartRedraw();
+}
+
+void RebuildActiveTab()
+{
+   DeleteContentObjects();
+   RefreshTabBar();
+   switch(ActiveTab)
+   {
+      case TAB_OPERAR: BuildTabOperar();      break;
+      case TAB_CUENTA: BuildTabCuenta();      break;
+      case TAB_POSIC:  BuildTabPosiciones();  break;
+      case TAB_CONFIG: BuildTabConfig();      break;
+      case TAB_ESTRAT: BuildTabEstrategias(); break;
+   }
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| TAB 0 — OPERAR                                                   |
+//+------------------------------------------------------------------+
+void BuildTabOperar()
+{
+   int si=g_PanelSymIdx;
+   int x=PNL_X,W=PNL_W;
+   int y=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H+6;
+   int cx=x+6,cw=W-12;
+   int dg=(si>=0&&si<g_SymCount)?
+          (int)SymbolInfoInteger(g_Symbols[si].name,SYMBOL_DIGITS):5;
+
+   // Alerta Circuit Breaker
+   if(g_CircuitBreakerOn)
+   {
+      ObjRect(PFX_OP+"CB_ALERT",cx,y,cw,36,C'40,5,5',C'180,20,20',2);
+      ObjLbl(PFX_OP+"CB_TXT1",cx+cw/2,y+5,
+             "⛔  CIRCUIT BREAKER ACTIVO",
+             clrTomato,10,"Arial Bold",ANCHOR_CENTER);
+      ObjLbl(PFX_OP+"CB_TXT2",cx+cw/2,y+22,
+             "Trading bloqueado — Reanuda al 00:00 servidor",
+             C'200,100,100',7,"Arial",ANCHOR_CENTER);
+      y+=40;
+   }
+
+   if(si<0||si>=g_SymCount)
+   {
+      ObjLbl(PFX_OP+"NOSYM",cx+cw/2,y+10,
+             "Sin símbolo seleccionado",clrYellow,9,"Arial Bold",ANCHOR_CENTER);
+      return;
+   }
+
+   int alive=g_SysState[si].activeLiveStrategy;
+   string liveStr=(alive>=0)?
+      StringFormat("★ LIVE: %s  |  1:2: %s",
+                   g_SysState[si].strategies[alive].name,
+                   IsTrailingActive(si,alive)?"ON":"OFF")
+      :"◌  Sin estrategia LIVE activa";
+   color liveC =(alive>=0)?clrLimeGreen:clrYellow;
+   color liveBG=(alive>=0)?C'8,28,8':C'22,20,10';
+   color liveBD=(alive>=0)?C'30,110,30':C'100,90,20';
+   ObjRect(PFX_OP+"LIVE_BG",cx,y,cw,26,liveBG,liveBD,1);
+   ObjLbl(PFX_OP+"LIVE_ST",cx+cw/2,y+7,liveStr,liveC,9,"Arial Bold",ANCHOR_CENTER);
+   y+=30;
+
+   if(alive>=0)
+   {
+      ObjRect(PFX_OP+"CVLIVE_BG",cx,y,cw,44,C'12,22,12',C'35,80,35',1);
+      ObjLbl(PFX_OP+"CVLIVE_TXT",cx+8,y+4,"CV (virtual):",C'150,150,150',7,"Arial");
+      ObjLbl(PFX_OP+"CVLIVE_VAL",cx+cw/2,y+4,
+             StringFormat("%d",g_SysState[si].strategies[alive].CV),
+             clrLimeGreen,14,"Arial Bold",ANCHOR_CENTER);
+      ObjLbl(PFX_OP+"CRLIVE_TXT",cx+8,y+26,"CR → Lotaje:",C'150,150,150',7,"Arial");
+      ObjLbl(PFX_OP+"CRLIVE_VAL",cx+cw/2,y+26,
+             StringFormat("CR %d  →  %.2f lots",
+                          g_SysState[si].strategies[alive].CR,
+                          GetLotByCR(si,g_SysState[si].strategies[alive].CR)),
+             clrDodgerBlue,10,"Arial Bold",ANCHOR_CENTER);
+      y+=48;
+   }
+   else
+   {
+      ObjRect(PFX_OP+"NOSIM_BG",cx,y,cw,26,C'20,20,30',C'50,50,80',1);
+      ObjLbl(PFX_OP+"NOSIM_TXT",cx+cw/2,y+7,
+             StringFormat("X=%d  →  LIVE cuando CV>=%d",
+                          InpXActivacion,InpXActivacion+1),
+             C'120,120,180',8,"Arial Bold",ANCHOR_CENTER);
+      y+=30;
+   }
+
+   // SL / TP / RR
+   ObjRect(PFX_OP+"SLTP_BG",cx,y,cw,30,C'22,22,38',C'50,50,85',1);
+   double slP=SymSL(si), slOff=SymSLOffset(si), tpP=SymTP(si);
+   double slReal=slP-slOff;
+   double rr=(slP>0)?tpP/slP:0;
+   ObjLbl(PFX_OP+"LBL_SL", cx+4,        y+4, "SL cálc.", clrTomato,    6,"Arial");
+   ObjLbl(PFX_OP+"VAL_SL", cx+4,        y+16,StringFormat("%.0fpt",slP),clrTomato,9,"Arial Bold");
+   ObjLbl(PFX_OP+"LBL_SLR",cx+cw/4,    y+4, "SL real",  clrOrange,    6,"Arial");
+   ObjLbl(PFX_OP+"VAL_SLR",cx+cw/4,    y+16,StringFormat("%.0fpt",slReal),clrOrange,9,"Arial Bold");
+   ObjLbl(PFX_OP+"LBL_TP", cx+cw/2,    y+4, "TP",        clrDodgerBlue,6,"Arial");
+   ObjLbl(PFX_OP+"VAL_TP", cx+cw/2,    y+16,StringFormat("%.0fpt",tpP),clrDodgerBlue,9,"Arial Bold");
+   ObjLbl(PFX_OP+"LBL_RR", cx+3*cw/4,  y+4, "R:R",       clrMagenta,   6,"Arial");
+   ObjLbl(PFX_OP+"VAL_RR", cx+3*cw/4,  y+16,StringFormat("1:%.1f",rr), clrMagenta,9,"Arial Bold");
+   y+=34;
+
+   // Base y lotaje
+   ObjRect(PFX_OP+"BASE_BG",cx,y,cw,28,C'14,22,14',C'35,75,35',1);
+   ObjLbl(PFX_OP+"BASE_L",cx+6,y+4,"Base capital:",C'140,140,180',7,"Arial");
+   ObjLbl(PFX_OP+"BASE_V",cx+cw-6,y+4,
+          StringFormat("%.2f  (Bal.máx: %.2f)",g_BaseCapital,g_BaseMaxBalance),
+          clrGold,8,"Arial Bold",ANCHOR_RIGHT_UPPER);
+   ObjLbl(PFX_OP+"BASE_L2",cx+6,y+16,"Lot CR1:",C'140,140,180',7,"Arial");
+   ObjLbl(PFX_OP+"BASE_V2",cx+cw-6,y+16,
+          StringFormat("%.4f lots  (Riesgo: %.6f%%)",GetLotByCR(si,1),g_RiskTable[0]),
+          clrLimeGreen,8,"Arial Bold",ANCHOR_RIGHT_UPPER);
+   y+=32;
+
+   ObjSep(PFX_OP+"SEP0",cx,y,cw); y+=6;
+
+   // Precio límite
+   ObjLbl(PFX_OP+"PH",cx+4,y,"PRECIO LÍMITE",C'120,120,160',7,"Arial Bold"); y+=14;
+   ObjEdit(EDIT_PRICE_NAME,cx,y,cw,26,
+           (g_LimitPrice>0)?DoubleToString(g_LimitPrice,dg):"0",
+           C'25,25,42',clrWhite,10);
+   y+=30;
+   int tw=(cw-8)/3;
+   ObjBtn(PFX_OP+"ASK",cx,           y,tw,22,"= ASK",C'0,60,100',  clrWhite,8,"Arial");
+   ObjBtn(PFX_OP+"BID",cx+tw+4,      y,tw,22,"= BID",C'100,50,0',  clrWhite,8,"Arial");
+   ObjBtn(PFX_OP+"RST",cx+2*(tw+4),  y,tw,22,"RESET",C'50,50,50',  clrWhite,8,"Arial");
+   y+=26;
+
+   ObjSep(PFX_OP+"SEP1",cx,y,cw); y+=6;
+
+   // Operación manual
+   ObjLbl(PFX_OP+"MAN_H",cx+4,y,"OPERACIÓN MANUAL",C'140,140,80',7,"Arial Bold"); y+=14;
+   int bw2=(cw-4)/2;
+   ObjBtn(PFX_OP+"BUY",    cx,        y,bw2,32,"▲  BUY",  C'0,120,0', clrWhite,10);
+   ObjBtn(PFX_OP+"SELL",   cx+bw2+4,  y,bw2,32,"▼  SELL", C'170,0,0', clrWhite,10);
+   y+=36;
+   ObjBtn(PFX_OP+"BUYLMT", cx,        y,bw2,24,"BUY LIMIT",  C'0,80,60', clrWhite,8);
+   ObjBtn(PFX_OP+"SELLLMT",cx+bw2+4,  y,bw2,24,"SELL LIMIT", C'120,40,0',clrWhite,8);
+   y+=28;
+   ObjSep(PFX_OP+"SEP2",cx,y,cw); y+=6;
+   ObjBtn(PFX_OP+"CLOSEALL",cx,y,cw,24,
+          StringFormat("✕  CERRAR TODO [%s]",g_Symbols[si].name),
+          C'80,0,80',clrWhite,8);
+}
+
+//+------------------------------------------------------------------+
+//| TAB 1 — CUENTA                                                   |
+//+------------------------------------------------------------------+
+void BuildCuentaRow(string pfx,int cx,int ry,int cw,
+                    string hdr,string val,color valC)
+{
+   ObjRect(pfx+"BG",cx,ry,cw,38,C'18,22,32',C'40,50,80',1);
+   ObjLbl(pfx+"H",cx+8,ry+5,hdr,C'120,120,150',7,"Arial");
+   ObjLbl(pfx+"V",cx+cw-8,ry+12,val,valC,12,"Arial Bold",ANCHOR_RIGHT_UPPER);
+}
+
+void BuildTabCuenta()
+{
+   int x=PNL_X,W=PNL_W;
+   int y=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H+6;
+   int cx=x+6,cw=W-12;
+
+   string cur=AccountInfoString(ACCOUNT_CURRENCY);
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq =AccountInfoDouble(ACCOUNT_EQUITY);
+   double mrg=AccountInfoDouble(ACCOUNT_MARGIN);
+   double fm =AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double mLv=(mrg>0)?(eq/mrg)*100.0:0.0;
+   double fPL=eq-bal;
+   double uPct=(bal>0)?MathMin(mrg/bal,1.0):0.0;
+
+   BuildCuentaRow(PFX_ACC+"BAL",cx,y,cw,"BALANCE",
+                  StringFormat("%.2f  %s",bal,cur),clrWhite); y+=42;
+   BuildCuentaRow(PFX_ACC+"EQ",cx,y,cw,"EQUIDAD",
+                  StringFormat("%.2f  %s",eq,cur),
+                  (eq>=bal)?clrLimeGreen:clrTomato); y+=42;
+   BuildCuentaRow(PFX_ACC+"PL",cx,y,cw,"P&L FLOTANTE",
+                  StringFormat("%s%.2f  %s",(fPL>=0)?"+":"",fPL,cur),
+                  (fPL>=0)?clrLimeGreen:clrTomato); y+=42;
+   BuildCuentaRow(PFX_ACC+"MRG",cx,y,cw,"MARGEN USADO",
+                  StringFormat("%.2f  %s",mrg,cur),clrOrange); y+=42;
+   BuildCuentaRow(PFX_ACC+"FM",cx,y,cw,"MARGEN LIBRE",
+                  StringFormat("%.2f  %s",fm,cur),
+                  (fm<bal*0.20)?clrTomato:clrLimeGreen); y+=42;
+
+   string mTxt; color mC;
+   if(mrg<=0)       {mTxt="N/A";                     mC=C'120,120,120';}
+   else if(mLv>=200){mTxt=StringFormat("%.0f%%",mLv); mC=clrLimeGreen;}
+   else if(mLv>=120){mTxt=StringFormat("%.0f%%",mLv); mC=clrYellow;}
+   else if(mLv>=100){mTxt=StringFormat("%.0f%%",mLv); mC=clrOrange;}
+   else             {mTxt=StringFormat("%.0f%%",mLv); mC=clrTomato;}
+   BuildCuentaRow(PFX_ACC+"MPC",cx,y,cw,"NIVEL DE MARGEN",mTxt,mC); y+=42;
+
+   ObjRect(PFX_ACC+"BASE_BG",cx,y,cw,38,C'14,22,14',C'35,75,35',1);
+   ObjLbl(PFX_ACC+"BASE_H",cx+8,y+5,"BASE CAPITAL  (dinámica)",C'120,150,120',7,"Arial");
+   ObjLbl(PFX_ACC+"BASE_V",cx+cw-8,y+12,
+          StringFormat("%.2f   Máx.Bal: %.2f",g_BaseCapital,g_BaseMaxBalance),
+          clrGold,10,"Arial Bold",ANCHOR_RIGHT_UPPER); y+=42;
+
+   ObjLbl(PFX_ACC+"BL",cx,y,"Uso de margen / balance:",C'100,100,130',7,"Arial"); y+=14;
+   ObjRect(PFX_ACC+"BARBG",cx,y,cw,14,C'30,30,30',C'55,55,55',1);
+   int fw=(int)MathMax(2,(double)cw*uPct);
+   color bC=(uPct<0.30)?clrLimeGreen:(uPct<0.60)?clrYellow:(uPct<0.80)?clrOrange:clrTomato;
+   ObjRect(PFX_ACC+"BAR",cx,y,fw,14,bC,bC,0);
+   ObjLbl(PFX_ACC+"BPCT",cx+cw/2,y+2,
+          StringFormat("%.1f%%",uPct*100),clrWhite,7,"Arial",ANCHOR_CENTER); y+=20;
+
+   ObjSep(PFX_ACC+"SEP",cx,y,cw); y+=8;
+   string at=(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO)?"DEMO":"REAL";
+   ObjLbl(PFX_ACC+"BRK",cx,y,
+          StringFormat("Broker: %s",AccountInfoString(ACCOUNT_COMPANY)),
+          C'100,100,130',7,"Arial"); y+=14;
+   ObjLbl(PFX_ACC+"ACC",cx,y,
+          StringFormat("Cuenta #%d  [ %s ]",
+                       (int)AccountInfoInteger(ACCOUNT_LOGIN),at),
+          (at=="DEMO")?clrYellow:clrLimeGreen,8,"Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| TAB 2 — POSICIONES                                               |
+//+------------------------------------------------------------------+
+void BuildTabPosiciones()
+{
+   int si=g_PanelSymIdx;
+   int x=PNL_X,W=PNL_W;
+   int y=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H+6;
+   int cx=x+6,cw=W-12;
+   int dg=(si>=0&&si<g_SymCount)?
+          (int)SymbolInfoInteger(g_Symbols[si].name,SYMBOL_DIGITS):5;
+
+   // Filtrar trades del símbolo visible
+   int symTrades[]; int stCount=0;
+   for(int k=0;k<g_TradeCount;k++)
+      if(g_Trades[k].symbolIdx==si)
+      { ArrayResize(symTrades,stCount+1); symTrades[stCount]=k; stCount++; }
+
+   int nT=0,nP=0; double tPL=0;
+   for(int i=0;i<stCount;i++)
+   { int k=symTrades[i];
+     if(g_Trades[k].isPending) nP++;
+     else{ nT++; tPL+=g_Trades[k].profit; } }
+
+   string sym=(si>=0&&si<g_SymCount)?g_Symbols[si].name:"---";
+   bool hasLive=(si>=0&&si<g_SymCount)&&g_SysState[si].hasLive;
+   int  aliveS =(si>=0&&si<g_SymCount)?g_SysState[si].activeLiveStrategy:-1;
+
+   ObjRect(PFX_POS+"HDR",cx,y,cw,44,C'12,22,32',C'30,60,100',1);
+   ObjLbl(PFX_POS+"HDR0",cx+cw/2,y+4,
+          StringFormat("[ %s ]  Abiertas: %d   Pend: %d",sym,nT,nP),
+          C'160,160,220',8,"Arial Bold",ANCHOR_CENTER);
+   ObjLbl(PFX_POS+"HDRPL",cx+cw/2,y+20,
+          StringFormat("P&L:  %s%.2f",(tPL>=0)?"+":"",tPL),
+          (tPL>=0)?clrLimeGreen:clrTomato,10,"Arial Bold",ANCHOR_CENTER);
+
+   string sysStr=hasLive&&aliveS>=0?
+      StringFormat("LIVE: %s  CV=%d  CR=%d  Lot=%.2f",
+                   g_SysState[si].strategies[aliveS].name,
+                   g_SysState[si].strategies[aliveS].CV,
+                   g_SysState[si].strategies[aliveS].CR,
+                   GetLotByCR(si,g_SysState[si].strategies[aliveS].CR))
+      :"Simulando  (sin LIVE)";
+   ObjLbl(PFX_POS+"HDRSYS",cx+8,y+34,sysStr,
+          hasLive?clrLimeGreen:clrYellow,7,"Arial");
+   y+=48;
+
+   if(stCount==0)
+   {
+      ObjRect(PFX_POS+"EMPTY",cx,y,cw,50,C'18,18,28',C'40,40,70',1);
+      ObjLbl(PFX_POS+"ET1",cx+cw/2,y+10,
+             "No hay operaciones para este símbolo",
+             C'100,100,130',8,"Arial",ANCHOR_CENTER);
+      ObjLbl(PFX_POS+"ET2",cx+cw/2,y+28,
+             hasLive?"Esperando señal de entrada":"Estrategias en simulación",
+             C'80,80,110',7,"Arial",ANCHOR_CENTER);
+      return;
+   }
+
+   int rowH=78,maxV=4;
+   int visible=MathMin(stCount-g_ScrollOffset,maxV);
+   for(int v=0;v<visible;v++)
+   {
+      int vi=v+g_ScrollOffset;
+      if(vi>=stCount) break;
+      int k=symTrades[vi];
+      TradeRecord tr=g_Trades[k];
+      string rid=IntegerToString(v);
+      int    st2=tr.strategyId;
+      string sn=(st2>=0&&st2<STRAT_COUNT)?
+                 g_SysState[si].strategies[st2].name:"MAN";
+      bool trailOn=(st2>=0)?IsTrailingActive(si,st2):false;
+
+      color rBG,rBRD;
+      if(tr.isPending)    {rBG=C'22,22,14';rBRD=C'70,70,25';}
+      else if(tr.isManual){rBG=C'14,18,30';rBRD=C'35,55,110';}
+      else if(tr.orderType==POSITION_TYPE_BUY){rBG=C'10,26,14';rBRD=C'25,85,35';}
+      else{rBG=C'28,12,14';rBRD=C'85,25,30';}
+
+      ObjRect(PFX_POS+"ROW"+rid,cx,y,cw,rowH-2,rBG,rBRD,1);
+      color barC=(tr.orderType==POSITION_TYPE_BUY||
+                  tr.orderType==ORDER_TYPE_BUY_LIMIT||
+                  tr.orderType==ORDER_TYPE_BUY_STOP)?clrLimeGreen:clrTomato;
+      if(tr.isManual) barC=clrDodgerBlue;
+      ObjRect(PFX_POS+"BAR"+rid,cx,y,4,rowH-2,barC,barC,0);
+
+      ObjLbl(PFX_POS+"L1"+rid,cx+10,y+4,
+             StringFormat("[%s]  %s  #%d",
+                          sn,GetTypeName(tr.orderType,tr.isPending),(int)tr.ticket),
+             tr.isManual?clrDodgerBlue:GetTypeColor(tr.orderType,tr.isPending),
+             9,"Arial Bold");
+
+      ObjRect(PFX_POS+"T12BG"+rid,cx+cw-52,y+3,48,14,
+              trailOn?(tr.slMoved?C'50,40,0':C'0,60,0'):C'30,30,30',
+              trailOn?(tr.slMoved?C'120,100,0':C'0,120,0'):C'50,50,50',1);
+      ObjLbl(PFX_POS+"T12"+rid,cx+cw-52+24,y+4,
+             tr.slMoved?"PROT.":(trailOn?"1:2 ON":"1:2 OFF"),
+             tr.slMoved?clrGold:(trailOn?clrLimeGreen:C'100,100,100'),
+             6,"Arial Bold",ANCHOR_CENTER);
+
+      ObjLbl(PFX_POS+"L2"+rid,cx+10,y+20,
+             StringFormat("Lots: %.2f   Lot Base: %.2f",
+                          tr.lots,GetLotByCR(si,1)),
+             C'160,160,200',8,"Arial Bold");
+
+      string slS=(tr.sl>0)?StringFormat("%.*f",dg,tr.sl):"---";
+      string tpS=(tr.tp>0)?StringFormat("%.*f",dg,tr.tp):"---";
+      ObjLbl(PFX_POS+"L3O"+rid,cx+10,y+34,
+             StringFormat("Open: %.*f",dg,tr.openPrice),C'130,130,160',7,"Arial");
+      ObjLbl(PFX_POS+"L3S"+rid,cx+10,y+46,
+             StringFormat("SL: %s",slS),clrTomato,7,"Arial Bold");
+      ObjLbl(PFX_POS+"L3T"+rid,cx+cw/2,y+46,
+             StringFormat("TP: %s",tpS),clrDodgerBlue,7,"Arial Bold");
+
+      if(!tr.isPending)
+      {
+         color plC=(tr.profit>=0)?clrLimeGreen:clrTomato;
+         ObjRect(PFX_POS+"PLBG"+rid,cx+8,y+58,cw-64,16,C'10,10,18',C'30,30,60',1);
+         ObjLbl(PFX_POS+"L4"+rid,cx+8+(cw-64)/2,y+60,
+                StringFormat("P&L:  %s%.2f",(tr.profit>=0)?"+":"",tr.profit),
+                plC,9,"Arial Bold",ANCHOR_CENTER);
+      }
+
+      // Botón close — usa índice real k en el nombre
+      ObjBtn(PFX_POS+"CLZ"+IntegerToString(k),
+             cx+cw-54,y+54,50,20,"✕ CLOSE",C'90,20,20',clrWhite,7,"Arial Bold");
+      y+=rowH+4;
+   }
+
+   if(stCount>maxV)
+   {
+      ObjSep(PFX_POS+"SEP",cx,y,cw); y+=4;
+      int hw=(cw-4)/2;
+      ObjBtn(PFX_POS+"SCRUP",cx,      y,hw,22,"▲ Anterior", C'30,30,50',clrWhite,8,"Arial");
+      ObjBtn(PFX_POS+"SCRDN",cx+hw+4, y,hw,22,"▼ Siguiente",C'30,30,50',clrWhite,8,"Arial");
+      y+=26;
+      ObjLbl(PFX_POS+"SCRINF",cx+cw/2,y,
+             StringFormat("%d - %d  de  %d",
+                          g_ScrollOffset+1,
+                          MathMin(g_ScrollOffset+maxV,stCount),stCount),
+             C'100,100,130',7,"Arial",ANCHOR_CENTER);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| TAB 3 — CONFIG                                                   |
+//+------------------------------------------------------------------+
+void BuildTabConfig()
+{
+   int si=g_PanelSymIdx;
+   int x=PNL_X,W=PNL_W;
+   int y=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H+6;
+   int cx=x+6,cw=W-12;
+
+   ObjLbl(PFX_CFG+"T1",cx+cw/2,y,"PARÁMETROS ACTIVOS",
+          clrGold,9,"Arial Bold",ANCHOR_CENTER); y+=20;
+   ObjSep(PFX_CFG+"S1",cx,y,cw); y+=8;
+
+   string symName=(si>=0&&si<g_SymCount)?g_Symbols[si].name:"---";
+   bool hasLive=(si>=0&&si<g_SymCount)&&g_SysState[si].hasLive;
+   int  aliveS =(si>=0&&si<g_SymCount)?g_SysState[si].activeLiveStrategy:-1;
+   string liveStr=(hasLive&&aliveS>=0)?
+                   g_SysState[si].strategies[aliveS].name:"NINGUNA";
+
+   string rows_L[14],rows_V[14]; color rows_C[14];
+   rows_L[0]="Símbolo panel";
+   rows_V[0]=symName; rows_C[0]=clrGold;
+
+   rows_L[1]="Timeframe";
+   rows_V[1]=EnumToString(Period()); rows_C[1]=C'150,150,150';
+
+   rows_L[2]="Magic Base";
+   rows_V[2]=IntegerToString(InpMagicNumber); rows_C[2]=clrLimeGreen;
+
+   rows_L[3]="SL cálc./ real";
+   rows_V[3]=StringFormat("%.0f / %.0f pts",SymSL(si),SymSL(si)-SymSLOffset(si));
+   rows_C[3]=clrTomato;
+
+   rows_L[4]="TP";
+   rows_V[4]=StringFormat("%.0f pts",SymTP(si)); rows_C[4]=clrDodgerBlue;
+
+   rows_L[5]="Activación 1:2";
+   rows_V[5]=StringFormat("%.0f pts",SymActivation(si)); rows_C[5]=clrMagenta;
+
+   rows_L[6]="SL protegido";
+   rows_V[6]=StringFormat("%.0f pts",SymProtectedSL(si)); rows_C[6]=clrOrange;
+
+   rows_L[7]="X activación";
+   rows_V[7]=StringFormat("%d → LIVE en CV>=%d",InpXActivacion,InpXActivacion+1);
+   rows_C[7]=clrOrange;
+
+   rows_L[8]="LIVE activa";
+   rows_V[8]=liveStr; rows_C[8]=hasLive?clrLimeGreen:clrYellow;
+
+   rows_L[9]="Base capital";
+   rows_V[9]=StringFormat("%.2f",g_BaseCapital); rows_C[9]=clrGold;
+
+   rows_L[10]="Bal. máx hist.";
+   rows_V[10]=StringFormat("%.2f",g_BaseMaxBalance); rows_C[10]=clrGold;
+
+   rows_L[11]="Lot (CR1)";
+   rows_V[11]=StringFormat("%.4f lots",GetLotByCR(si,1)); rows_C[11]=clrLimeGreen;
+
+   rows_L[12]="CB Diario";
+   rows_V[12]=StringFormat("%.1f%%  [%s]",InpMaxDailyLossPct,
+              g_CircuitBreakerOn?"ACTIVO":"OK");
+   rows_C[12]=g_CircuitBreakerOn?clrTomato:clrLimeGreen;
+
+   rows_L[13]="Símbolos activos";
+   rows_V[13]=StringFormat("%d configurados",g_SymCount); rows_C[13]=C'130,130,180';
+
+   for(int i=0;i<14;i++)
+   {
+      color bg=(i%2==0)?C'20,20,32':C'16,16,26';
+      ObjRect(PFX_CFG+"R"+IntegerToString(i),cx,y,cw,24,bg,bg,0);
+      ObjLbl(PFX_CFG+"L"+IntegerToString(i),cx+8,y+6,
+             rows_L[i],C'120,120,150',7,"Arial");
+      ObjLbl(PFX_CFG+"V"+IntegerToString(i),cx+cw-8,y+6,
+             rows_V[i],rows_C[i],8,"Arial Bold",ANCHOR_RIGHT_UPPER);
+      y+=25;
+   }
+
+   ObjSep(PFX_CFG+"S2",cx,y,cw); y+=8;
+   int bw=(cw-4)/2;
+   ObjBtn(PFX_CFG+"CLR",cx,      y,bw,28,"🗑  Borrar estado", C'70,25,25',clrWhite,8,"Arial Bold");
+   ObjBtn(PFX_CFG+"SAV",cx+bw+4, y,bw,28,"💾  Guardar ahora", C'25,70,25',clrWhite,8,"Arial Bold");
+   y+=32;
+   ObjBtn(PFX_CFG+"ADV",cx,y,cw,28,
+          g_AdvancedMode?"⚡ MODO AVANZADO: ACTIVO":"⚡ MODO AVANZADO: INACTIVO",
+          g_AdvancedMode?C'0,100,60':C'50,50,70',clrWhite,9,"Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| TAB 4 — ESTRATEGIAS                                              |
+//+------------------------------------------------------------------+
+void BuildTabEstrategias()
+{
+   int si=g_PanelSymIdx;
+   int x=PNL_X,W=PNL_W;
+   int y=PNL_Y+TITLE_H+INFOBAR_H+SYMBAR_H+TAB_H+6;
+   int cx=x+6,cw=W-12;
+
+   if(si<0||si>=g_SymCount)
+   {
+      ObjLbl(PFX_EST+"NOSYM",cx+cw/2,y+20,
+             "Sin símbolo seleccionado",clrYellow,9,"Arial Bold",ANCHOR_CENTER);
+      return;
+   }
+
+   bool hasLive=g_SysState[si].hasLive;
+   int  alive  =g_SysState[si].activeLiveStrategy;
+
+   string sysStr=hasLive&&alive>=0?
+      StringFormat("★  LIVE: %s  |  CV=%d  CR=%d  Lot=%.2f",
+                   g_SysState[si].strategies[alive].name,
+                   g_SysState[si].strategies[alive].CV,
+                   g_SysState[si].strategies[alive].CR,
+                   GetLotByCR(si,g_SysState[si].strategies[alive].CR))
+      :StringFormat("◌  SIMULANDO  |  X=%d  →  LIVE en CV≥%d",
+                    InpXActivacion,InpXActivacion+1);
+   color sysC =hasLive?clrLimeGreen:clrYellow;
+   color sysBG=hasLive?C'8,25,8':C'22,20,8';
+   ObjRect(PFX_EST+"HDR",cx,y,cw,26,sysBG,hasLive?C'30,110,30':C'100,90,20',1);
+   ObjLbl(PFX_EST+"HTXT",cx+cw/2,y+7,sysStr,sysC,8,"Arial Bold",ANCHOR_CENTER);
+   y+=30;
+
+   int gMax=0; string gMaxN="---";
+   for(int s=0;s<STRAT_COUNT;s++)
+   {
+      if(!g_SysState[si].strategies[s].enabled) continue;
+      if(g_SysState[si].strategies[s].CV_Max>gMax)
+      { gMax=g_SysState[si].strategies[s].CV_Max;
+        gMaxN=g_SysState[si].strategies[s].name; }
+   }
+   ObjRect(PFX_EST+"GMAX",cx,y,cw,22,C'25,22,8',C'110,95,18',1);
+   ObjLbl(PFX_EST+"GMTXT",cx+cw/2,y+5,
+          StringFormat("CV MAX [%s]:  %d   (%s)",g_Symbols[si].name,gMax,gMaxN),
+          clrGold,9,"Arial Bold",ANCHOR_CENTER);
+   y+=26;
+   ObjSep(PFX_EST+"SEP0",cx,y,cw); y+=6;
+
+   int rowH=64;
+   for(int st=0;st<STRAT_COUNT;st++)
+   {
+      bool ena      = g_SysState[si].strategies[st].enabled;
+      bool isLive   = g_SysState[si].strategies[st].isLive;
+      bool isPaused = g_SysState[si].strategies[st].cbPaused;
+      bool rdy      = (g_SysState[si].strategies[st].CV>=(InpXActivacion+1));
+      string rid    = IntegerToString(st);
+
+      color rBG,rBRD;
+      if(!ena)       {rBG=C'16,16,16'; rBRD=C'35,35,35';}
+      else if(isPaused){rBG=C'26,10,10';rBRD=C'110,28,28';}
+      else if(isLive)  {rBG=C'8,26,8';  rBRD=C'28,110,28';}
+      else if(rdy)     {rBG=C'26,24,8'; rBRD=C'100,95,18';}
+      else             {rBG=C'16,18,28';rBRD=C'38,42,80';}
+
+      ObjRect(PFX_EST+"ROW"+rid,cx,y,cw,rowH-2,rBG,rBRD,1);
+      color lbarC=!ena?C'35,35,35':isPaused?clrTomato:
+                  isLive?clrLimeGreen:rdy?clrYellow:C'60,70,140';
+      ObjRect(PFX_EST+"LB"+rid,cx,y,4,rowH-2,lbarC,lbarC,0);
+
+      ObjLbl(PFX_EST+"NM"+rid,cx+10,y+5,
+             g_SysState[si].strategies[st].name,
+             ena?clrWhite:C'70,70,70',12,"Arial Bold");
+
+      string est; color estC,estBG;
+      if(!ena)       {est="OFF";      estC=C'80,80,80'; estBG=C'25,25,25';}
+      else if(isPaused){est="CB PAUSE";estC=clrBlack;   estBG=clrTomato;}
+      else if(isLive)  {est="★ LIVE"; estC=clrBlack;   estBG=clrLimeGreen;}
+      else if(rdy)     {est="ESPERA"; estC=clrBlack;   estBG=clrYellow;}
+      else             {est="SIM";    estC=clrWhite;   estBG=C'35,45,90';}
+
+      int ebw=60;
+      ObjRect(PFX_EST+"EB"+rid,cx+cw-ebw-4,y+4,ebw,16,estBG,estBG,0);
+      ObjLbl(PFX_EST+"ES"+rid,cx+cw-ebw-4+ebw/2,y+5,
+             est,estC,7,"Arial Bold",ANCHOR_CENTER);
+
+      if(ena)
+      {
+         ObjLbl(PFX_EST+"CVL"+rid,cx+10,y+24,"CV:",C'120,120,150',7,"Arial");
+         ObjLbl(PFX_EST+"CVV"+rid,cx+38,y+24,
+                IntegerToString(g_SysState[si].strategies[st].CV),
+                IsTrailingActive(si,st)?clrLimeGreen:clrWhite,9,"Arial Bold");
+
+         ObjLbl(PFX_EST+"CML"+rid,cx+10,y+38,"CVmax:",C'120,120,150',7,"Arial");
+         ObjLbl(PFX_EST+"CMV"+rid,cx+50,y+38,
+                IntegerToString(g_SysState[si].strategies[st].CV_Max),
+                clrGold,9,"Arial Bold");
+
+         ObjLbl(PFX_EST+"TRL"+rid,cx+cw/2,y+24,"1:2:",C'120,120,150',7,"Arial");
+         ObjLbl(PFX_EST+"TRV"+rid,cx+cw/2+28,y+24,
+                IsTrailingActive(si,st)?"ON":"OFF",
+                IsTrailingActive(si,st)?clrLimeGreen:C'100,100,100',8,"Arial Bold");
+
+         if(isLive)
+         {
+            ObjLbl(PFX_EST+"CRL"+rid,cx+cw/2,y+38,"CR→Lot:",C'120,120,150',7,"Arial");
+            ObjLbl(PFX_EST+"CRV"+rid,cx+cw/2+46,y+38,
+                   StringFormat("%d→%.2f",
+                                g_SysState[si].strategies[st].CR,
+                                GetLotByCR(si,g_SysState[si].strategies[st].CR)),
+                   clrDodgerBlue,8,"Arial Bold");
+         }
+
+         int  thr=InpXActivacion+1;
+         int  bw2=cw-12;
+         ObjRect(PFX_EST+"PBG"+rid,cx+6,y+54,bw2,5,C'25,25,25',C'40,40,40',1);
+         double pct=(thr>0)?MathMin((double)g_SysState[si].strategies[st].CV/thr,1.5):0.0;
+         int    fw=(int)MathMax(1,(double)bw2*MathMin(pct,1.0));
+         color  pfC=isLive?clrLimeGreen:
+                    (pct>=1.0?clrYellow:(pct>=0.6?clrDodgerBlue:C'45,55,110'));
+         ObjRect(PFX_EST+"PFL"+rid,cx+6,y+54,fw,5,pfC,pfC,0);
+      }
+      else
+      {
+         ObjLbl(PFX_EST+"DIS"+rid,cx+cw/2,y+25,
+                "Desactivada en Inputs",C'55,55,55',7,"Arial",ANCHOR_CENTER);
+      }
+      y+=rowH+4;
+   }
+
+   ObjSep(PFX_EST+"SEP1",cx,y,cw); y+=6;
+   int bw2=(cw-4)/2;
+   ObjBtn(PFX_EST+"RSTALL",cx,       y,bw2,24,"↺  Reset símbolo",C'60,25,25',clrWhite,7,"Arial Bold");
+   ObjBtn(PFX_EST+"FRCNXT", cx+bw2+4,y,bw2,24,"▶  Buscar LIVE",  C'25,55,25',clrWhite,7,"Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| LÍNEAS DE REFERENCIA                                             |
+//+------------------------------------------------------------------+
+void DrawRefLine(string name,double price,string label,
+                 color clr,ENUM_LINE_STYLE style,int width)
+{
+   string ln=name+"_L", tn=name+"_T";
+   if(ObjectFind(0,ln)<0)
+   { ObjectCreate(0,ln,OBJ_HLINE,0,0,price);
+     ObjectSetInteger(0,ln,OBJPROP_COLOR,clr);
+     ObjectSetInteger(0,ln,OBJPROP_WIDTH,width);
+     ObjectSetInteger(0,ln,OBJPROP_STYLE,style);
+     ObjectSetInteger(0,ln,OBJPROP_BACK,true);
+     ObjectSetInteger(0,ln,OBJPROP_SELECTABLE,false); }
+   else ObjectSetDouble(0,ln,OBJPROP_PRICE,price);
+   if(ObjectFind(0,tn)<0)
+   { ObjectCreate(0,tn,OBJ_TEXT,0,iTime(_Symbol,PERIOD_CURRENT,0),price);
+     ObjectSetInteger(0,tn,OBJPROP_COLOR,clr);
+     ObjectSetInteger(0,tn,OBJPROP_FONTSIZE,8);
+     ObjectSetString(0,tn,OBJPROP_FONT,"Arial");
+     ObjectSetInteger(0,tn,OBJPROP_ANCHOR,ANCHOR_LEFT);
+     ObjectSetInteger(0,tn,OBJPROP_BACK,false);
+     ObjectSetInteger(0,tn,OBJPROP_SELECTABLE,false); }
+   else ObjectMove(0,tn,0,iTime(_Symbol,PERIOD_CURRENT,0),price);
+   ObjectSetString(0,tn,OBJPROP_TEXT,label);
+}
+
+void UpdateLimitLine()
+{
+   int si=g_PanelSymIdx;
+   if(g_LimitPrice<=0){RemoveLimitLine();return;}
+   if(si<0||si>=g_SymCount) return;
+   string sym=g_Symbols[si].name;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+
+   if(ObjectFind(0,LINE_LIMIT_NAME)<0)
+   { ObjectCreate(0,LINE_LIMIT_NAME,OBJ_HLINE,0,0,g_LimitPrice);
+     ObjectSetInteger(0,LINE_LIMIT_NAME,OBJPROP_COLOR,clrGold);
+     ObjectSetInteger(0,LINE_LIMIT_NAME,OBJPROP_WIDTH,2);
+     ObjectSetInteger(0,LINE_LIMIT_NAME,OBJPROP_STYLE,STYLE_DASH);
+     ObjectSetInteger(0,LINE_LIMIT_NAME,OBJPROP_BACK,false);
+     ObjectSetInteger(0,LINE_LIMIT_NAME,OBJPROP_SELECTABLE,true); }
+   else ObjectSetDouble(0,LINE_LIMIT_NAME,OBJPROP_PRICE,g_LimitPrice);
+
+   if(ObjectFind(0,LINE_LIMIT_LABEL)<0)
+   { ObjectCreate(0,LINE_LIMIT_LABEL,OBJ_TEXT,0,iTime(_Symbol,PERIOD_CURRENT,0),g_LimitPrice);
+     ObjectSetInteger(0,LINE_LIMIT_LABEL,OBJPROP_COLOR,clrGold);
+     ObjectSetInteger(0,LINE_LIMIT_LABEL,OBJPROP_FONTSIZE,9);
+     ObjectSetString(0,LINE_LIMIT_LABEL,OBJPROP_FONT,"Arial Bold");
+     ObjectSetInteger(0,LINE_LIMIT_LABEL,OBJPROP_ANCHOR,ANCHOR_LEFT);
+     ObjectSetInteger(0,LINE_LIMIT_LABEL,OBJPROP_BACK,false);
+     ObjectSetInteger(0,LINE_LIMIT_LABEL,OBJPROP_SELECTABLE,false); }
+   else ObjectMove(0,LINE_LIMIT_LABEL,0,iTime(_Symbol,PERIOD_CURRENT,0),g_LimitPrice);
+   ObjectSetString(0,LINE_LIMIT_LABEL,OBJPROP_TEXT,
+                   StringFormat("  LIMIT[%s]: %s",sym,DoubleToString(g_LimitPrice,dg)));
+
+   double slPts=SymSL(si)-SymSLOffset(si);
+   double tpPts=SymTP(si);
+   double slR=NormalizeDouble(g_LimitPrice-slPts*pt,dg);
+   double tpR=NormalizeDouble(g_LimitPrice+tpPts*pt,dg);
+   DrawRefLine(LINE_LIMIT_SL,slR,"  SL: "+DoubleToString(slR,dg),clrTomato,STYLE_DOT,1);
+   DrawRefLine(LINE_LIMIT_TP,tpR,"  TP: "+DoubleToString(tpR,dg),clrDodgerBlue,STYLE_DOT,1);
+   ChartRedraw();
+}
+
+void RemoveLimitLine()
+{
+   ObjectDelete(0,LINE_LIMIT_NAME);
+   ObjectDelete(0,LINE_LIMIT_LABEL);
+   ObjectDelete(0,LINE_LIMIT_SL+"_L");
+   ObjectDelete(0,LINE_LIMIT_SL+"_T");
+   ObjectDelete(0,LINE_LIMIT_TP+"_L");
+   ObjectDelete(0,LINE_LIMIT_TP+"_T");
+   ChartRedraw();
+}
+
+double ReadEditPrice()
+{
+   string t=ObjectGetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT);
+   StringTrimLeft(t); StringTrimRight(t);
+   return StringToDouble(t);
+}
+
+void SyncLimitLinePrice()
+{
+   if(ObjectFind(0,LINE_LIMIT_NAME)<0) return;
+   int si=g_PanelSymIdx;
+   if(si<0||si>=g_SymCount) return;
+   int    dg=(int)SymbolInfoInteger(g_Symbols[si].name,SYMBOL_DIGITS);
+   double lp=NormalizeDouble(ObjectGetDouble(0,LINE_LIMIT_NAME,OBJPROP_PRICE),dg);
+   if(MathAbs(lp-g_LimitPrice)>SymbolInfoDouble(g_Symbols[si].name,SYMBOL_POINT)*0.5&&lp>0)
+   { g_LimitPrice=lp;
+     if(ObjectFind(0,EDIT_PRICE_NAME)>=0)
+        ObjectSetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT,DoubleToString(g_LimitPrice,dg));
+     UpdateLimitLine();
+     GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice); }
+}
+
+//+------------------------------------------------------------------+
+//| TESTER INFO                                                      |
+//+------------------------------------------------------------------+
+void ShowTesterInfo()
+{
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq =AccountInfoDouble(ACCOUNT_EQUITY);
+   double fPL=eq-bal;
+   double lossPct=GetDailyLossPct();
+   string msg="╔══════════════════════════════════════════╗\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.00           ║\n";
+   msg+="╠══════════════════════════════════════════╣\n";
+   msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
+                     g_BaseCapital,g_BaseMaxBalance);
+   msg+=StringFormat("║  CB Diario    : %.2f%% / %.1f%%   [%s]\n",
+                     lossPct,InpMaxDailyLossPct,
+                     g_CircuitBreakerOn?"⛔BLOQ":"OK");
+   msg+="╠══════════════════════════════════════════╣\n";
+   for(int si=0;si<g_SymCount;si++)
+   {
+      int alive=g_SysState[si].activeLiveStrategy;
+      string liveN=(alive>=0)?g_SysState[si].strategies[alive].name:"NINGUNA";
+      msg+=StringFormat("║  [%s]  LIVE: %s\n",g_Symbols[si].name,liveN);
+      for(int st=0;st<STRAT_COUNT;st++)
+      {
+         if(!g_SysState[si].strategies[st].enabled) continue;
+         string est=g_SysState[si].strategies[st].cbPaused?"CB-PAUSE":
+                    g_SysState[si].strategies[st].isLive?"★LIVE":
+                    (g_SysState[si].strategies[st].CV>=(InpXActivacion+1))?"ESPERA":"SIM";
+         msg+=StringFormat("║    %-5s %-8s CV:%-3d CVmax:%-3d Lot:%.2f\n",
+                           g_SysState[si].strategies[st].name,est,
+                           g_SysState[si].strategies[st].CV,
+                           g_SysState[si].strategies[st].CV_Max,
+                           GetLotByCR(si,g_SysState[si].strategies[st].CR));
+      }
+   }
+   msg+="╠══════════════════════════════════════════╣\n";
+   msg+=StringFormat("║  Balance : %.2f\n",bal);
+   msg+=StringFormat("║  Equidad : %.2f\n",eq);
+   msg+=StringFormat("║  P&L     : %s%.2f\n",(fPL>=0)?"+":"",fPL);
+   msg+="╚══════════════════════════════════════════╝";
+   Comment(msg);
+}
+
+void PrintDiag()
+{
+   if(IsTester()) return;
+   datetime now=TimeCurrent();
+   if(now-g_LastDiagTime<60) return;
+   g_LastDiagTime=now;
+   Print("=== DIAG v8.00 === X=",InpXActivacion,
+         " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
+         " Base=",DoubleToString(g_BaseCapital,2));
+   for(int si=0;si<g_SymCount;si++)
+   {
+      int alive=g_SysState[si].activeLiveStrategy;
+      Print("  [",g_Symbols[si].name,"] Live:",
+            (alive>=0)?g_SysState[si].strategies[alive].name:"NONE");
+      for(int st=0;st<STRAT_COUNT;st++)
+      {
+         if(!g_SysState[si].strategies[st].enabled) continue;
+         Print("    ",g_SysState[si].strategies[st].name,
+               " CV:",g_SysState[si].strategies[st].CV,
+               " CR:",g_SysState[si].strategies[st].CR,
+               " 1:2:",IsTrailingActive(si,st)?"ON":"OFF",
+               " Lot:",GetLotByCR(si,g_SysState[si].strategies[st].CR),
+               g_SysState[si].strategies[st].cbPaused?" [CB-PAUSED]":"");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| OnInit                                                           |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   PNL_X=InpPanelX; PNL_Y=InpPanelY;
+   g_PanelTableSize=MathMax(1,MathMin(MAX_TABLE_SIZE,InpTableSize));
+   g_TradeCount=0; g_ScrollOffset=0; g_SaveCounter=0;
+   g_ClosedCount=0; g_LastDiagTime=0;
+   g_Dragging=false; g_PendingRebuild=false;
+   ArrayResize(g_Trades,0); ArrayResize(g_ClosedQueue,0);
+
+   TAB_NAMES[0]="OPERAR"; TAB_NAMES[1]="CUENTA"; TAB_NAMES[2]="POSIC.";
+   TAB_NAMES[3]="CONFIG"; TAB_NAMES[4]="ESTRAT";
+
+   InitGlobalVarKeys();
+   InitRiskTable();
+   LoadSymbolInputParams();
+
+   if(g_SymCount==0)
+   { Print("ERROR: No hay símbolos. Configura InpSymbol1..20");
+     return INIT_FAILED; }
+
+   for(int si=0;si<g_SymCount;si++) InitSystemState(si);
+
+   g_BaseCapital    = InpBaseCapital;
+   g_BaseMaxBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   g_DayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_DayStartTime   = TimeCurrent();
+   g_CircuitBreakerOn=false;
+
+   if(!IsTester()) LoadState();
+
+   if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
+
+   if(!InitStrategyHandles()) return INIT_FAILED;
+
+   for(int si=0;si<g_SymCount;si++)
+   { CalcPivots(si); CalcSRZones(si); UpdateBreakoutRange(si); }
+
+   SyncAllTrades();
+
+   if(!IsTester())
+   { BuildStaticStructure(); RebuildActiveTab(); UpdateInfoBar();
+     if(g_LimitPrice>0) UpdateLimitLine(); }
+
+   Print("EA v8.00 | Símbolos:",g_SymCount,
+         " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
+         " | Base=",DoubleToString(g_BaseCapital,2),
+         " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| OnDeinit                                                         |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(!IsTester()) SaveState();
+   ReleaseStrategyHandles();
+   if(!IsTester()){ DeletePanel(); RemoveLimitLine(); }
+   Comment("");
+   Print("EA v8.00 cerrado | Razón:",reason);
+}
+
+//+------------------------------------------------------------------+
+//| OnTick                                                           |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   CheckDayReset();
+   UpdateDynamicBase();
+
+   int prevCount=g_TradeCount;
+   SyncAllTrades();
+   ProcessClosedQueue();
+   CheckCircuitBreaker();
+
+   if(!g_CircuitBreakerOn)
+   { EnforceSLTP();
+     ManageOpenPositions(); }
+
+   // Virtuales siempre (salvo cbPaused individual)
+   for(int si=0;si<g_SymCount;si++)
+      for(int st=0;st<STRAT_COUNT;st++)
+      { if(!g_SysState[si].strategies[st].enabled)  continue;
+        if(g_SysState[si].strategies[st].cbPaused)  continue;
+        if(g_SysState[si].strategies[st].isLive)    continue;
+        UpdateStrategyVirtual(si,st); }
+
+   if(!g_CircuitBreakerOn&&IsTradeTimeAllowed())
+      UpdateAllStrategies();
+
+   if(IsTester())
+   {
+      ShowTesterInfo();
+   }
+   else
+   {
+      PrintDiag();
+      UpdateInfoBar();
+      SyncLimitLinePrice();
+      g_SaveCounter++;
+      if(g_SaveCounter>=300){ SaveState(); g_SaveCounter=0; }
+      if(g_TradeCount!=prevCount)
+         RebuildActiveTab();
+      else if(ActiveTab==TAB_CUENTA||ActiveTab==TAB_POSIC||ActiveTab==TAB_ESTRAT)
+      { DeleteContentObjects();
+        if(ActiveTab==TAB_CUENTA) BuildTabCuenta();
+        if(ActiveTab==TAB_POSIC)  BuildTabPosiciones();
+        if(ActiveTab==TAB_ESTRAT) BuildTabEstrategias();
+        ChartRedraw(); }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| OnChartEvent                                                     |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,const long &lparam,
+                  const double &dparam,const string &sparam)
+{
+   int si=g_PanelSymIdx;
+   int dg=(si>=0&&si<g_SymCount)?
+          (int)SymbolInfoInteger(g_Symbols[si].name,SYMBOL_DIGITS):5;
+
+   // ── DRAG ──────────────────────────────────────────────────────
+   if(id==CHARTEVENT_MOUSE_MOVE)
+   {
+      if((int)lparam==1&&g_Dragging)
+      {
+         int mx=(int)dparam;
+         int my=(int)StringToInteger(sparam);
+         int nx=MathMax(0,MathMin(
+                (int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-PNL_W,mx-g_DragOffX));
+         int ny=MathMax(0,MathMin(
+                (int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS)-PNL_H,my-g_DragOffY));
+         if(nx!=PNL_X||ny!=PNL_Y){ PNL_X=nx; PNL_Y=ny; RebuildPanel(); }
+      }
+      else if((int)lparam==0) g_Dragging=false;
+      return;
+   }
+
+   if(id==CHARTEVENT_OBJECT_CLICK&&sparam==DRAG_ZONE)
+   {
+      int mx=(int)dparam;
+      int my=(int)StringToInteger(sparam);
+      g_DragOffX=mx-PNL_X; g_DragOffY=my-PNL_Y;
+      if(g_DragOffX<0) g_DragOffX=0;
+      if(g_DragOffY<0) g_DragOffY=0;
+      g_Dragging=true; return;
+   }
+
+   // ── EDIT PRECIO ───────────────────────────────────────────────
+   if(id==CHARTEVENT_OBJECT_ENDEDIT&&sparam==EDIT_PRICE_NAME)
+   {
+      double val=ReadEditPrice();
+      g_LimitPrice=(val>0)?NormalizeDouble(val,dg):0.0;
+      GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice);
+      UpdateLimitLine(); return;
+   }
+
+   // ── DRAG LÍNEA LÍMITE ─────────────────────────────────────────
+   if(id==CHARTEVENT_OBJECT_DRAG&&sparam==LINE_LIMIT_NAME)
+   {
+      g_LimitPrice=NormalizeDouble(
+                   ObjectGetDouble(0,LINE_LIMIT_NAME,OBJPROP_PRICE),dg);
+      if(ObjectFind(0,EDIT_PRICE_NAME)>=0)
+         ObjectSetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT,
+                         DoubleToString(g_LimitPrice,dg));
+      GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice);
+      UpdateLimitLine(); return;
+   }
+
+   if(id==CHARTEVENT_OBJECT_CLICK&&sparam==LINE_LIMIT_NAME)
+   { ChartRedraw(); return; }
+
+   if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(ObjectGetInteger(0,sparam,OBJPROP_TYPE)==OBJ_BUTTON)
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+   ChartRedraw();
+
+   // ── TABS ──────────────────────────────────────────────────────
+   for(int t=0;t<N_TABS;t++)
+      if(sparam==PFX+"TAB"+IntegerToString(t))
+      { ActiveTab=t; RebuildActiveTab(); return; }
+
+   // ── NAVEGACIÓN SÍMBOLOS ───────────────────────────────────────
+   if(sparam==PFX+"SB_PREV")
+   { if(g_SymCount>0)
+     { g_PanelSymIdx=(g_PanelSymIdx-1+g_SymCount)%g_SymCount;
+       g_ScrollOffset=0; SaveState(); RebuildPanel(); }
+     return; }
+
+   if(sparam==PFX+"SB_NEXT")
+   { if(g_SymCount>0)
+     { g_PanelSymIdx=(g_PanelSymIdx+1)%g_SymCount;
+       g_ScrollOffset=0; SaveState(); RebuildPanel(); }
+     return; }
+
+   // ── TAB OPERAR ────────────────────────────────────────────────
+   if(si>=0&&si<g_SymCount)
+   {
+      string sym=g_Symbols[si].name;
+
+      if(sparam==PFX_OP+"ASK")
+      { g_LimitPrice=NormalizeDouble(SymbolInfoDouble(sym,SYMBOL_ASK),dg);
+        if(ObjectFind(0,EDIT_PRICE_NAME)>=0)
+           ObjectSetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT,
+                           DoubleToString(g_LimitPrice,dg));
+        GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice);
+        UpdateLimitLine(); return; }
+
+      if(sparam==PFX_OP+"BID")
+      { g_LimitPrice=NormalizeDouble(SymbolInfoDouble(sym,SYMBOL_BID),dg);
+        if(ObjectFind(0,EDIT_PRICE_NAME)>=0)
+           ObjectSetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT,
+                           DoubleToString(g_LimitPrice,dg));
+        GlobalVariableSet(GV_LIMIT_PRICE,g_LimitPrice);
+        UpdateLimitLine(); return; }
+
+      if(sparam==PFX_OP+"RST")
+      { g_LimitPrice=0.0;
+        if(ObjectFind(0,EDIT_PRICE_NAME)>=0)
+           ObjectSetString(0,EDIT_PRICE_NAME,OBJPROP_TEXT,"0");
+        GlobalVariableSet(GV_LIMIT_PRICE,0.0);
+        RemoveLimitLine(); return; }
+
+      int aliveOp=g_SysState[si].activeLiveStrategy;
+      double lots=(aliveOp>=0)?
+                  GetLotByCR(si,g_SysState[si].strategies[aliveOp].CR):
+                  GetLotByCR(si,1);
+
+      if(sparam==PFX_OP+"BUY")
+      { SendMarketOrderEx(si,-1,ORDER_TYPE_BUY, lots,MagicManual(si)); return; }
+      if(sparam==PFX_OP+"SELL")
+      { SendMarketOrderEx(si,-1,ORDER_TYPE_SELL,lots,MagicManual(si)); return; }
+      if(sparam==PFX_OP+"BUYLMT")
+      { _SendLimitManual(si,ORDER_TYPE_BUY_LIMIT, lots,g_LimitPrice); return; }
+      if(sparam==PFX_OP+"SELLLMT")
+      { _SendLimitManual(si,ORDER_TYPE_SELL_LIMIT,lots,g_LimitPrice); return; }
+
+      if(sparam==PFX_OP+"CLOSEALL")
+      { for(int i=PositionsTotal()-1;i>=0;i--)
+        { ulong t=PositionGetTicket(i); if(t==0) continue;
+          if(PositionGetString(POSITION_SYMBOL)!=sym) continue;
+          if(!IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+          ClosePosition(t); }
+        return; }
+   }
+
+   // ── TAB POSICIONES — cerrar individual ───────────────────────
+   if(StringFind(sparam,PFX_POS+"CLZ")==0)
+   {
+      int k=(int)StringToInteger(StringSubstr(sparam,StringLen(PFX_POS+"CLZ")));
+      if(k>=0&&k<g_TradeCount&&!g_Trades[k].isPending)
+         ClosePosition(g_Trades[k].ticket);
+      return;
+   }
+
+   if(sparam==PFX_POS+"SCRUP")
+   { if(g_ScrollOffset>0){ g_ScrollOffset--; RebuildActiveTab(); } return; }
+   if(sparam==PFX_POS+"SCRDN")
+   { g_ScrollOffset++; RebuildActiveTab(); return; }
+
+   // ── TAB CONFIG ────────────────────────────────────────────────
+   if(sparam==PFX_CFG+"SAV")
+   { SaveState(); RebuildActiveTab(); return; }
+
+   if(sparam==PFX_CFG+"CLR")
+   {
+      GlobalVariableDel(GV_ADV_MODE);
+      GlobalVariableDel(GV_LIMIT_PRICE);
+      if(FileIsExist(GetStateFileName())) FileDelete(GetStateFileName());
+      for(int s=0;s<g_SymCount;s++)
+      { for(int st=0;st<STRAT_COUNT;st++)
+        { g_SysState[s].strategies[st].CV            =1;
+          g_SysState[s].strategies[st].CR            =1;
+          g_SysState[s].strategies[st].CV_Max        =1;
+          g_SysState[s].strategies[st].virtualActive =false;
+          g_SysState[s].strategies[st].isLive        =false;
+          g_SysState[s].strategies[st].virtualSLMoved=false;
+          g_SysState[s].strategies[st].signalInited  =false;
+          g_SysState[s].strategies[st].cbPaused      =false; }
+        g_SysState[s].hasLive=false;
+        g_SysState[s].activeLiveStrategy=-1; }
+      g_BaseCapital     =InpBaseCapital;
+      g_BaseMaxBalance  =AccountInfoDouble(ACCOUNT_BALANCE);
+      g_CircuitBreakerOn=false;
+      RebuildPanel(); return;
+   }
+
+   if(sparam==PFX_CFG+"ADV")
+   { g_AdvancedMode=!g_AdvancedMode; SaveState(); RebuildActiveTab(); return; }
+
+   // ── TAB ESTRATEGIAS ───────────────────────────────────────────
+   if(sparam==PFX_EST+"RSTALL")
+   {
+      if(si>=0&&si<g_SymCount)
+      { for(int st=0;st<STRAT_COUNT;st++)
+        { g_SysState[si].strategies[st].CV            =1;
+          g_SysState[si].strategies[st].CR            =1;
+          g_SysState[si].strategies[st].CV_Max        =1;
+          g_SysState[si].strategies[st].virtualActive =false;
+          g_SysState[si].strategies[st].isLive        =false;
+          g_SysState[si].strategies[st].virtualSLMoved=false;
+          g_SysState[si].strategies[st].cbPaused      =false; }
+        g_SysState[si].hasLive=false;
+        g_SysState[si].activeLiveStrategy=-1; }
+      SaveState(); RebuildPanel(); return;
+   }
+
+   if(sparam==PFX_EST+"FRCNXT")
+   { if(si>=0&&si<g_SymCount) SelectNextLiveStrategy(si);
+     RebuildActiveTab(); return; }
+}
+//+------------------------------------------------------------------+
