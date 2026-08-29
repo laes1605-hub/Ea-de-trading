@@ -27,6 +27,36 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 - Multisímbolo: hasta 20 símbolos (`InpSymbol1..20`) con SL/TP propios por símbolo.
 - Panel gráfico en MT5 (Operar / Cuenta / Posic. / Config / Estrat).
 
+## Cómo verificar los cambios
+
+### 1) En el repositorio (Git)
+
+```bash
+git status                          # working tree limpio = todo commiteado
+git log --oneline -3                # el último commit debe ser el v8.10
+git show --stat HEAD                # archivos modificados y nº de líneas
+git ls-remote origin                # la rama debe aparecer en GitHub
+```
+
+- Rama de trabajo: `arena/01a04bc9-ea-de-trading`
+- Referencias eliminadas (estrategias viejas) → debe dar `0`:
+  ```bash
+  grep -cE "InpUseEMA|STRAT_EMA|InpPA_|InpSR_|InpBO_|CalcPivots|signalInited" "trabajador multichart.mq5"
+  ```
+- Referencias de gestión de riesgo → debe dar `> 0`:
+  ```bash
+  grep -cE "InpRiskStep1|InitRiskTable|CalcLotByRisk|CheckCircuitBreaker|CheckPersonalSignal" "trabajador multichart.mq5"
+  ```
+
+### 2) En MetaTrader 5 (funcional)
+
+1. Abre **MetaEditor** → `Archivo > Abrir datos > MQL5 > Experts` → pega `trabajador multichart.mq5`.
+2. Pulsa **F7 (Compilar)**: debe compilar sin errores ni warnings relevantes.
+3. En MT5: `Navegador > Asesores Expertos` → arrastra el EA al gráfico y revisa la pestaña **Inputs**:
+   debe mostrar `ESTRATEGIA PERSONAL` (`InpUsePersonalStrategy`) y la **TABLA DE RIESGO (20 niveles)**.
+4. Para probar la lógica: **View > Strategy Tester** con el EA, un símbolo de `InpSymbol1..20`,
+   y revisa en el log los mensajes `vOPEN`, `LIVE`, `CV/CR` y `CIRCUIT BREAKER`.
+
 ## ⚠️ Advertencia
 
 La tabla de riesgo llega al **2.414% de la base en el nivel 20**. En modo LIVE, una racha larga de
