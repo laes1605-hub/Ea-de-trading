@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.38"
+#property version   "8.39"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -225,8 +225,7 @@ input long   InpMagicNumber      = 123456;
 input string InpComment          = "QA_EA";
 
 input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
-input int    InpXActivacion      = 4;
-input bool   InpUseVirtualBeforeLive = false; // true: X operaciones virtuales antes de LIVE
+input int    InpXActivacion      = 4;   // X pérdidas virtuales → la operación X+1 es LIVE
 input int    InpTableSize        = 20;
 
 input group "=== PARAMETROS MOTOR DE LINEAS ==="
@@ -1139,15 +1138,19 @@ void LoadStateFromFile()
 //|   GANANCIA con SL prot.   → nivel −3 (abierto en nivel <10)      |
 //|                             o −4 (abierto en nivel ≥10)          |
 //|                                                                  |
-//|   El CV de cada estrategia (contador de pérdidas virtuales que   |
-//|   activa LIVE con InpXActivacion) NO cambia: el sistema          |
-//|   virtual→LIVE se mantiene igual que siempre.                    |
+//|   El CV de cada estrategia SIEMPRE cuenta con el MISMO régimen   |
+//|   que las operaciones LIVE:                                      |
+//|     · pérdida            → CV +1  y  nivel del par +1            |
+//|     · ganancia limpia    → CV = 1  y  nivel del par = 1          |
+//|     · ganancia protegida → CV −3/−4 y nivel del par −3/−4        |
+//|   Así, con InpXActivacion = X el EA pasa a LIVE al completar X   |
+//|   pérdidas de la serie (CV = X+1) y la operación X+1 ya es LIVE. |
 //|                                                                  |
-//|   MIENTRAS haya una estrategia LIVE en el par, el NIVEL solo se  |
-//|   mueve con operaciones REALES de la cuenta. Los cierres         |
-//|   virtuales NO tocan el NIVEL (solo su propio CV). Al activar    |
-//|   LIVE se cancela cualquier virtual pendiente para que no se     |
-//|   reanude después.                                               |
+//|   EXCEPCIÓN: si en el par ya hay una estrategia LIVE, los cierres|
+//|   virtuales de las demás SOLO cuentan su CV (para no mover dos   |
+//|   veces el nivel compartido); el nivel lo mueven únicamente las  |
+//|   operaciones REALES. Al activar LIVE se cancela cualquier       |
+//|   virtual pendiente para que no se reanude después.              |
 //+------------------------------------------------------------------+
 //--- Limpia el estado de una simulación virtual (se usa al entrar o
 //    salir de LIVE para que lo virtual nunca vuelva a contar)
@@ -1165,22 +1168,26 @@ void ClearVirtualState(int si,int st)
      g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0; }
 }
 
-//--- cierre VIRTUAL (simulación): CV sigue contando para LIVE,
-//    El nivel del par SOLO cambia con operaciones LIVE reales de la cuenta.
-//    Los cierres virtuales únicamente actualizan el CV de activación.
+//--- cierre VIRTUAL (simulación): MISMO régimen que LIVE.
+//    · pérdida            → CV +1  y  nivel +1 (si no hay LIVE en el par)
+//    · ganancia limpia    → CV = 1  y  nivel = 1 (si no hay LIVE en el par)
+//    · ganancia protegida → CV −3/−4 y nivel −3/−4 (si no hay LIVE en el par)
+//    Con el nivel y el CV en sincronía, al cumplir InpXActivacion pérdidas
+//    (CV = X+1) se activa LIVE y la operación X+1 ya es real.
 void OnVirtualSL_Original(int si, int st)
 {
+   int cv=g_SysState[si].strategies[st].CV;
    g_SysState[si].strategies[st].CV++;
    UpdateCVMax(si,st);
    if(g_SysState[si].hasLive)
       Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+            "] vSL orig CV:",cv,
             "→",g_SysState[si].strategies[st].CV,
             " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
    else
    { int lv=PairLevel(si); PairLevelUp(si);
      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+           "] vSL orig CV:",cv,
            "→",g_SysState[si].strategies[st].CV,
            " NIVEL:",lv,"→",PairLevel(si),
            " Lot:",DoubleToString(GetPairLot(si),2)); }
@@ -1190,23 +1197,37 @@ void OnVirtualSL_Original(int si, int st)
       SelectNextLiveStrategy(si);
 }
 
-void OnVirtualSL_Protected(int si, int st)
+void OnVirtualSL_Protected(int si, int st, int openLevel)
 {
    int cv=g_SysState[si].strategies[st].CV;
    int r=(cv>=10)?4:3;
    g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
    UpdateCVMax(si,st);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelBack(si,openLevel);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " (abierto en nivel ",openLevel,")",
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
+   int cv=g_SysState[si].strategies[st].CV;
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vTP CV:",cv,"→1",
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelReset(si);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vTP CV:",cv,"→1 NIVEL:",lv,"→",PairLevel(si)); }
    g_SysState[si].strategies[st].CV=1;
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
@@ -1358,6 +1379,7 @@ void UpdateStrategyVirtual(int si, int st)
    else     {if(checkPrice<=vTP)win=true;else if(checkPrice>=vSL)loss=true;}
    if(!win&&!loss) return;
    bool wasProtected=g_SysState[si].strategies[st].virtualSLMoved;
+   int  openLevel  =g_SysState[si].strategies[st].virtualOpenLevel;  // nivel de apertura (regla −3/−4)
    g_SysState[si].strategies[st].virtualActive   =false;
    g_SysState[si].strategies[st].virtualOpen     =0;
    g_SysState[si].strategies[st].virtualSL_price =0;
@@ -1366,7 +1388,7 @@ void UpdateStrategyVirtual(int si, int st)
    g_SysState[si].strategies[st].virtualSLMoved  =false;
    if(win){OnVirtualTP(si,st);SaveState();if(!IsTester())RebuildActiveTab();return;}
    if(loss)
-   { if(wasProtected) OnVirtualSL_Protected(si,st); else OnVirtualSL_Original(si,st);
+   { if(wasProtected) OnVirtualSL_Protected(si,st,openLevel); else OnVirtualSL_Original(si,st);
      SaveState(); if(!IsTester()) RebuildActiveTab(); }
 }
 
@@ -2248,14 +2270,13 @@ void UpdateAllStrategies()
          if(!hasPos&&IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st); if(sig!=0) OpenByStrategy(si,st,sig); } }
        else
-       { if(InpUseVirtualBeforeLive)
-         { UpdateStrategyVirtual(si,st);
-           if(!g_SysState[si].strategies[st].virtualActive)
+       { //--- Fase virtual OBLIGATORIA: toda estrategia no-LIVE simula
+           //    (y cuenta con el mismo régimen que LIVE) hasta completar
+           //    InpXActivacion pérdidas; la operación X+1 ya es LIVE.
+           UpdateStrategyVirtual(si,st);
+           if(!g_SysState[si].strategies[st].virtualActive&&IsTradeTimeAllowed())
            { int sig=CheckStrategySignal(si,st);
-             if(sig!=0) StartStrategyVirtual(si,st,sig); } }
-         else if(IsTradeTimeAllowed())
-         { int sig=CheckStrategySignal(si,st);
-           if(sig!=0) OpenByStrategy(si,st,sig); } } } }
+             if(sig!=0) StartStrategyVirtual(si,st,sig); } } } }
 }
 
 //+------------------------------------------------------------------+
@@ -2721,7 +2742,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.38  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.39  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2999,8 +3020,8 @@ void BuildTabOperar()
    {
       ObjRect(PFX_OP+"NOSIM_BG",cx,y,cw,26,C'20,20,30',C'50,50,80',1);
       ObjLbl(PFX_OP+"NOSIM_TXT",cx+cw/2,y+7,
-             StringFormat("X=%d  →  LIVE cuando CV>=%d",
-                          InpXActivacion,InpXActivacion+1),
+             StringFormat("X=%d  →  LIVE tras %d pérdidas (operación %d)",
+                          InpXActivacion,InpXActivacion,InpXActivacion+1),
              C'120,120,180',8,"Arial Bold",ANCHOR_CENTER);
       y+=30;
    }
@@ -3346,7 +3367,8 @@ void BuildTabConfig()
    rows_V[6]=StringFormat("%.0f pts",SymProtectedSL(si)); rows_C[6]=clrOrange;
 
    rows_L[7]="X activación";
-   rows_V[7]=StringFormat("%d → LIVE en CV>=%d",InpXActivacion,InpXActivacion+1);
+   rows_V[7]=StringFormat("%d → LIVE tras %d pérdidas (op.%d)",
+                          InpXActivacion,InpXActivacion,InpXActivacion+1);
    rows_C[7]=clrOrange;
 
    rows_L[8]="LIVE activa";
@@ -3416,8 +3438,8 @@ void BuildTabEstrategias()
                    g_SysState[si].strategies[alive].name,
                    g_SysState[si].strategies[alive].CV,
                    PairLevel(si),GetPairLot(si))
-      :StringFormat("◌  SIMULANDO  |  X=%d  →  LIVE en CV≥%d",
-                    InpXActivacion,InpXActivacion+1);
+      :StringFormat("◌  SIMULANDO  |  X=%d  →  LIVE tras %d pérdidas (op.%d)",
+                    InpXActivacion,InpXActivacion,InpXActivacion+1);
    color sysC =hasLive?clrLimeGreen:clrYellow;
    color sysBG=hasLive?C'8,25,8':C'22,20,8';
    ObjRect(PFX_EST+"HDR",cx,y,cw,26,sysBG,hasLive?C'30,110,30':C'100,90,20',1);
@@ -4271,7 +4293,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.38           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.39           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4312,7 +4334,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.38 === X=",InpXActivacion,
+   Print("=== DIAG v8.39 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4439,7 +4461,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.38 | Símbolos:",g_SymCount,
+   Print("EA v8.39 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4456,7 +4478,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.38 cerrado | Razón:",reason);
+   Print("EA v8.39 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
