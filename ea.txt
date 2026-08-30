@@ -691,7 +691,7 @@ void CheckCircuitBreaker()
 //+------------------------------------------------------------------+
 double CalcSL(string symbol, int si, double openPrice, int posType)
 {
-   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   int    dg =(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
    double slP=SymSL(si)-SymSLOffset(si);
    if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
@@ -702,7 +702,7 @@ double CalcSL(string symbol, int si, double openPrice, int posType)
 
 double CalcTP(string symbol, int si, double openPrice, int posType)
 {
-   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   int    dg =(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
    double tpP=SymTP(si);
    if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
@@ -2250,7 +2250,8 @@ void ClosePosition(ulong ticket)
    { req.type=ORDER_TYPE_SELL; req.price=SymbolInfoDouble(sym,SYMBOL_BID); }
    else
    { req.type=ORDER_TYPE_BUY;  req.price=SymbolInfoDouble(sym,SYMBOL_ASK); }
-   OrderSend(req,res);
+   if(!OrderSend(req,res) || res.retcode!=TRADE_RETCODE_DONE)
+      Print("ClosePosition [",sym,"] #",ticket," error: ",res.retcode);
 }
 
 void CloseAllSymbolsPositions()
@@ -2939,7 +2940,7 @@ void BuildTabCuenta()
    double bal=AccountInfoDouble(ACCOUNT_BALANCE);
    double eq =AccountInfoDouble(ACCOUNT_EQUITY);
    double mrg=AccountInfoDouble(ACCOUNT_MARGIN);
-   double fm =AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double fm =AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double mLv=(mrg>0)?(eq/mrg)*100.0:0.0;
    double fPL=eq-bal;
    double uPct=(bal>0)?MathMin(mrg/bal,1.0):0.0;
@@ -3804,7 +3805,7 @@ void MPDrawAccount(int x,int y,int w)
 #define MPC_X_PNL  414
 #define MPC_X_EST  462
 
-void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int ord[],int nShown)
+void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
 {
    //--- cabecera de columnas
    MPRect(x,y,w,14,C'26,26,50');
@@ -3828,7 +3829,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int ord[],int nShown)
 
       color bg=s.hasPos?C'8,52,30':
               s.hasLim?C'10,34,64':
-              s.paused?C'55,18,18':((r%2)?C'20,20,32':C'15,15,25');
+              s.paused?C'55,18,18':((r%2)!=0?C'20,20,32':C'15,15,25');
       MPRect(x,ry,w,MP_ROW_H,bg);
       g_MP.Line(x,ry+MP_ROW_H-1,x+w-1,ry+MP_ROW_H-1,MPC(C'35,35,55'));
 
