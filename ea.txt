@@ -3603,13 +3603,9 @@ void MPFillSnapshot(int si,MPSnapshot &s)
    s.zBuy =g_SysState[si].confArmedBuy;
    s.zSell=g_SysState[si].confArmedSell;
 
-   //--- limit pendiente: primero la virtual de confluencia, luego órdenes reales
+   //--- Solo mostrar órdenes pendientes que existen realmente en la cuenta.
+   //    Las limits virtuales no son operaciones de cuenta.
    s.hasLim=false; s.limPrice=0.0; s.limDir=0;
-   if(g_SysState[si].confVPendBuy && g_SysState[si].confVPendBuyPrice>0)
-   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendBuyPrice; s.limDir=1; }
-   else if(g_SysState[si].confVPendSell && g_SysState[si].confVPendSellPrice>0)
-   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendSellPrice; s.limDir=-1; }
-   else
    {
       for(int i=OrdersTotal()-1;i>=0;i--)
       { ulong ot=OrderGetTicket(i); if(ot==0) continue;
