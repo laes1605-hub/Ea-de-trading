@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.37** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par**).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.38** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base**).
 
 ## Archivos
 
@@ -103,7 +103,7 @@ Extras de esta versión:
 - El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
 - Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
 
-## Gestión de riesgo (v8.37 — lógica de "Asistente 3", nivel POR PAR)
+## Gestión de riesgo (v8.38 — lógica de "Asistente 3", nivel POR PAR)
 
 La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 1-20 por par** (compartido por las estrategias del par), y el lote sigue saliendo de la **tabla de riesgo de 20 niveles** (% de la base de capital) que se mantiene igual:
 
@@ -119,6 +119,21 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 - Los cierres **virtuales no mueven el nivel** ni se contabilizan como operaciones de cuenta; únicamente actualizan el CV para decidir cuándo activar LIVE. El nivel solo cambia con cierres LIVE reales.
 - El nivel y su lote se ven en el panel (pestaña OPERAR "NIVEL → Lotaje", CUENTA "Nivel par / Lot", ESTRAT "NIV→Lot") y en la columna **NIV** del PANEL MULTI-PAR. En el log: `NIVEL:3→4`.
 - El estado se guarda por par (`PLEVEL`) en el archivo de estado; los comentarios de órdenes llevan el nivel (`QA_EA_EURUSD_CONFL_N3`).
+
+### Modos de capital base (v8.38)
+
+El lote siempre sale de la **tabla de riesgo de 20 niveles** (% de la base). Lo que cambia es **qué capital base** se usa para calcular ese porcentaje. Se selecciona con el input `InpCapitalMode` (grupo de inputs "MODO DE CAPITAL BASE"):
+
+| Modo | Input | Cómo se calcula la base de decisión |
+|---|---|---|
+| **DINÁMICA** (por defecto) | `CAP_MODE_DYNAMIC` | Como antes: `InpBaseCapital` + los aumentos de balance por encima del máximo histórico (`Bal.máx`). Crece con la cuenta y **no** baja con las pérdidas. |
+| **FIJA** | `CAP_MODE_FIXED` | Siempre = `InpBaseCapital` (ej. 1000). No crece ni disminuye aunque la cuenta suba o baje. |
+| **% DE LA CUENTA** | `CAP_MODE_ACCOUNT` | Siempre = `InpBaseCapitalPct`% del **balance actual** (ej. `InpBaseCapitalPct=12` → base = 12% de la cuenta en cada decisión). Crece si la cuenta crece y baja si la cuenta baja. |
+
+- `InpBaseCapital` (1000 por defecto): capital base de arranque de los modos **DINÁMICA** y **FIJA**.
+- `InpBaseCapitalPct` (12.0 por defecto): porcentaje del balance usado solo en el modo **% DE LA CUENTA**.
+- El modo elegido se muestra en el panel: pestaña **OPERAR** (`Base capital: DINÁMICA 1.234,56 …`), pestaña **CUENTA** (`BASE CAPITAL (12.0% CUENTA)`) y en el log de arranque (`EA v8.38 | … | Base=DINÁMICA 1000.00`).
+- En el modo **FIJA** el lote del nivel N es idéntico siempre (mismo capital base), en el modo **% DE LA CUENTA** se recalcula a cada orden con el balance del momento, y en **DINÁMICA** se comporta exactamente como la versión anterior (no cambia el comportamiento por defecto).
 
 ## Cómo probar
 
@@ -164,6 +179,10 @@ git show --stat HEAD
 - Panel MULTI-PAR presente (debe dar `> 0`):
   ```bash
   grep -cE "MultiPanelUpdate|MPDrawMini|DrawPositionLines|InpShowMultiPanel" "trabajador multichart.mq5"
+  ```
+- Tres modos de capital base presentes (debe dar `> 0`):
+  ```bash
+  grep -cE "ENUM_CAPITAL_MODE|InpCapitalMode|EffectiveBaseCapital|InpBaseCapitalPct" "trabajador multichart.mq5"
   ```
 - Etiquetas sueltas antiguas eliminadas (debe dar `0`):
   ```bash

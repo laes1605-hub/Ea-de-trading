@@ -2,10 +2,20 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.37"
+#property version   "8.38"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
+
+//+------------------------------------------------------------------+
+//| MODO DE CAPITAL BASE (3 modos de gestión del capital)            |
+//+------------------------------------------------------------------+
+enum ENUM_CAPITAL_MODE
+{
+   CAP_MODE_DYNAMIC = 0,   // Dinámica: la base crece con los nuevos máximos del balance
+   CAP_MODE_FIXED   = 1,   // Fija: la base de decisión no crece ni disminuye
+   CAP_MODE_ACCOUNT = 2    // % cuenta: la base = % del balance actual de la cuenta
+};
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
@@ -63,8 +73,10 @@ input double InpRiskStep18       = 1073.0;
 input double InpRiskStep19       = 1609.0;
 input double InpRiskStep20       = 2414.0;
 
-input group "=== BASE DINÁMICA DE CAPITAL ==="
-input double InpBaseCapital      = 1000.0;
+input group "=== MODO DE CAPITAL BASE (3 MODOS) ==="
+input ENUM_CAPITAL_MODE InpCapitalMode   = CAP_MODE_DYNAMIC; // Modo: Dinámica (crece) / Fija / % de la cuenta
+input double            InpBaseCapital    = 1000.0;          // Capital base (modos Dinámica y Fija)
+input double            InpBaseCapitalPct = 12.0;            // % de la cuenta (solo modo "% cuenta")
 
 input group "=== SPLIT DE LOTES ==="
 input double InpMaxLotsPerOrder  = 100.0;
@@ -405,7 +417,8 @@ double   g_BaseMaxBalance          = 0.0;
 //|   · 1:2 (SL protegido) automático en posiciones abiertas desde   |
 //|     nivel ≥5 (InpAutoFromLevel5)                                 |
 //| El lote sigue saliendo de la TABLA DE RIESGO (% de la base de    |
-//| capital), que se mantiene igual.                                 |
+//| capital), que se mantiene igual — solo cambia cómo se calcula la |
+//| base según el modo: DINÁMICA / FIJA / % CUENTA.                  |
 //+------------------------------------------------------------------+
 int g_PairLevel[MAX_SYMBOLS];
 
@@ -630,7 +643,7 @@ double CalcLotByRisk(int si, int cr)
    if(si<0||si>=g_SymCount) return 0.01;
    int    lvl      = MathMax(1,MathMin(g_PanelTableSize,cr))-1;
    double riskPct  = g_RiskTable[lvl];
-   double riskMoney= g_BaseCapital*riskPct/100.0;
+   double riskMoney= EffectiveBaseCapital()*riskPct/100.0;
    double slPts    = SymSL(si);
    double ptVal    = PointValue(g_Symbols[si].name);
    if(slPts<=0||ptVal<=0) return 0.01;
@@ -647,17 +660,55 @@ double GetLotByCR(int si, int cr)
 { return CalcLotByRisk(si,cr); }
 
 //+------------------------------------------------------------------+
-//| BASE DINÁMICA                                                    |
+//| MODO DE CAPITAL BASE (DINÁMICA / FIJA / % CUENTA)               |
+//|                                                                  |
+//|   · DINÁMICA  → base = InpBaseCapital + nuevos máximos de balance|
+//|   · FIJA      → base = InpBaseCapital (nunca crece ni disminuye) |
+//|   · % CUENTA  → base = InpBaseCapitalPct% del balance actual     |
+//| El lote siempre sale de la TABLA DE RIESGO aplicada a la base    |
+//| efectiva del modo seleccionado.                                  |
+//+------------------------------------------------------------------+
+string CapitalModeName()
+{
+   if(InpCapitalMode==CAP_MODE_FIXED)   return "FIJA";
+   if(InpCapitalMode==CAP_MODE_ACCOUNT) return StringFormat("%.1f%% CUENTA",MathMax(0.0,InpBaseCapitalPct));
+   return "DINÁMICA";
+}
+
+double EffectiveBaseCapital()
+{
+   if(InpCapitalMode==CAP_MODE_FIXED)
+      return MathMax(0.01,InpBaseCapital);
+   if(InpCapitalMode==CAP_MODE_ACCOUNT)
+   { double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+     double pct=MathMax(0.0,InpBaseCapitalPct);
+     return (bal>0)?bal*pct/100.0:0.0; }
+   return g_BaseCapital;
+}
+
+string BaseDisplay(bool withMax)
+{
+   string txt=StringFormat("%s  %.2f",CapitalModeName(),EffectiveBaseCapital());
+   if(withMax) txt+=StringFormat("  (Bal.máx: %.2f)",g_BaseMaxBalance);
+   return txt;
+}
+
+//+------------------------------------------------------------------+
+//| BASE DINÁMICA (solo crece la base en modo DINÁMICA; en los       |
+//| modos FIJA y % CUENTA la base efectiva se calcula al vuelo y     |
+//| nunca se incrementa aquí. El máximo de balance se sigue          |
+//| registrando para el panel en todos los modos).                   |
 //+------------------------------------------------------------------+
 void UpdateDynamicBase()
 {
    double bal=AccountInfoDouble(ACCOUNT_BALANCE);
-   if(bal>g_BaseMaxBalance)
+   if(bal<=g_BaseMaxBalance) return;
+   if(InpCapitalMode==CAP_MODE_DYNAMIC)
    { double inc=bal-g_BaseMaxBalance;
      g_BaseCapital+=inc;
-     g_BaseMaxBalance=bal;
      Print("Base actualizada: +",DoubleToString(inc,2),
            " → Base=",DoubleToString(g_BaseCapital,2)); }
+   g_BaseMaxBalance=bal;
 }
 
 //+------------------------------------------------------------------+
@@ -2670,7 +2721,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.37  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.38  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2973,7 +3024,7 @@ void BuildTabOperar()
    ObjRect(PFX_OP+"BASE_BG",cx,y,cw,28,C'14,22,14',C'35,75,35',1);
    ObjLbl(PFX_OP+"BASE_L",cx+6,y+4,"Base capital:",C'140,140,180',7,"Arial");
    ObjLbl(PFX_OP+"BASE_V",cx+cw-6,y+4,
-          StringFormat("%.2f  (Bal.máx: %.2f)",g_BaseCapital,g_BaseMaxBalance),
+          BaseDisplay(true),
           clrGold,8,"Arial Bold",ANCHOR_RIGHT_UPPER);
    ObjLbl(PFX_OP+"BASE_L2",cx+6,y+16,"Lot CR1:",C'140,140,180',7,"Arial");
    ObjLbl(PFX_OP+"BASE_V2",cx+cw-6,y+16,
@@ -3082,9 +3133,11 @@ void BuildTabCuenta()
    BuildCuentaRow(PFX_ACC+"MPC",cx,y,cw,"NIVEL DE MARGEN",mTxt,mC); y+=42;
 
    ObjRect(PFX_ACC+"BASE_BG",cx,y,cw,38,C'14,22,14',C'35,75,35',1);
-   ObjLbl(PFX_ACC+"BASE_H",cx+8,y+5,"BASE CAPITAL  (dinámica)",C'120,150,120',7,"Arial");
+   ObjLbl(PFX_ACC+"BASE_H",cx+8,y+5,
+          StringFormat("BASE CAPITAL  (%s)",CapitalModeName()),
+          C'120,150,120',7,"Arial");
    ObjLbl(PFX_ACC+"BASE_V",cx+cw-8,y+12,
-          StringFormat("%.2f   Máx.Bal: %.2f",g_BaseCapital,g_BaseMaxBalance),
+          StringFormat("%s   Máx.Bal: %.2f",BaseDisplay(false),g_BaseMaxBalance),
           clrGold,10,"Arial Bold",ANCHOR_RIGHT_UPPER); y+=42;
 
    ObjLbl(PFX_ACC+"BL",cx,y,"Uso de margen / balance:",C'100,100,130',7,"Arial"); y+=14;
@@ -3299,8 +3352,8 @@ void BuildTabConfig()
    rows_L[8]="LIVE activa";
    rows_V[8]=liveStr; rows_C[8]=hasLive?clrLimeGreen:clrYellow;
 
-   rows_L[9]="Base capital";
-   rows_V[9]=StringFormat("%.2f",g_BaseCapital); rows_C[9]=clrGold;
+   rows_L[9]="Base capital / modo";
+   rows_V[9]=BaseDisplay(false); rows_C[9]=clrGold;
 
    rows_L[10]="Bal. máx hist.";
    rows_V[10]=StringFormat("%.2f",g_BaseMaxBalance); rows_C[10]=clrGold;
@@ -4218,10 +4271,10 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.37           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.38           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
-   msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
-                     g_BaseCapital,g_BaseMaxBalance);
+   msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
+                     BaseDisplay(false),g_BaseMaxBalance);
    msg+=StringFormat("║  CB Diario    : %.2f%% / %.1f%%   [%s]\n",
                      lossPct,InpMaxDailyLossPct,
                      g_CircuitBreakerOn?"⛔BLOQ":"OK");
@@ -4259,9 +4312,9 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.37 === X=",InpXActivacion,
+   Print("=== DIAG v8.38 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
-         " Base=",DoubleToString(g_BaseCapital,2));
+         " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
    {
       int alive=g_SysState[si].activeLiveStrategy;
@@ -4386,9 +4439,9 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.37 | Símbolos:",g_SymCount,
+   Print("EA v8.38 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
-         " | Base=",DoubleToString(g_BaseCapital,2),
+         " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
    return INIT_SUCCEEDED;
 }
@@ -4403,7 +4456,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.37 cerrado | Razón:",reason);
+   Print("EA v8.38 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
