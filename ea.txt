@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.41"
+#property version   "8.42"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -318,6 +318,9 @@ struct StrategyState
    datetime lastBarTime;
    bool     cbPaused;
    int      cbPausedCV;
+   int      liveLogicLevel;   // nivel de lógica heredado de la serie virtual al
+                              // activar LIVE (ej. 5): la tabla arranca en 1,
+                              // pero el 1:2 se aplica como si estuviera en ese nivel
 };
 
 struct StructureEngine
@@ -557,8 +560,12 @@ int FindTrade(ulong ticket)
 bool IsTrailingActive(int si, int st)
 {
    //--- lógica Asistente 3: el 1:2 (SL protegido) se activa con nivel
-   //    del par >= 5 (InpAutoFromLevel5). La posición concreta lo
-   //    aplica si se abrió con ese nivel (advActive al abrir).
+   //    del par >= 5 (InpAutoFromLevel5). Si la estrategia entró a LIVE
+   //    desde una serie virtual que alcanzó el nivel >=5, la lógica se
+   //    aplica como si estuviera en ese nivel (liveLogicLevel) aunque
+   //    la tabla haya arrancado en 1.
+   if(st>=0 && g_SysState[si].strategies[st].liveLogicLevel>=5)
+      return(InpAutoFromLevel5);
    return(InpAutoFromLevel5 && PairLevel(si)>=5);
 }
 
@@ -958,9 +965,10 @@ void InitSystemState(int si)
      g_SysState[si].strategies[st].virtualSLMoved = false;
      g_SysState[si].strategies[st].magicNumber    = GetStrategyMagic(si,st);
      g_SysState[si].strategies[st].name           = GetStrategyName(st);
-     g_SysState[si].strategies[st].lastBarTime    = 0;
-     g_SysState[si].strategies[st].cbPaused       = false;
-     g_SysState[si].strategies[st].cbPausedCV     = 1;
+   g_SysState[si].strategies[st].lastBarTime    = 0;
+   g_SysState[si].strategies[st].cbPaused       = false;
+   g_SysState[si].strategies[st].cbPausedCV     = 1;
+   g_SysState[si].strategies[st].liveLogicLevel = 0;
 }
 }
 
@@ -1025,7 +1033,8 @@ void SaveStateToFile()
        FileWriteString(h,pp+"VSLMOV="  +(g_SysState[si].strategies[st].virtualSLMoved?"1":"0") +"\n");
 
        FileWriteString(h,pp+"CBPAUSE=" +(g_SysState[si].strategies[st].cbPaused?"1":"0")       +"\n");
-       FileWriteString(h,pp+"CBCV="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCV)+"\n"); }
+       FileWriteString(h,pp+"CBCV="    +IntegerToString(g_SysState[si].strategies[st].cbPausedCV)+"\n");
+       FileWriteString(h,pp+"VLOGIC="  +IntegerToString(g_SysState[si].strategies[st].liveLogicLevel)+"\n"); }
      //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
      FileWriteString(h,sp+"PLEVEL="  +IntegerToString(PairLevel(si))+"\n");
      FileWriteString(h,sp+"CONF_ARMED_B="+(g_SysState[si].confArmedBuy?"1":"0")            +"\n");
@@ -1116,6 +1125,7 @@ void LoadStateFromFile()
 
              else if(field=="CBPAUSE")g_SysState[si].strategies[st].cbPaused=(StringToInteger(val)>0);
              else if(field=="CBCV")   g_SysState[si].strategies[st].cbPausedCV=(int)StringToInteger(val);
+             else if(field=="VLOGIC") g_SysState[si].strategies[st].liveLogicLevel=(int)StringToInteger(val);
              break; } }
          break; } } }
    FileClose(h);
@@ -1136,6 +1146,14 @@ void LoadStateFromFile()
 //|   Así, con InpXActivacion = X el EA pasa a LIVE al completar X   |
 //|   pérdidas de la serie (CV = X+1) y la operación X+1 ya es LIVE. |
 //|                                                                  |
+//|   AL ACTIVAR LIVE: las X virtuales son SOLO la condición. La     |
+//|   tabla SIEMPRE arranca en el NIVEL 1 (lote base) y la serie     |
+//|   real progresa desde ahí (pérdida → 1→2→3…). El nivel que       |
+//|   alcanzó la serie virtual se conserva como NIVEL DE LÓGICA      |
+//|   (liveLogicLevel): el 1:2 automático se aplica como si la       |
+//|   estrategia estuviera en ese nivel (ej. X=4 → lógica N5, 1:2 ON |
+//|   desde el primer trade live aunque la tabla marque N1).         |
+//|                                                                  |
 //|   EXCEPCIÓN: si en el par ya hay una estrategia LIVE, los cierres|
 //|   virtuales de las demás SOLO cuentan su CV (para no mover dos   |
 //|   veces el nivel compartido); el nivel lo mueven únicamente las  |
@@ -1153,6 +1171,7 @@ void ClearVirtualState(int si,int st)
    g_SysState[si].strategies[st].virtualSL_price=0;
    g_SysState[si].strategies[st].virtualTP_price=0;
    g_SysState[si].strategies[st].virtualSLMoved =false;
+   g_SysState[si].strategies[st].liveLogicLevel=0;
    if(st==STRAT_CONFLUENCIA)
    { g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
      g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0; }
@@ -1162,8 +1181,10 @@ void ClearVirtualState(int si,int st)
 //    · pérdida            → CV +1  y  nivel +1 (si no hay LIVE en el par)
 //    · ganancia limpia    → CV = 1  y  nivel = 1 (si no hay LIVE en el par)
 //    · ganancia protegida → CV −3/−4 y nivel −3/−4 (si no hay LIVE en el par)
-//    Con el nivel y el CV en sincronía, al cumplir InpXActivacion pérdidas
-//    (CV = X+1) se activa LIVE y la operación X+1 ya es real.
+//    El nivel de la serie virtual define el NIVEL DE LÓGICA con el que
+//    arranca LIVE; al activarse, la TABLA se resetea a 1 (el lote del
+//    primer trade real sale del nivel 1, pero el 1:2 se aplica como si
+//    la estrategia estuviera en el nivel alcanzado por la virtual).
 void OnVirtualSL_Original(int si, int st)
 {
    int cv=g_SysState[si].strategies[st].CV;
@@ -1300,13 +1321,21 @@ void SelectNextLiveStrategy(int si)
 void ActivateLiveStrategy(int si, int st)
 {
    for(int s=0;s<STRAT_COUNT;s++) g_SysState[si].strategies[s].isLive=false;
+   //--- la serie VIRTUAL es solo la CONDICIÓN para pasar a LIVE:
+   //    guardamos el nivel que alcanzó (lógica) pero la TABLA arranca
+   //    SIEMPRE en el nivel 1. Ej: X=4 → serie virtual llegó a nivel 5,
+   //    el primer trade LIVE se abre con nivel 1 (lote base) y con la
+   //    lógica 1:2 como si estuviera en el nivel 5.
+   int logicLevel=PairLevel(si);
    ClearVirtualState(si,st);              // cancela la virtual pendiente: en LIVE solo cuenta lo real
    g_SysState[si].strategies[st].isLive=true;
+   g_SysState[si].strategies[st].liveLogicLevel=logicLevel;
+   g_PairLevel[si]=1;                    // tabla: LIVE SIEMPRE desde el nivel 1
    g_SysState[si].hasLive=true;
    g_SysState[si].activeLiveStrategy=st;
    Print("★ LIVE [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
          "] CV=",g_SysState[si].strategies[st].CV,
-         " NIVEL par=",PairLevel(si),
+         " NIVEL par=1 (serie virtual: N",logicLevel,")",
          " Lot=",DoubleToString(GetPairLot(si),2),
          " 1:2=",IsTrailingActive(si,st)?"ON":"OFF");
    SaveState(); if(!IsTester()) RebuildPanel();
@@ -2405,7 +2434,9 @@ void SyncAllTrades()
      { int cvN=(sid>=0)?g_SysState[symIdx].strategies[sid].CV:1;
        g_Trades[idx].CR_level =PairLevel(symIdx);   // nivel del par al abrir
        g_Trades[idx].CV_level =cvN;
-       g_Trades[idx].advActive=(g_AdvancedMode||(InpAutoFromLevel5&&PairLevel(symIdx)>=5));
+       g_Trades[idx].advActive=(g_AdvancedMode||
+                                ((sid>=0)?IsTrailingActive(symIdx,sid):
+                                          (InpAutoFromLevel5&&PairLevel(symIdx)>=5)));
        g_Trades[idx].slMoved  =false; g_Trades[idx].splitGroupId=0;
        g_Trades[idx].sl=srvSL; g_Trades[idx].tp=srvTP; }
      g_TradeCount++; }
@@ -2646,7 +2677,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.41  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.42  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3339,13 +3370,17 @@ void BuildTabEstrategias()
    bool hasLive=g_SysState[si].hasLive;
    int  alive  =g_SysState[si].activeLiveStrategy;
 
-   string sysStr=hasLive&&alive>=0?
-      StringFormat("★  LIVE: %s  |  CV=%d  NIVEL=%d  Lot=%.2f",
-                   g_SysState[si].strategies[alive].name,
-                   g_SysState[si].strategies[alive].CV,
-                   PairLevel(si),GetPairLot(si))
-      :StringFormat("◌  SIMULANDO  |  X=%d  →  LIVE tras %d pérdidas (op.%d)",
-                    InpXActivacion,InpXActivacion,InpXActivacion+1);
+   string sysStr;
+   if(hasLive&&alive>=0)
+   { int ll=g_SysState[si].strategies[alive].liveLogicLevel;
+     sysStr=StringFormat("★  LIVE: %s  |  CV=%d  NIVEL=%d%s  Lot=%.2f",
+                         g_SysState[si].strategies[alive].name,
+                         g_SysState[si].strategies[alive].CV,
+                         PairLevel(si),(ll>0?StringFormat(" (lóg.N%d)",ll):""),
+                         GetPairLot(si)); }
+   else
+      sysStr=StringFormat("◌  SIMULANDO  |  X=%d  →  LIVE tras %d pérdidas (op.%d)",
+                          InpXActivacion,InpXActivacion,InpXActivacion+1);
    color sysC =hasLive?clrLimeGreen:clrYellow;
    color sysBG=hasLive?C'8,25,8':C'22,20,8';
    ObjRect(PFX_EST+"HDR",cx,y,cw,26,sysBG,hasLive?C'30,110,30':C'100,90,20',1);
@@ -4034,7 +4069,11 @@ void MPVirtStratLine(int x,int y,int w,int si,int st,int thr)
    string txt; color tc;
    if(!S.enabled)      { txt="OFF";      tc=C'95,95,110'; }
    else if(S.cbPaused) { txt="PAUSA";    tc=clrTomato; }
-   else if(S.isLive)   { txt="★ LIVE";   tc=clrLimeGreen; }
+   else if(S.isLive)
+   { if(S.liveLogicLevel>=5) txt="★ LIVE · 1:2 (lóg.N5)";
+     else if(S.liveLogicLevel>0) txt=StringFormat("★ LIVE · lóg.N%d",S.liveLogicLevel);
+     else txt="★ LIVE";
+     tc=clrLimeGreen; }
    else if(S.CV>=thr)  { txt="ESPERA";   tc=clrYellow; }
    else
    { int losses=MathMax(0,S.CV-1);
@@ -4330,7 +4369,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.41           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.42           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4371,7 +4410,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.41 === X=",InpXActivacion,
+   Print("=== DIAG v8.42 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4496,7 +4535,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.41 | Símbolos:",g_SymCount,
+   Print("EA v8.42 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4513,7 +4552,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.41 cerrado | Razón:",reason);
+   Print("EA v8.42 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -4748,7 +4787,8 @@ void OnChartEvent(const int id,const long &lparam,
           g_SysState[s].strategies[st].virtualActive =false;
           g_SysState[s].strategies[st].isLive        =false;
           g_SysState[s].strategies[st].virtualSLMoved=false;
-          g_SysState[s].strategies[st].cbPaused      =false; }
+          g_SysState[s].strategies[st].cbPaused      =false;
+          g_SysState[s].strategies[st].liveLogicLevel =0; }
         g_SysState[s].hasLive=false;
         g_SysState[s].activeLiveStrategy=-1;
         ConfluenciaResetState(s); }
@@ -4772,7 +4812,8 @@ void OnChartEvent(const int id,const long &lparam,
           g_SysState[si].strategies[st].virtualActive =false;
           g_SysState[si].strategies[st].isLive        =false;
           g_SysState[si].strategies[st].virtualSLMoved=false;
-          g_SysState[si].strategies[st].cbPaused      =false; }
+          g_SysState[si].strategies[st].cbPaused      =false;
+          g_SysState[si].strategies[st].liveLogicLevel =0; }
         g_SysState[si].hasLive=false;
         g_SysState[si].activeLiveStrategy=-1;
         ConfluenciaResetState(si); }

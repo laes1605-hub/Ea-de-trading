@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.41** (**una sola estrategia**: estructura de líneas L1-L4 en H1 + apertura por confluencia en M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base** + **fase virtual→LIVE con conteo idéntico a LIVE** + **estado virtual por par en el panel**).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.42** (**una sola estrategia**: estructura de líneas L1-L4 en H1 + apertura por confluencia en M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base** + **fase virtual→LIVE con conteo idéntico a LIVE** + **estado virtual por par en el panel**).
 
 ## Archivos
 
@@ -10,7 +10,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `ea.txt` | Copia en texto plano del mismo archivo (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
 
-## Estrategia única (v8.41): estructura de líneas H1 + confluencia M3
+## Estrategia única (v8.42): estructura de líneas H1 + confluencia M3
 
 El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógica de líneas **L1-L4** (la misma de siempre) y la **apertura** se hace con la lógica de confluencia. No hay una segunda estrategia de entrada.
 
@@ -92,7 +92,7 @@ Extras de esta versión:
 - El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
 - Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
 
-## Gestión de riesgo (v8.41 — lógica de "Asistente 3", nivel POR PAR)
+## Gestión de riesgo (v8.42 — lógica de "Asistente 3", nivel POR PAR)
 
 La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 1-20 por par** (compartido por la estrategia única del par), y el lote sigue saliendo de la **tabla de riesgo de 20 niveles** (% de la base de capital) que se mantiene igual:
 
@@ -105,15 +105,18 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 - **1:2 automático desde nivel 5** (`InpAutoFromLevel5=true`, como Asistente 3): las posiciones abiertas con nivel del par ≥5 activan el SL protegido al avanzar `InpActivationPoints` (210) → SL a `InpProtectedSL` (205). Esa ganancia "protegida" baja el nivel −3/−4 en vez de resetear a 1.
 - **MODO AVANZADO** (panel CONFIG): fuerza el 1:2 en todas las posiciones nuevas, además del automático por nivel.
 - **Se mantiene igual**: la **tabla de riesgo** (`InpRiskStep1..20`, % de la base), los **3 modos de capital base**, el **circuit breaker diario** (`InpMaxDailyLossPct=4.5%`), **SL/TP** (95/305, RR ≈ 1:3.2), **split de lotes**, **filtro de horario** y hasta 20 símbolos con SL/TP propios.
-- **Fase virtual → LIVE (v8.41)**: la estrategia **siempre** simula primero. Con `InpXActivacion=X` el EA pasa a LIVE cuando se **completan X pérdidas virtuales**, de modo que la **operación X+1 ya es LIVE** (ej. `X=4` → operaciones 1-4 virtuales, operación 5 en LIVE). El conteo de las operaciones virtuales usa **exactamente el mismo régimen que las operaciones LIVE** (reglas de Asistente 3):
+- **Fase virtual → LIVE (v8.42)**: la estrategia **siempre** simula primero. Con `InpXActivacion=X` el EA pasa a LIVE cuando se **completan X pérdidas virtuales**, de modo que la **operación X+1 ya es LIVE** (ej. `X=4` → operaciones 1-4 virtuales, operación 5 en LIVE). El conteo de las operaciones virtuales usa **exactamente el mismo régimen que las operaciones LIVE** (reglas de Asistente 3):
   - **Pérdida** → CV +1 y nivel del par +1 (sube por la tabla).
   - **Ganancia limpia (TP)** → CV = 1 y nivel del par = 1 (reset).
   - **Ganancia con SL protegido (1:2)** → CV y nivel −3 (abierto en nivel <10) o −4 (abierto en nivel ≥10).
-  - Con CV y nivel sincronizados, al activar LIVE la primera operación real usa el mismo nivel/lote que tendría Asistente 3 tras esa misma racha.
+  - **Las X virtuales son SOLO la condición para pasar a LIVE.**
+- **Al activar LIVE (v8.42) — regla clave**: la estrategia **NO arranca en el nivel al que llegó la serie virtual**. La **tabla arranca SIEMPRE en el NIVEL 1** (lote base) y la serie real progresa desde ahí (pérdida → `1→2→3…`). El nivel que alcanzó la serie virtual se recuerda como **nivel de lógica** (`liveLogicLevel`):
+  - Ejemplo con `X=4`: la serie virtual llegó a nivel 5 → al activar LIVE la tabla marca **N1** (lote de nivel 1), pero el **1:2 automático se aplica como si estuviera en el nivel 5** (`★ LIVE · 1:2 (lóg.N5)` en el panel).
+  - Si la primera operación live pierde, el nivel pasa **1→2** (no 5→6). Si gana limpia, vuelve a 1 y la sesión live termina; el "nivel de lógica" se limpia.
 - `InpUseVirtualBeforeLive` se eliminó: la fase virtual ya no se puede saltar (antes, con `false`, las estrategias podían abrir órdenes reales sin pasar por el conteo virtual).
 - Los cierres virtuales nunca se contabilizan como operaciones de la cuenta real.
 
-### Estado virtual por par (v8.41)
+### Estado virtual por par (v8.42)
 
 El **PANEL MULTI-PAR** (esquina superior derecha, tester visual y gráfico real) tiene ahora una sección **`VIRTUAL → LIVE`** entre la tabla de pares y los mini-gráficos que muestra, en **una fila por par**, el estado de la estrategia (`CONFL`):
 
@@ -127,7 +130,7 @@ El **PANEL MULTI-PAR** (esquina superior derecha, tester visual y gráfico real)
 - El nivel y su lote se ven en el panel (pestaña OPERAR "NIVEL → Lotaje", CUENTA "Nivel par / Lot", ESTRAT "NIV→Lot") y en la columna **NIV** del PANEL MULTI-PAR. En el log: `NIVEL:3→4`.
 - El estado se guarda por par (`PLEVEL`) en el archivo de estado; los comentarios de órdenes llevan el nivel (`QA_EA_EURUSD_CONFL_N3`).
 
-### Modos de capital base (v8.41)
+### Modos de capital base (v8.42)
 
 El lote siempre sale de la **tabla de riesgo de 20 niveles** (% de la base). Lo que cambia es **qué capital base** se usa para calcular ese porcentaje. Se selecciona con el input `InpCapitalMode` (grupo de inputs "MODO DE CAPITAL BASE"):
 
@@ -139,7 +142,7 @@ El lote siempre sale de la **tabla de riesgo de 20 niveles** (% de la base). Lo 
 
 - `InpBaseCapital` (1000 por defecto): capital base de arranque de los modos **DINÁMICA** y **FIJA**.
 - `InpBaseCapitalPct` (12.0 por defecto): porcentaje del balance usado solo en el modo **% DE LA CUENTA**.
-- El modo elegido se muestra en el panel: pestaña **OPERAR** (`Base capital: DINÁMICA 1.234,56 …`), pestaña **CUENTA** (`BASE CAPITAL (12.0% CUENTA)`) y en el log de arranque (`EA v8.41 | … | Base=DINÁMICA 1000.00`).
+- El modo elegido se muestra en el panel: pestaña **OPERAR** (`Base capital: DINÁMICA 1.234,56 …`), pestaña **CUENTA** (`BASE CAPITAL (12.0% CUENTA)`) y en el log de arranque (`EA v8.42 | … | Base=DINÁMICA 1000.00`).
 - En el modo **FIJA** el lote del nivel N es idéntico siempre (mismo capital base), en el modo **% DE LA CUENTA** se recalcula a cada orden con el balance del momento, y en **DINÁMICA** se comporta exactamente como la versión anterior (no cambia el comportamiento por defecto).
 
 ## Cómo probar
