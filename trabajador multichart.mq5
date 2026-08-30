@@ -1049,19 +1049,48 @@ void LoadStateFromFile()
 //|   El CV de cada estrategia (contador de pérdidas virtuales que   |
 //|   activa LIVE con InpXActivacion) NO cambia: el sistema          |
 //|   virtual→LIVE se mantiene igual que siempre.                    |
+//|                                                                  |
+//|   MIENTRAS haya una estrategia LIVE en el par, el NIVEL solo se  |
+//|   mueve con operaciones REALES de la cuenta. Los cierres         |
+//|   virtuales NO tocan el NIVEL (solo su propio CV). Al activar    |
+//|   LIVE se cancela cualquier virtual pendiente para que no se     |
+//|   reanude después.                                               |
 //+------------------------------------------------------------------+
+//--- Limpia el estado de una simulación virtual (se usa al entrar o
+//    salir de LIVE para que lo virtual nunca vuelva a contar)
+void ClearVirtualState(int si,int st)
+{
+   g_SysState[si].strategies[st].virtualActive  =false;
+   g_SysState[si].strategies[st].virtualDir     =0;
+   g_SysState[si].strategies[st].virtualOpen    =0;
+   g_SysState[si].strategies[st].virtualOpenLevel=1;
+   g_SysState[si].strategies[st].virtualSL_price=0;
+   g_SysState[si].strategies[st].virtualTP_price=0;
+   g_SysState[si].strategies[st].virtualSLMoved =false;
+   if(st==STRAT_CONFLUENCIA)
+   { g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
+     g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0; }
+}
+
 //--- cierre VIRTUAL (simulación): CV sigue contando para LIVE,
 //    y el nivel del par avanza con las reglas de Asistente 3
+//    (SOLO si no hay ninguna estrategia LIVE en el par)
 void OnVirtualSL_Original(int si, int st)
 {
    g_SysState[si].strategies[st].CV++;
    UpdateCVMax(si,st);
-   int lv=PairLevel(si); PairLevelUp(si);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
-         "→",g_SysState[si].strategies[st].CV,
-         " NIVEL:",lv,"→",PairLevel(si),
-         " Lot:",DoubleToString(GetPairLot(si),2));
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+            "→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelUp(si);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+           "→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(!g_SysState[si].hasLive&&
       g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
@@ -1074,22 +1103,32 @@ void OnVirtualSL_Protected(int si, int st)
    int r=(cv>=10)?4:3;
    g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
    UpdateCVMax(si,st);
-   int lv=PairLevel(si);
-   PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-         " NIVEL:",lv,"→",PairLevel(si),
-         " Lot:",DoubleToString(GetPairLot(si),2));
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si);
+     PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-         " NIVEL:",PairLevel(si),"→1");
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+           " NIVEL:",PairLevel(si),"→1");
+     PairLevelReset(si); }
    g_SysState[si].strategies[st].CV=1;
-   PairLevelReset(si);
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
@@ -1133,6 +1172,7 @@ void OnLiveTP(int si, int st)
    g_SysState[si].strategies[st].isLive=false;
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
+   ClearVirtualState(si,st);              // al salir de LIVE lo virtual empieza de cero
    SelectNextLiveStrategy(si);
    SaveState();
    if(!IsTester()) RebuildPanel();
@@ -1170,6 +1210,7 @@ void SelectNextLiveStrategy(int si)
 void ActivateLiveStrategy(int si, int st)
 {
    for(int s=0;s<STRAT_COUNT;s++) g_SysState[si].strategies[s].isLive=false;
+   ClearVirtualState(si,st);              // cancela la virtual pendiente: en LIVE solo cuenta lo real
    g_SysState[si].strategies[st].isLive=true;
    g_SysState[si].hasLive=true;
    g_SysState[si].activeLiveStrategy=st;
@@ -1189,6 +1230,7 @@ void StartStrategyVirtual(int si, int st, int signal)
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(signal==0||g_SysState[si].strategies[st].virtualActive) return;
+   if(g_SysState[si].strategies[st].isLive) return;   // en LIVE jamás se abre/sigue una virtual
    string sym=g_Symbols[si].name;
    double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
@@ -1213,6 +1255,7 @@ void StartStrategyVirtual(int si, int st, int signal)
 void UpdateStrategyVirtual(int si, int st)
 {
    if(!g_SysState[si].strategies[st].enabled)       return;
+   if(g_SysState[si].strategies[st].isLive)         return;   // en LIVE no se avanza ninguna virtual
    if(!g_SysState[si].strategies[st].virtualActive) return;
    string sym=g_Symbols[si].name;
    int    dir=g_SysState[si].strategies[st].virtualDir;
