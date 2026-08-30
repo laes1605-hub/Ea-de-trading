@@ -2495,9 +2495,13 @@ void ProcessClosedQueue()
      bool hSL=false;
      if(snap.slMoved)
      { hSL=true; hTP=false; }
+     else if(dR==DEAL_REASON_SL)
+     { hSL=true; hTP=false; } // todo SL real sube el nivel
+     else if(dR==DEAL_REASON_TP)
+     { hTP=true; hSL=false; }
      else
-     { hTP=(dR==DEAL_REASON_TP)||(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
-       hSL=(dR==DEAL_REASON_SL)||(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
+     { hTP=(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
+       hSL=(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
        if(!hTP&&!hSL){hTP=(cPL>0);hSL=(cPL<=0);} }
      string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
      string sym=(si>=0)?g_Symbols[si].name:"?";
