@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.34** (estrategia PERSONAL de líneas).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.35** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3).
 
 ## Archivos
 
@@ -10,14 +10,45 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `ea.txt` | Copia en texto plano del mismo archivo (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
 
-## Estrategia (v8.34 — solo la PERSONAL)
+## Estrategia (v8.35)
 
-**LINEAS** — lógica de las 4 líneas L1-L4, operativa con la **gestión de riesgo integrada** (virtual → LIVE, tabla de 20 niveles, SL/TP 1:3).
+### Líneas visibles (paso 1)
+
+- **En el TF del gráfico solo existen las 4 líneas: L1, L2, L3 y L4.** Se eliminaron las líneas D1 y las EQ del dibujo (el motor es el mismo de siempre, esa lógica no cambió).
+- La **ESTRATEGIA 1** añade encima sus propios visuales: rango H1 (naranja), **línea del 50% H1** (dorado punteada), **zona de COMPRA** (mitad inferior, relleno verde) y **zona de VENTA** (mitad superior, relleno rojo), y el **nivel de entrada congelado 50% M3** (verde/rojo discontinua).
+- Input `InpShowConfluencias` para mostrar/ocultar los visuales de la confluencia.
+
+### ESTRATEGIA 1 — Confluencia H1 (madre) + M3 (entrada)
+
+Dos temporalidades de confluencia: **H1 = estructura madre** y **M3 = confirmación de entrada** (configurables en `InpConfTFSuperior` / `InpConfTFEntrada`). Ambas usan el mismo motor de líneas L1-L4.
+
+**Cómo funciona:**
+
+1. Se marca el **50% del rango actual H1**: zona de **COMPRA = parte de abajo** (precio ≤ 50%) y zona de **VENTA = parte de arriba** (precio ≥ 50%).
+2. **En estructura H1 alcista solo se hacen compras; en bajista solo ventas.**
+3. **Compras** (simétrico para ventas):
+   1. Se activa la búsqueda de compras cuando el precio **toca** la zona de compra H1 — solo con tocarla basta, aunque luego salga de la zona.
+   2. Con la lógica de líneas en **M3** se espera un **cambio de estructura bajista→alcista (CHoCH)**.
+   3. Detectado el cambio, se marca el **50% del rango M3 solo cuando el precio lo cruza**; ese nivel queda **CONGELADO** (no se actualiza aunque el rango se ensanche) y allí se coloca una **orden LIMIT de compra** con el SL/TP del EA.
+4. Ventas: toque de la zona de venta H1 → CHoCH **alcista→bajista** en M3 → cruce del 50% M3 a la baja → **SELL LIMIT** congelado en ese 50%.
+
+**Reglas de órdenes:**
+
+- **Solo puede haber una posición abierta por par.** Con una posición abierta no se coloca nada y los CHoCH que llegan caducan.
+- **Al abrirse una posición se eliminan el resto de órdenes limit** pendientes del par.
+- Sin posición abierta puede colocar las órdenes limit que la lógica genere (un CHoCH válido = una orden).
+- Si la orden se ejecutó y la posición **se perió estando el precio aún en la zona**, puede buscar otra entrada (con un CHoCH nuevo). Si **ya no está en la zona**, no busca hasta que **vuelva a tocarla**.
+- Un **cambio de estructura H1** reinicia las zonas y exige un nuevo toque.
+
+**Fases:** igual que el resto del EA, la estrategia primero opera en **simulación (virtual)** —sus limit se simulan y se registran como `vOPEN`— y pasa a **LIVE** (órdenes limit reales) al alcanzar el umbral `InpXActivacion`. Toda la gestión (CV/CR, tabla de riesgo, trailing 1:2, circuit breaker) se aplica igual.
+
+- Inputs: `InpUseConfluencia` (activar), `InpAllowConfluOrders` (permitir órdenes, por defecto `true`), `InpConfTFSuperior=H1`, `InpConfTFEntrada=M3`, `InpShowConfluencias`.
+
+### Estrategia PERSONAL (líneas L1-L4, RR 1:3)
 
 - Entra en el *trigger* al cierre: si durante la reacción **L3** sobrepasa **L1** (compra/estructura alcista) o **L4** sobrepasa **L2** hacia abajo (venta/estructura bajista), el rompimiento queda pendiente y se consolida con vela cerrada.
-- **Operativa pausada por seguridad**: `InpAllowPersonalOrders=false` por defecto, así que el EA solo calcula/dibuja líneas y no abre compras/ventas ni virtuales ni LIVE hasta activar ese input.
-- Las estrategias antiguas **SMC (CHoCH), FVG y OB-H1 fueron eliminadas**; ya no aparecen en Inputs ni en el panel ESTRAT.
-- Parámetro: `InpUsePersonal` (única estrategia, por defecto `true`) y `InpLookbackBars=300`.
+- **Operativa pausada por seguridad**: `InpAllowPersonalOrders=false` por defecto; el EA solo calcula/dibuja sus líneas hasta activar ese input.
+- Las estrategias antiguas **SMC (CHoCH), FVG y OB-H1 siguen eliminadas**.
 
 ### Motor de estructura (las 4 líneas)
 
@@ -28,20 +59,21 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 
 ## Líneas visibles en el gráfico
 
-Las líneas ahora **se marcan con colores vivos y etiqueta con nombre + precio** (antes eran grises casi invisibles y no se dibujaban en el Strategy Tester):
+Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 
 | Línea | Color | Estilo | Significado |
 |---|---|---|---|
-| `D1 L1` / `D1 L2` | 🟠 Naranja | Sólida, grosor 3 | Máximo/mínimo diario |
-| `D1 EQ` | Gris | Punteada | Equilibrio D1 |
 | `L1` / `L2` | 🔵 Azul (DodgerBlue) | Sólida, grosor 2 | Máximo/mínimo del TF del gráfico |
-| `EQ` | Gris | Punteada | Equilibrio del TF |
 | `L3` | 🟣 Magenta | Discontinua, grosor 2 | Techo de la zona de reacción (activa) |
 | `L4` | 🔴 Rojo | Discontinua, grosor 2 | Suelo de la zona de reacción (activa) |
+| `H1 L1` / `H1 L2` | 🟠 Naranja | Sólida, grosor 2 | Rango de la estructura madre H1 (Estrategia 1) |
+| `50% H1` | 🟡 Dorado | Punteada | Punto medio del rango H1 (Estrategia 1) |
+| Zona COMPRA / VENTA H1 | 🟢 Verde / 🔴 Rojo | Rectángulo relleno | Mitad inferior / superior del rango H1 |
+| `ENTRADA (50% M3)` | 🟢 Lima / 🔴 Rojo | Discontinua | Nivel congelado de la orden limit (Estrategia 1) |
 
 - Se dibujan en el gráfico **en vivo y también en el Strategy Tester (modo visual)**.
 - Etiqueta al lado derecho de cada línea con su nombre y precio (ej. `L1  1.08452`).
-- Input `InpShowStructureLines=true` para activar/desactivar el dibujado.
+- Inputs `InpShowStructureLines` (líneas del TF) e `InpShowConfluencias` (zonas H1/M3).
 - L3/L4 solo aparecen cuando la zona de reacción está activa (así funciona el motor).
 
 \* Con RR 1:3 el punto de equilibrio es ~25% de aciertos (más costos ≈ 27–30%), así que un win rate del 40% ya da expectativa positiva. Mide con **profit factor** (>1.5 sólido, >2.0 excelente) y **máximo drawdown**, no solo el win rate.
@@ -66,7 +98,7 @@ Las líneas ahora **se marcan con colores vivos y etiqueta con nombre + precio**
 
 1. **"Modo visual" tiene que estar marcado** — sin él el tester no muestra gráfico, así que no hay dónde dibujar las líneas.
 2. Mira el **log del tester**: debe aparecer `LINEAS [símbolo] L1=… L2=…`. Si no aparece, es que `InpShowStructureLines=false` o el símbolo no cargó datos (prueba con otro símbolo/timeframe).
-3. Las líneas **L3/L4 solo aparecen cuando la zona de reacción está activa** (así funciona el motor); L1/L2/EQ y las D1 sí se ven siempre.
+3. Las líneas **L3/L4 solo aparecen cuando la zona de reacción está activa** (así funciona el motor); L1/L2 sí se ven siempre. Las zonas del 50% H1 aparecen con `InpUseConfluencia=true` e `InpShowConfluencias=true`.
 
 ## Verificación
 
@@ -86,17 +118,25 @@ git show --stat HEAD
   ```bash
   grep -cE "CheckSMCSignal|CheckFVGSignal|CheckOBBounceSignal|InpUseSMC|InpUseFVG|InpUseOBBounce|InpZoneScanBars" "trabajador multichart.mq5"
   ```
-- Una sola estrategia (debe dar `1`):
+- Dos estrategias (PERSONAL + CONFLUENCIA, debe dar `2`):
   ```bash
-  grep -c "STRAT_COUNT      1" "trabajador multichart.mq5"
+  grep -c "STRAT_COUNT      2" "trabajador multichart.mq5"
+  ```
+- Estrategia 1 de confluencia presente (debe dar `> 0`):
+  ```bash
+  grep -cE "UpdateConfluencia|ConfluenciaTryPlace|ConfluenciaProcessChoch|InpUseConfluencia" "trabajador multichart.mq5"
+  ```
+- Sin líneas D1 ni EQ dibujadas (debe dar `0`):
+  ```bash
+  grep -cE "SE_D1|d1LastBar|D1L1|D1EQ|TFEQ" "trabajador multichart.mq5"
   ```
 
 ### 2) En MetaTrader 5 (funcional)
 
 1. Abre **MetaEditor** → `Archivo > Abrir datos > MQL5 > Experts` → pega `trabajador multichart.mq5`.
 2. Pulsa **F7 (Compilar)**: debe compilar sin errores.
-3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)` con `InpUsePersonal=true` y `PARAMETROS MOTOR DE LINEAS`.
-4. Verás en el gráfico las líneas de estructura con etiqueta (D1 naranja gruesas, L1/L2 azules, EQ gris punteada, L3/L4 discontinuas cuando la zona está activa). En el tester, activa el **modo visual** para verlas.
+3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)`, `ESTRATEGIA 1: CONFLUENCIA (H1 MADRE + M3 ENTRADA)` y `PARAMETROS MOTOR DE LINEAS`.
+4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y la entrada 50% M3 cuando se congele. En el tester, activa el **modo visual** para verlas.
 
 ## ⚠️ Advertencia
 
