@@ -227,7 +227,7 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 //+------------------------------------------------------------------+
 #define MAX_SYMBOLS      20
 #define MAX_TABLE_SIZE   20
-#define PNL_W            360
+#define PNL_W            440
 #define PNL_H            660
 #define TITLE_H          36
 #define INFOBAR_H        52
@@ -2472,6 +2472,10 @@ void ProcessClosedQueue()
    if(g_ClosedCount==0) return;
    HistorySelect(TimeCurrent()-432000,TimeCurrent()+60);   // 5 días: cubre cierres del viernes procesados el lunes
    ClosedSnap pending[]; int pc=0; bool anyP=false;
+   // Un cierre lógico por estrategia/par aunque la orden haya sido dividida
+   // en varios tickets (split de lotaje).
+   bool counted[MAX_SYMBOLS][STRAT_COUNT];
+   ArrayInitialize(counted,false);
    for(int q=0;q<g_ClosedCount;q++)
    { ClosedSnap snap=g_ClosedQueue[q]; if(snap.ticket==0) continue;
      double cPL=0,cPr=0; long dR=-1; bool found=false;
@@ -2508,8 +2512,10 @@ void ProcessClosedQueue()
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
      Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
            wc?" [SEMANAL]":"");
-     if(!snap.isManual&&si>=0&&st>=0&&g_SysState[si].strategies[st].isLive)
+     if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
+        g_SysState[si].strategies[st].isLive&&!counted[si][st])
      {
+        counted[si][st]=true;
         if(wc&&cPL<0)
         { Print("CIERRE SEMANAL en PÉRDIDA [",sym,"/",sn,"] #",snap.ticket,
                 " PL=",DoubleToString(cPL,2)," → cuenta como SL (nivel +1)");
