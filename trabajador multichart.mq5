@@ -36,6 +36,11 @@ input int    InpStartMinute      = 0;
 input int    InpEndHour          = 20;
 input int    InpEndMinute        = 0;
 
+input group "=== CIERRE SEMANAL (VIERNES) ==="
+input bool InpUseFridayClose       = true;  // Cerrar posiciones del EA el viernes antes del cierre
+input int  InpFridayCloseHour      = 22;    // Hora del servidor a la que cierra el mercado el viernes (ajustar según broker)
+input int  InpFridayCloseMinBefore = 30;    // Minutos antes del cierre para cerrar las posiciones
+
 input group "=== TABLA DE RIESGO (% de Base) — 20 niveles ==="
 input double InpRiskStep1        = 1.0;
 input double InpRiskStep2        = 2.0;
@@ -498,6 +503,42 @@ long GetStrategyMagic(int symIdx, int sid)
 long MagicManual(int symIdx)
 { return InpMagicNumber+(long)(symIdx*10)+9; }
 
+//+------------------------------------------------------------------+
+//| CIERRE SEMANAL (VIERNES)                                        |
+//|   · Ventana: viernes (hora de cierre − minutos) hasta el lunes. |
+//|   · Posiciones del EA se cierran automáticamente en la ventana. |
+//|   · Pérdida al cierre → cuenta como SL (nivel +1, CV +1).       |
+//|   · Ganancia al cierre → no suma ni quita: NIVEL y CV quedan    |
+//|     iguales, la próxima operación abre con el mismo nivel.      |
+//+------------------------------------------------------------------+
+bool IsWeeklyCloseWindow(datetime t=0)
+{
+   if(t==0) t=TimeCurrent();
+   MqlDateTime dt; TimeToStruct(t,dt);
+   if(dt.day_of_week==6||dt.day_of_week==0) return true;          // sábado / domingo
+   if(dt.day_of_week==5)                                          // viernes
+   { int nowMin=dt.hour*60+dt.min;
+     int closeMin=MathMax(0,InpFridayCloseHour*60-InpFridayCloseMinBefore);
+     return nowMin>=closeMin; }
+   return false;
+}
+
+void WeeklyCloseAllIfDue()
+{
+   if(!InpUseFridayClose)        return;
+   if(!IsWeeklyCloseWindow())    return;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(!IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+     string sym=PositionGetString(POSITION_SYMBOL);
+     double pl=PositionGetDouble(POSITION_PROFIT);
+     Print("CIERRE SEMANAL [",sym,"] #",t," PL=",DoubleToString(pl,2),
+           (pl<0?" → se contará como SL":" → nivel intacto para la próxima operación"));
+     ClosePosition(t);
+   }
+}
+
 string GetStrategyName(int sid)
 {
    switch(sid)
@@ -691,7 +732,7 @@ void CheckCircuitBreaker()
 //+------------------------------------------------------------------+
 double CalcSL(string symbol, int si, double openPrice, int posType)
 {
-   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   int    dg =(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
    double slP=SymSL(si)-SymSLOffset(si);
    if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
@@ -702,7 +743,7 @@ double CalcSL(string symbol, int si, double openPrice, int posType)
 
 double CalcTP(string symbol, int si, double openPrice, int posType)
 {
-   int    dg =SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   int    dg =(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double pt =SymbolInfoDouble(symbol,SYMBOL_POINT);
    double tpP=SymTP(si);
    if(posType==POSITION_TYPE_BUY||posType==ORDER_TYPE_BUY||
@@ -1049,19 +1090,48 @@ void LoadStateFromFile()
 //|   El CV de cada estrategia (contador de pérdidas virtuales que   |
 //|   activa LIVE con InpXActivacion) NO cambia: el sistema          |
 //|   virtual→LIVE se mantiene igual que siempre.                    |
+//|                                                                  |
+//|   MIENTRAS haya una estrategia LIVE en el par, el NIVEL solo se  |
+//|   mueve con operaciones REALES de la cuenta. Los cierres         |
+//|   virtuales NO tocan el NIVEL (solo su propio CV). Al activar    |
+//|   LIVE se cancela cualquier virtual pendiente para que no se     |
+//|   reanude después.                                               |
 //+------------------------------------------------------------------+
+//--- Limpia el estado de una simulación virtual (se usa al entrar o
+//    salir de LIVE para que lo virtual nunca vuelva a contar)
+void ClearVirtualState(int si,int st)
+{
+   g_SysState[si].strategies[st].virtualActive  =false;
+   g_SysState[si].strategies[st].virtualDir     =0;
+   g_SysState[si].strategies[st].virtualOpen    =0;
+   g_SysState[si].strategies[st].virtualOpenLevel=1;
+   g_SysState[si].strategies[st].virtualSL_price=0;
+   g_SysState[si].strategies[st].virtualTP_price=0;
+   g_SysState[si].strategies[st].virtualSLMoved =false;
+   if(st==STRAT_CONFLUENCIA)
+   { g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
+     g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0; }
+}
+
 //--- cierre VIRTUAL (simulación): CV sigue contando para LIVE,
 //    y el nivel del par avanza con las reglas de Asistente 3
+//    (SOLO si no hay ninguna estrategia LIVE en el par)
 void OnVirtualSL_Original(int si, int st)
 {
    g_SysState[si].strategies[st].CV++;
    UpdateCVMax(si,st);
-   int lv=PairLevel(si); PairLevelUp(si);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
-         "→",g_SysState[si].strategies[st].CV,
-         " NIVEL:",lv,"→",PairLevel(si),
-         " Lot:",DoubleToString(GetPairLot(si),2));
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+            "→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelUp(si);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+           "→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(!g_SysState[si].hasLive&&
       g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
@@ -1074,22 +1144,32 @@ void OnVirtualSL_Protected(int si, int st)
    int r=(cv>=10)?4:3;
    g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
    UpdateCVMax(si,st);
-   int lv=PairLevel(si);
-   PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-         " NIVEL:",lv,"→",PairLevel(si),
-         " Lot:",DoubleToString(GetPairLot(si),2));
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si);
+     PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-         " NIVEL:",PairLevel(si),"→1");
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+           " NIVEL:",PairLevel(si),"→1");
+     PairLevelReset(si); }
    g_SysState[si].strategies[st].CV=1;
-   PairLevelReset(si);
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
@@ -1133,6 +1213,7 @@ void OnLiveTP(int si, int st)
    g_SysState[si].strategies[st].isLive=false;
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
+   ClearVirtualState(si,st);              // al salir de LIVE lo virtual empieza de cero
    SelectNextLiveStrategy(si);
    SaveState();
    if(!IsTester()) RebuildPanel();
@@ -1170,6 +1251,7 @@ void SelectNextLiveStrategy(int si)
 void ActivateLiveStrategy(int si, int st)
 {
    for(int s=0;s<STRAT_COUNT;s++) g_SysState[si].strategies[s].isLive=false;
+   ClearVirtualState(si,st);              // cancela la virtual pendiente: en LIVE solo cuenta lo real
    g_SysState[si].strategies[st].isLive=true;
    g_SysState[si].hasLive=true;
    g_SysState[si].activeLiveStrategy=st;
@@ -1189,6 +1271,7 @@ void StartStrategyVirtual(int si, int st, int signal)
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(signal==0||g_SysState[si].strategies[st].virtualActive) return;
+   if(g_SysState[si].strategies[st].isLive) return;   // en LIVE jamás se abre/sigue una virtual
    string sym=g_Symbols[si].name;
    double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
@@ -1213,6 +1296,7 @@ void StartStrategyVirtual(int si, int st, int signal)
 void UpdateStrategyVirtual(int si, int st)
 {
    if(!g_SysState[si].strategies[st].enabled)       return;
+   if(g_SysState[si].strategies[st].isLive)         return;   // en LIVE no se avanza ninguna virtual
    if(!g_SysState[si].strategies[st].virtualActive) return;
    string sym=g_Symbols[si].name;
    int    dir=g_SysState[si].strategies[st].virtualDir;
@@ -1714,6 +1798,7 @@ bool ConfluenciaPlacePending(int si, int dir, double price)
    }
 
    //--- fase LIVE: orden limit real con el SL/TP del EA
+   if(IsWeeklyCloseWindow()) return false;   // no dejar límites nuevos en la ventana semanal
    double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
    double minDist=(double)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL)*
@@ -2110,6 +2195,7 @@ int CheckStrategySignal(int si, int st)
 void UpdateAllStrategies()
 {
    if(g_CircuitBreakerOn) return;
+   if(IsWeeklyCloseWindow()) return;   // sin nuevas entradas desde el cierre de viernes hasta el lunes
    for(int si=0;si<g_SymCount;si++)
    { for(int st=0;st<STRAT_COUNT;st++)
      { if(!g_SysState[si].strategies[st].enabled) continue;
@@ -2224,6 +2310,7 @@ void OpenByStrategy(int si, int st, int signal)
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(signal==0||!g_SysState[si].strategies[st].isLive) return;
+   if(IsWeeklyCloseWindow()) return;   // no abrir durante la ventana de cierre semanal
    for(int i=0;i<g_TradeCount;i++)
       if(g_Trades[i].symbolIdx==si&&g_Trades[i].strategyId==st&&!g_Trades[i].isPending) return;
    double lots=GetPairLot(si);
@@ -2250,7 +2337,8 @@ void ClosePosition(ulong ticket)
    { req.type=ORDER_TYPE_SELL; req.price=SymbolInfoDouble(sym,SYMBOL_BID); }
    else
    { req.type=ORDER_TYPE_BUY;  req.price=SymbolInfoDouble(sym,SYMBOL_ASK); }
-   OrderSend(req,res);
+   if(!OrderSend(req,res) || res.retcode!=TRADE_RETCODE_DONE)
+      Print("ClosePosition [",sym,"] #",ticket," error: ",res.retcode);
 }
 
 void CloseAllSymbolsPositions()
@@ -2390,11 +2478,12 @@ void SyncAllTrades()
 void ProcessClosedQueue()
 {
    if(g_ClosedCount==0) return;
-   HistorySelect(TimeCurrent()-86400,TimeCurrent());
+   HistorySelect(TimeCurrent()-432000,TimeCurrent()+60);   // 5 días: cubre cierres del viernes procesados el lunes
    ClosedSnap pending[]; int pc=0; bool anyP=false;
    for(int q=0;q<g_ClosedCount;q++)
    { ClosedSnap snap=g_ClosedQueue[q]; if(snap.ticket==0) continue;
      double cPL=0,cPr=0; long dR=-1; bool found=false;
+     long   dTime=0;
      for(int d=HistoryDealsTotal()-1;d>=0;d--)
      { ulong dt=HistoryDealGetTicket(d); if(dt==0) continue;
        if(!IsAnyMagic((long)HistoryDealGetInteger(dt,DEAL_MAGIC))) continue;
@@ -2403,6 +2492,7 @@ void ProcessClosedQueue()
        cPL=HistoryDealGetDouble(dt,DEAL_PROFIT);
        cPr=HistoryDealGetDouble(dt,DEAL_PRICE);
        dR=(long)HistoryDealGetInteger(dt,DEAL_REASON);
+       dTime=(long)HistoryDealGetInteger(dt,DEAL_TIME);
        found=true; break; }
      if(!found){ArrayResize(pending,pc+1);pending[pc]=snap;pc++;continue;}
      int si=snap.symbolIdx; int st=snap.strategyId;
@@ -2412,10 +2502,23 @@ void ProcessClosedQueue()
      if(!hTP&&!hSL&&!snap.slMoved){hTP=(cPL>0);hSL=(cPL<=0);}
      string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
      string sym=(si>=0)?g_Symbols[si].name:"?";
-     Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL);
+     bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
+     Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
+           wc?" [SEMANAL]":"");
      if(!snap.isManual&&si>=0&&st>=0&&g_SysState[si].strategies[st].isLive)
-     { if(hTP) OnStrategyLiveTP(si,st);
-       else    OnStrategyLiveSL(si,st,snap.slMoved,snap.CR_level); }
+     {
+        if(wc&&cPL<0)
+        { Print("CIERRE SEMANAL en PÉRDIDA [",sym,"/",sn,"] #",snap.ticket,
+                " PL=",DoubleToString(cPL,2)," → cuenta como SL (nivel +1)");
+          OnLiveSL_Original(si,st); }
+        else if(wc)
+        { Print("CIERRE SEMANAL en GANANCIA [",sym,"/",sn,"] #",snap.ticket,
+                " PL=",DoubleToString(cPL,2)," → NIVEL intacto, próxima operación con el mismo nivel");
+          if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si); }
+        else
+        { if(hTP) OnStrategyLiveTP(si,st);
+          else    OnStrategyLiveSL(si,st,snap.slMoved,snap.CR_level); }
+     }
      anyP=true; }
    ArrayResize(g_ClosedQueue,pc);
    for(int i=0;i<pc;i++) g_ClosedQueue[i]=pending[i];
@@ -2939,7 +3042,7 @@ void BuildTabCuenta()
    double bal=AccountInfoDouble(ACCOUNT_BALANCE);
    double eq =AccountInfoDouble(ACCOUNT_EQUITY);
    double mrg=AccountInfoDouble(ACCOUNT_MARGIN);
-   double fm =AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double fm =AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double mLv=(mrg>0)?(eq/mrg)*100.0:0.0;
    double fPL=eq-bal;
    double uPct=(bal>0)?MathMin(mrg/bal,1.0):0.0;
@@ -3804,7 +3907,7 @@ void MPDrawAccount(int x,int y,int w)
 #define MPC_X_PNL  414
 #define MPC_X_EST  462
 
-void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int ord[],int nShown)
+void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
 {
    //--- cabecera de columnas
    MPRect(x,y,w,14,C'26,26,50');
@@ -3828,7 +3931,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int ord[],int nShown)
 
       color bg=s.hasPos?C'8,52,30':
               s.hasLim?C'10,34,64':
-              s.paused?C'55,18,18':((r%2)?C'20,20,32':C'15,15,25');
+              s.paused?C'55,18,18':((r%2)!=0?C'20,20,32':C'15,15,25');
       MPRect(x,ry,w,MP_ROW_H,bg);
       g_MP.Line(x,ry+MP_ROW_H-1,x+w-1,ry+MP_ROW_H-1,MPC(C'35,35,55'));
 
@@ -4304,6 +4407,7 @@ void OnTick()
    UpdateDynamicBase();
 
    int prevCount=g_TradeCount;
+   WeeklyCloseAllIfDue();     // viernes: cierra posiciones del EA antes del cierre del mercado
    SyncAllTrades();
    ProcessClosedQueue();
    CheckCircuitBreaker();
