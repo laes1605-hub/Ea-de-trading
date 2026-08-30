@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.39"
+#property version   "8.40"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -2742,7 +2742,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.39  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.40  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3504,6 +3504,11 @@ void BuildTabEstrategias()
          ObjLbl(PFX_EST+"CVV"+rid,cx+38,y+24,
                 IntegerToString(g_SysState[si].strategies[st].CV),
                 IsTrailingActive(si,st)?clrLimeGreen:clrWhite,9,"Arial Bold");
+         ObjLbl(PFX_EST+"FAL"+rid,cx+72,y+24,"Falta:",C'120,120,150',7,"Arial");
+         ObjLbl(PFX_EST+"FAV"+rid,cx+102,y+24,
+                IntegerToString(rdy?0:MathMax(0,(InpXActivacion+1)-g_SysState[si].strategies[st].CV)),
+                rdy?clrYellow:(g_SysState[si].strategies[st].CV>=(InpXActivacion/2+2))?clrOrange:clrDodgerBlue,
+                9,"Arial Bold");
 
          ObjLbl(PFX_EST+"CML"+rid,cx+10,y+38,"CVmax:",C'120,120,150',7,"Arial");
          ObjLbl(PFX_EST+"CMV"+rid,cx+50,y+38,
@@ -4063,6 +4068,121 @@ void MPDrawLegend(int x,int y)
 }
 
 //+------------------------------------------------------------------+
+//| SECCIÓN "VIRTUAL → LIVE": estado por par y por estrategia        |
+//|                                                                  |
+//| Muestra, para cada par y cada estrategia, en qué punto va la     |
+//| fase virtual (pérdidas completadas de X, CV, cuánto falta para   |
+//| activar LIVE), el nivel/lote que tomará y el estado (SIM,        |
+//| ESPERA, ★ LIVE, PAUSA, OFF).                                     |
+//+------------------------------------------------------------------+
+#define MP_VROW_H 15
+
+int MPVirtScore(int si,int thr)
+{
+   if(g_SysState[si].hasLive) return 3000;
+   if(g_CircuitBreakerOn)     return 0;
+   int best=0;
+   for(int st=0;st<STRAT_COUNT;st++)
+   { if(!g_SysState[si].strategies[st].enabled) continue;
+     if(g_SysState[si].strategies[st].cbPaused) continue;
+     int cv=g_SysState[si].strategies[st].CV;
+     if(cv>=thr) return 2000+MathMin(cv,999);
+     if(cv>best) best=cv; }
+   return best;
+}
+
+//--- una estrategia de un par (columna del estado virtual) ---------
+void MPVirtStratLine(int x,int y,int w,int si,int st,int thr)
+{
+   StrategyState S=g_SysState[si].strategies[st];   // copia de solo lectura
+   MPText(x,y+4,S.name,C'150,160,190',true,7);
+
+   int bx=x+42, bw=MathMin(96,w-42-108);
+   if(bw<20) bw=20;
+   MPRect(bx,y+2,bw,11,C'28,32,50');
+   MPFrame(bx,y+2,bw,11,C'60,66,100');
+
+   double frac; color fc;
+   if(!S.enabled)     { frac=0.0; fc=C'60,60,70'; }
+   else if(S.cbPaused){ frac=0.0; fc=C'120,40,40'; }
+   else if(S.isLive)  { frac=1.0; fc=clrLimeGreen; }
+   else
+   { int losses=MathMax(0,S.CV-1);
+     frac=MathMin((double)losses/(double)MathMax(1,InpXActivacion),1.0);
+     fc=(S.CV>=thr)?clrYellow:
+        (frac>=0.75)?clrOrange:
+        (frac>=0.5)?clrDodgerBlue:C'60,80,150'; }
+   int fw=(int)MathRound(bw*frac);
+   if(fw>0) MPRect(bx,y+2,fw,11,fc);
+   // marcas de las X pérdidas objetivo
+   for(int q=1;q<MathMax(1,InpXActivacion);q++)
+   { int sx=bx+(int)MathRound((double)bw*q/MathMax(1,InpXActivacion));
+     g_MP.Line(sx,y+2,sx,y+12,MPC(C'80,90,130')); }
+
+   string txt; color tc;
+   if(!S.enabled)      { txt="OFF";      tc=C'95,95,110'; }
+   else if(S.cbPaused) { txt="PAUSA";    tc=clrTomato; }
+   else if(S.isLive)   { txt="★ LIVE";   tc=clrLimeGreen; }
+   else if(S.CV>=thr)  { txt="ESPERA";   tc=clrYellow; }
+   else
+   { int losses=MathMax(0,S.CV-1);
+     int falta=MathMax(0,thr-S.CV);
+     txt=StringFormat("pérd %d/%d · falta %d",
+                      losses,MathMax(1,InpXActivacion),falta);
+     if(S.virtualActive) txt+=" · vOPEN";
+     tc=(falta<=1)?clrOrange:(falta<=2)?clrDodgerBlue:C'150,170,210'; }
+   MPText(x+42+bw+6,y+4,txt,tc,false,7);
+}
+
+//--- cabecera + filas del estado virtual (devuelve la altura) ------
+int MPDrawVirtualState(int x,int y,int w)
+{
+   int thr=InpXActivacion+1;
+
+   //--- orden: pares con LIVE primero, después los más cerca de LIVE
+   int vo[MAX_SYMBOLS]; int nAct=0;
+   for(int i=0;i<g_SymCount;i++)
+      if(g_Symbols[i].active) vo[nAct++]=i;
+   for(int i=1;i<nAct;i++)
+   { int key=vo[i]; int kv=MPVirtScore(key,thr); int j=i-1;
+     while(j>=0 && MPVirtScore(vo[j],thr)<kv){ vo[j+1]=vo[j]; j--; }
+     vo[j+1]=key; }
+   int rows=MathMin(nAct,MP_MAX_ROWS);
+
+   MPRect(x,y,w,16,C'24,30,54');
+   MPFrame(x,y,w,16,C'70,85,150');
+   string t=StringFormat("VIRTUAL → LIVE  ·  X=%d → LIVE tras %d pérdidas (op.%d)",
+                         InpXActivacion,InpXActivacion,InpXActivacion+1);
+   MPText(x+8,y+4,t,clrGold,true,8);
+   MPTextR(x+w-8,y+4,StringFormat("%d pares",rows),C'150,160,190',false,8);
+   int h=16;
+
+   for(int r=0;r<rows;r++)
+   { int si=vo[r];
+     bool hasLive=g_SysState[si].hasLive;
+     int ry=y+h+r*MP_VROW_H;
+     color bg=hasLive?C'10,34,18':
+              g_SysState[si].strategies[STRAT_PERSONAL].isLive?C'10,34,18':
+              g_SysState[si].strategies[STRAT_CONFLUENCIA].isLive?C'10,34,18':
+              g_SysState[si].strategies[STRAT_PERSONAL].cbPaused?C'55,18,18':
+              g_SysState[si].strategies[STRAT_CONFLUENCIA].cbPaused?C'55,18,18':
+              ((r%2)!=0?C'19,21,33':C'15,17,27');
+     MPRect(x,ry,w,MP_VROW_H,bg);
+     g_MP.Line(x,ry+MP_VROW_H-1,x+w-1,ry+MP_VROW_H-1,MPC(C'35,35,55'));
+     MPText(x+8,ry+4,g_Symbols[si].name,clrGold,true,8);
+     MPVirtStratLine(x+88,ry,290,si,STRAT_PERSONAL,thr);
+     MPVirtStratLine(x+386,ry,290,si,STRAT_CONFLUENCIA,thr);
+   }
+   h+=rows*MP_VROW_H;
+   if(nAct>rows)
+   { MPText(x+8,y+h+2,
+            StringFormat("… y %d pares más (tabla de arriba y pestaña ESTRAT)",nAct-rows),
+            C'130,130,150',false,8);
+     h+=13; }
+   return h;
+}
+
+//+------------------------------------------------------------------+
 //| Actualización del panel (con throttle para no frenar el tester)  |
 //+------------------------------------------------------------------+
 void MultiPanelUpdate(bool force=false)
@@ -4098,9 +4218,13 @@ void MultiPanelUpdate(bool force=false)
       if(chartSlots==0) chartSlots=MathMin(1,nAct);
       chartSlots=MathMin(chartSlots,MP_MAX_CHARTS); }
    int chartRows=(chartSlots+1)/2;
-   int W=620;
+   int W=700;
    int H=22+24+14+rows*MP_ROW_H;
    if(nAct>rows) H+=13;
+   //--- sección estado virtual (por par / por estrategia)
+   int vRows=MathMin(nAct,MP_MAX_ROWS);
+   H+=6+16+vRows*MP_VROW_H;
+   if(nAct>vRows) H+=13;
    if(chartRows>0) H+=8+chartRows*MP_BOX_H+(chartRows-1)*6;
    H+=20;
 
@@ -4137,6 +4261,10 @@ void MultiPanelUpdate(bool force=false)
    MPDrawTable(0,y,W,snaps,ord,rows);
    y+=14+rows*MP_ROW_H;
    if(nAct>rows) y+=13;
+
+   //--- estado virtual: cuánto falta por par y por estrategia
+   y+=6;
+   y+=MPDrawVirtualState(0,y,W);
 
    if(chartSlots>0)
    {
@@ -4293,7 +4421,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.39           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.40           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4334,7 +4462,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.39 === X=",InpXActivacion,
+   Print("=== DIAG v8.40 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4461,7 +4589,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.39 | Símbolos:",g_SymCount,
+   Print("EA v8.40 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4478,7 +4606,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.39 cerrado | Razón:",reason);
+   Print("EA v8.40 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
