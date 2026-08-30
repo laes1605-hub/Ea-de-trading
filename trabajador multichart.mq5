@@ -1114,8 +1114,8 @@ void ClearVirtualState(int si,int st)
 }
 
 //--- cierre VIRTUAL (simulación): CV sigue contando para LIVE,
-//    y el nivel del par avanza con las reglas de Asistente 3
-//    (SOLO si no hay ninguna estrategia LIVE en el par)
+//    El nivel del par SOLO cambia con operaciones LIVE reales de la cuenta.
+//    Los cierres virtuales únicamente actualizan el CV de activación.
 void OnVirtualSL_Original(int si, int st)
 {
    g_SysState[si].strategies[st].CV++;
@@ -1144,31 +1144,17 @@ void OnVirtualSL_Protected(int si, int st)
    int r=(cv>=10)?4:3;
    g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
    UpdateCVMax(si,st);
-   if(g_SysState[si].hasLive)
-      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
-   else
-   { int lv=PairLevel(si);
-     PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
-     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-           " NIVEL:",lv,"→",PairLevel(si),
-           " Lot:",DoubleToString(GetPairLot(si),2)); }
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
-   if(g_SysState[si].hasLive)
-      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
-   else
-   { Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-           " NIVEL:",PairLevel(si),"→1");
-     PairLevelReset(si); }
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
    g_SysState[si].strategies[st].CV=1;
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
