@@ -214,6 +214,7 @@ input string InpComment          = "QA_EA";
 
 input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
+input bool   InpUseVirtualBeforeLive = false; // true: X operaciones virtuales antes de LIVE
 input int    InpTableSize        = 20;
 
 input group "=== PARAMETROS MOTOR DE LINEAS ==="
@@ -226,7 +227,7 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 //+------------------------------------------------------------------+
 #define MAX_SYMBOLS      20
 #define MAX_TABLE_SIZE   20
-#define PNL_W            360
+#define PNL_W            520
 #define PNL_H            660
 #define TITLE_H          36
 #define INFOBAR_H        52
@@ -1114,8 +1115,8 @@ void ClearVirtualState(int si,int st)
 }
 
 //--- cierre VIRTUAL (simulación): CV sigue contando para LIVE,
-//    y el nivel del par avanza con las reglas de Asistente 3
-//    (SOLO si no hay ninguna estrategia LIVE en el par)
+//    El nivel del par SOLO cambia con operaciones LIVE reales de la cuenta.
+//    Los cierres virtuales únicamente actualizan el CV de activación.
 void OnVirtualSL_Original(int si, int st)
 {
    g_SysState[si].strategies[st].CV++;
@@ -1144,31 +1145,17 @@ void OnVirtualSL_Protected(int si, int st)
    int r=(cv>=10)?4:3;
    g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
    UpdateCVMax(si,st);
-   if(g_SysState[si].hasLive)
-      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
-   else
-   { int lv=PairLevel(si);
-     PairLevelBack(si,g_SysState[si].strategies[st].virtualOpenLevel);
-     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-           " NIVEL:",lv,"→",PairLevel(si),
-           " Lot:",DoubleToString(GetPairLot(si),2)); }
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
-   if(g_SysState[si].hasLive)
-      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
-   else
-   { Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-           " NIVEL:",PairLevel(si),"→1");
-     PairLevelReset(si); }
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
    g_SysState[si].strategies[st].CV=1;
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
@@ -2210,10 +2197,14 @@ void UpdateAllStrategies()
          if(!hasPos&&IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st); if(sig!=0) OpenByStrategy(si,st,sig); } }
        else
-       { UpdateStrategyVirtual(si,st);
-         if(!g_SysState[si].strategies[st].virtualActive)
+       { if(InpUseVirtualBeforeLive)
+         { UpdateStrategyVirtual(si,st);
+           if(!g_SysState[si].strategies[st].virtualActive)
+           { int sig=CheckStrategySignal(si,st);
+             if(sig!=0) StartStrategyVirtual(si,st,sig); } }
+         else if(IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st);
-           if(sig!=0) StartStrategyVirtual(si,st,sig); } } } }
+           if(sig!=0) OpenByStrategy(si,st,sig); } } } }
 }
 
 //+------------------------------------------------------------------+
@@ -2309,10 +2300,11 @@ void OpenByStrategy(int si, int st, int signal)
 {
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
-   if(signal==0||!g_SysState[si].strategies[st].isLive) return;
+   if(signal==0) return;
    if(IsWeeklyCloseWindow()) return;   // no abrir durante la ventana de cierre semanal
-   for(int i=0;i<g_TradeCount;i++)
-      if(g_Trades[i].symbolIdx==si&&g_Trades[i].strategyId==st&&!g_Trades[i].isPending) return;
+   // Límite de exposición: como máximo una posición abierta por símbolo,
+   // independientemente de la estrategia o del origen de la posición.
+   if(HasAnyPositionSymbol(si)) return;
    double lots=GetPairLot(si);
    ENUM_ORDER_TYPE ot=(signal>0)?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    Print("Orden [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,"] ",
@@ -2480,6 +2472,10 @@ void ProcessClosedQueue()
    if(g_ClosedCount==0) return;
    HistorySelect(TimeCurrent()-432000,TimeCurrent()+60);   // 5 días: cubre cierres del viernes procesados el lunes
    ClosedSnap pending[]; int pc=0; bool anyP=false;
+   // Un cierre lógico por estrategia/par aunque la orden haya sido dividida
+   // en varios tickets (split de lotaje).
+   bool counted[MAX_SYMBOLS][STRAT_COUNT];
+   ArrayInitialize(counted,false);
    for(int q=0;q<g_ClosedCount;q++)
    { ClosedSnap snap=g_ClosedQueue[q]; if(snap.ticket==0) continue;
      double cPL=0,cPr=0; long dR=-1; bool found=false;
@@ -2497,16 +2493,29 @@ void ProcessClosedQueue()
      if(!found){ArrayResize(pending,pc+1);pending[pc]=snap;pc++;continue;}
      int si=snap.symbolIdx; int st=snap.strategyId;
      double tol=(si>=0)?SymbolInfoDouble(g_Symbols[si].name,SYMBOL_POINT)*5:0.00001;
-     bool hTP=(dR==DEAL_REASON_TP)||(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
-     bool hSL=(dR==DEAL_REASON_SL)||(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
-     if(!hTP&&!hSL&&!snap.slMoved){hTP=(cPL>0);hSL=(cPL<=0);}
+     // Si el SL fue movido a protección, esa marca tiene prioridad sobre
+     // la razón/precio reportados por el broker: es una ganancia protegida.
+     bool hTP=false;
+     bool hSL=false;
+     if(snap.slMoved)
+     { hSL=true; hTP=false; }
+     else if(dR==DEAL_REASON_SL)
+     { hSL=true; hTP=false; } // todo SL real sube el nivel
+     else if(dR==DEAL_REASON_TP)
+     { hTP=true; hSL=false; }
+     else
+     { hTP=(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
+       hSL=(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
+       if(!hTP&&!hSL){hTP=(cPL>0);hSL=(cPL<=0);} }
      string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
      string sym=(si>=0)?g_Symbols[si].name:"?";
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
      Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
            wc?" [SEMANAL]":"");
-     if(!snap.isManual&&si>=0&&st>=0&&g_SysState[si].strategies[st].isLive)
+     if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
+        !counted[si][st])
      {
+        counted[si][st]=true;
         if(wc&&cPL<0)
         { Print("CIERRE SEMANAL en PÉRDIDA [",sym,"/",sn,"] #",snap.ticket,
                 " PL=",DoubleToString(cPL,2)," → cuenta como SL (nivel +1)");
@@ -2516,8 +2525,11 @@ void ProcessClosedQueue()
                 " PL=",DoubleToString(cPL,2)," → NIVEL intacto, próxima operación con el mismo nivel");
           if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si); }
         else
-        { if(hTP) OnStrategyLiveTP(si,st);
-          else    OnStrategyLiveSL(si,st,snap.slMoved,snap.CR_level); }
+        { // Un SL que dejó beneficio es necesariamente el trailing/protegido,
+          // aunque el broker no cierre exactamente en el precio guardado.
+          bool trailingClose=(snap.slMoved || (hSL && cPL>0.0));
+          if(hTP && !trailingClose) OnStrategyLiveTP(si,st);
+          else                     OnStrategyLiveSL(si,st,trailingClose,snap.CR_level); }
      }
      anyP=true; }
    ArrayResize(g_ClosedQueue,pc);
@@ -3640,13 +3652,9 @@ void MPFillSnapshot(int si,MPSnapshot &s)
    s.zBuy =g_SysState[si].confArmedBuy;
    s.zSell=g_SysState[si].confArmedSell;
 
-   //--- limit pendiente: primero la virtual de confluencia, luego órdenes reales
+   //--- Solo mostrar órdenes pendientes que existen realmente en la cuenta.
+   //    Las limits virtuales no son operaciones de cuenta.
    s.hasLim=false; s.limPrice=0.0; s.limDir=0;
-   if(g_SysState[si].confVPendBuy && g_SysState[si].confVPendBuyPrice>0)
-   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendBuyPrice; s.limDir=1; }
-   else if(g_SysState[si].confVPendSell && g_SysState[si].confVPendSellPrice>0)
-   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendSellPrice; s.limDir=-1; }
-   else
    {
       for(int i=OrdersTotal()-1;i>=0;i--)
       { ulong ot=OrderGetTicket(i); if(ot==0) continue;
@@ -3901,11 +3909,11 @@ void MPDrawAccount(int x,int y,int w)
 #define MPC_X_M3  122
 #define MPC_X_ZONA 152
 #define MPC_X_LIM  188
-#define MPC_X_POS  256
-#define MPC_X_NIV  348
-#define MPC_X_LOT  378
-#define MPC_X_PNL  414
-#define MPC_X_EST  462
+#define MPC_X_POS  236
+#define MPC_X_NIV  350
+#define MPC_X_LOT  390
+#define MPC_X_PNL  430
+#define MPC_X_EST  470
 
 void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
 {
@@ -3917,7 +3925,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
    MPText(x+MPC_X_ZONA,y+3,"ZONA",clrSilver,true,8);
    MPText(x+MPC_X_LIM ,y+3,"LÍMITE",clrSilver,true,8);
    MPText(x+MPC_X_POS ,y+3,"POSICIÓN",clrSilver,true,8);
-   MPText(x+MPC_X_NIV ,y+3,"NIV",clrSilver,true,8);
+   MPText(x+MPC_X_NIV ,y+3,"NTV",clrSilver,true,8);
    MPText(x+MPC_X_LOT ,y+3,"LOT",clrSilver,true,8);
    MPText(x+MPC_X_PNL ,y+3,"P&L",clrSilver,true,8);
    MPText(x+MPC_X_EST ,y+3,"ESTADO / PRÓXIMO PASO",clrSilver,true,8);
@@ -3947,7 +3955,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
                                   (s.posDir>0)?"▲":"▼",DoubleToString(s.posLots,2),
                                   DoubleToString(s.posEntry,s.dg)):"-",
              s.hasPos?clrWhite:clrGray,false,8);
-      MPText(x+MPC_X_NIV ,ry+3,StringFormat("%d",s.cr),clrDodgerBlue,false,8);
+      MPText(x+MPC_X_NIV ,ry+2,StringFormat("%d",s.cr),clrAqua,true,10);
       MPText(x+MPC_X_LOT ,ry+3,DoubleToString(s.lot,2),clrDodgerBlue,false,8);
       MPText(x+MPC_X_PNL ,ry+3,s.hasPos?StringFormat("%s%.2f",(s.posPL>=0)?"+":"",s.posPL):"-",
              s.hasPos?((s.posPL>=0)?clrLimeGreen:clrTomato):clrGray,false,8);

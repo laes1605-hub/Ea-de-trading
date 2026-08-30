@@ -116,7 +116,7 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 - **1:2 automático desde nivel 5** (`InpAutoFromLevel5=true`, como Asistente 3): las posiciones abiertas con nivel del par ≥5 activan el SL protegido al avanzar `InpActivationPoints` (210) → SL a `InpProtectedSL` (205). Esa ganancia "protegida" baja el nivel −3/−4 en vez de resetear a 1.
 - **MODO AVANZADO** (panel CONFIG): fuerza el 1:2 en todas las posiciones nuevas, además del automático por nivel.
 - **Se mantiene igual**: la **tabla de riesgo** (`InpRiskStep1..20`, % de la base), la **base dinámica de capital**, el **sistema virtual → LIVE** (`InpXActivacion=4`: la estrategia simula con CV y pasa a real al alcanzar el umbral — el CV solo cuenta pérdidas virtuales, ya no mueve niveles), el **circuit breaker diario** (`InpMaxDailyLossPct=4.5%`), **SL/TP** (95/305, RR ≈ 1:3.2), **split de lotes**, **filtro de horario** y hasta 20 símbolos con SL/TP propios.
-- Los cierres **virtuales también mueven el nivel** del par con estas mismas reglas (la simulación refleja lo que hará el real).
+- Los cierres **virtuales no mueven el nivel** ni se contabilizan como operaciones de cuenta; únicamente actualizan el CV para decidir cuándo activar LIVE. El nivel solo cambia con cierres LIVE reales.
 - El nivel y su lote se ven en el panel (pestaña OPERAR "NIVEL → Lotaje", CUENTA "Nivel par / Lot", ESTRAT "NIV→Lot") y en la columna **NIV** del PANEL MULTI-PAR. En el log: `NIVEL:3→4`.
 - El estado se guarda por par (`PLEVEL`) en el archivo de estado; los comentarios de órdenes llevan el nivel (`QA_EA_EURUSD_CONFL_N3`).
 
