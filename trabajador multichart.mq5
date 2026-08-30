@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.31"
+#property version   "8.32"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -236,7 +236,7 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 //+------------------------------------------------------------------+
 enum ENUM_STRATEGY_ID
 {
-   STRAT_PERSONAL  = 0    // lógica de líneas smc2 (trigger L1/L2) — ÚNICA estrategia
+   STRAT_PERSONAL  = 0    // lógica de líneas (trigger L3/L4 al tick) — ÚNICA estrategia
 };
 
 enum ENUM_STRUCTURE_BIAS
@@ -1116,11 +1116,83 @@ bool IsNewBar(int si, int st)
 }
 
 //+------------------------------------------------------------------+
-//| MOTOR DE ESTRUCTURA DE LÍNEAS (adaptado de smc2.mq5)             |
-//| L1/L2 = máximo/mínimo del rango; EQ = punto medio (equilibrio);  |
-//| L3/L4 = zona de reacción; bias por color de vela;                |
-//| CHoCH = cambio de bias al romper L1/L2.                          |
+//| MOTOR DE ESTRUCTURA DE LÍNEAS                                      |
+//| L1 = tick más alto del rango; L2 = tick más bajo del rango.       |
+//| En continuidad alcista solo sube L1; en continuidad bajista solo  |
+//| baja L2. L3/L4 se activan únicamente cuando cierra una vela       |
+//| contraria a la estructura, y desde ahí guardan máximos/mínimos    |
+//| por tick (mechas incluidas). Cuando L3>L1 o L4<L2 se hace swap    |
+//| inmediato: L1=L3, L2=L4, L3/L4 desaparecen y el bias queda en la  |
+//| dirección del último rompimiento.                                 |
 //+------------------------------------------------------------------+
+void SE_UpdateEQ(StructureEngine &SE)
+{
+   SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+}
+
+void SE_ClearReaction(StructureEngine &SE)
+{
+   SE.L3=0.0;
+   SE.L4=0.0;
+   SE.L3L4_Active=false;
+   SE.Phase=PHASE_CONTINUATION;
+}
+
+int SE_CommitStructureMove(StructureEngine &SE, int dir, int &choch)
+{
+   if(dir==0 || !SE.L3L4_Active) return 0;
+
+   ENUM_STRUCTURE_BIAS oldBias=SE.Bias;
+   ENUM_STRUCTURE_BIAS newBias=BIAS_BULLISH;
+   if(dir<0) newBias=BIAS_BEARISH;
+
+   //--- El nuevo rango siempre queda definido por los extremos
+   //    acumulados en la reacción: techo=L3, suelo=L4.
+   SE.L1=SE.L3;
+   SE.L2=SE.L4;
+   if(SE.L1<SE.L2)
+   {
+      double tmp=SE.L1;
+      SE.L1=SE.L2;
+      SE.L2=tmp;
+   }
+
+   SE.Bias=newBias;
+   SE_UpdateEQ(SE);
+   SE_ClearReaction(SE);
+
+   choch=(oldBias!=BIAS_UNDEFINED && oldBias!=newBias ? dir : 0);
+   return dir;
+}
+
+int SE_LastBreakDirectionFromCandle(double O, double C, ENUM_STRUCTURE_BIAS currentBias)
+{
+   //--- Si una misma vela toca ambos lados no existe forma fiable de
+   //    saber el orden solo con OHLC; se toma como último movimiento
+   //    el sentido del cuerpo. En flujo tick real, SE_OnTick procesa
+   //    cada ruptura en orden y esta regla casi no se usa.
+   if(C>O) return +1;
+   if(C<O) return -1;
+   if(currentBias==BIAS_BEARISH) return +1;
+   return -1;
+}
+
+int SE_CheckBreakAndCommit(StructureEngine &SE, double O, double C, int &choch)
+{
+   if(!SE.Valid || !SE.L3L4_Active) return 0;
+
+   bool breakUp=(SE.L3>SE.L1);   // L3 sobrepasa L1
+   bool breakDn=(SE.L4<SE.L2);   // L4 sobrepasa L2 hacia abajo
+   if(!breakUp && !breakDn) return 0;
+
+   int dir=0;
+   if(breakUp && breakDn) dir=SE_LastBreakDirectionFromCandle(O,C,SE.Bias);
+   else if(breakUp)       dir=+1;
+   else                   dir=-1;
+
+   return SE_CommitStructureMove(SE,dir,choch);
+}
+
 bool SE_Init(StructureEngine &SE, string sym, ENUM_TIMEFRAMES tf)
 {
    SE.TF=tf; SE.Valid=false;
@@ -1138,57 +1210,110 @@ bool SE_Init(StructureEngine &SE, string sym, ENUM_TIMEFRAMES tf)
      if(R[i].low <SE.L2) SE.L2=R[i].low; }
    if(R[0].close>R[0].open)      SE.Bias=BIAS_BULLISH;
    else if(R[0].close<R[0].open) SE.Bias=BIAS_BEARISH;
-   SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
+   SE_UpdateEQ(SE);
    SE.Valid=true;
    return true;
 }
 
 //+------------------------------------------------------------------+
-//| Procesa la vela cerrada: swap, extremos/CHoCH, trigger y         |
-//| activación de L3/L4. Devuelve señales choch/trig por referencia. |
+//| Actualización tick a tick: continuidad y ruptura con L3/L4       |
+//+------------------------------------------------------------------+
+int SE_OnTick(StructureEngine &SE, string sym, int &choch)
+{
+   choch=0;
+   if(!SE.Valid) return 0;
+
+   double price=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(price<=0.0) return 0;
+
+   if(SE.Bias==BIAS_UNDEFINED) return 0;
+
+   if(SE.L3L4_Active)
+   {
+      if(price>SE.L3) SE.L3=price;
+      if(price<SE.L4) SE.L4=price;
+      return SE_CheckBreakAndCommit(SE,price,price,choch);
+   }
+
+   //--- Continuación sin vela contraria activa.
+   if(SE.Bias==BIAS_BULLISH)
+   {
+      if(price>SE.L1)
+      { SE.L1=price; SE_UpdateEQ(SE); }
+   }
+   else if(SE.Bias==BIAS_BEARISH)
+   {
+      if(price<SE.L2)
+      { SE.L2=price; SE_UpdateEQ(SE); }
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Procesa la vela cerrada: activa L3/L4 solo con vela contraria y  |
+//| usa high/low para contar mechas. Devuelve CHoCH/triggers.        |
 //+------------------------------------------------------------------+
 void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
 {
    choch=0; trig=0;
    if(!SE.Valid) return;
+
    double O=iOpen(sym,SE.TF,1), C=iClose(sym,SE.TF,1);
    double H=iHigh(sym,SE.TF,1), L=iLow(sym,SE.TF,1);
-   if(O<=0.0||C<=0.0) return;
+   if(O<=0.0||C<=0.0||H<=0.0||L<=0.0) return;
+
    bool green=C>O, red=C<O;
 
-   //--- Trigger pendiente → swap al cierre
-   if(SE.Phase==PHASE_TRIGGERED)
-   { SE.L1=SE.L3; SE.L2=SE.L4; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
-     SE.L3=0; SE.L4=0; SE.L3L4_Active=false; SE.Phase=PHASE_CONTINUATION;
-     return; }
+   if(SE.Bias==BIAS_UNDEFINED)
+   {
+      if(green) SE.Bias=BIAS_BULLISH;
+      if(red)   SE.Bias=BIAS_BEARISH;
+      return;
+   }
 
-   double oL1=SE.L1, oL2=SE.L2;
-
-   //--- Nuevos extremos y CHoCH
-   if(H>SE.L1)
-   { SE.L1=H; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
-     if(SE.Bias==BIAS_BEARISH)
-     { SE.Bias=BIAS_BULLISH; SE.L3L4_Active=false; SE.L3=0; SE.L4=0;
-       SE.Phase=PHASE_CONTINUATION; choch=+1; } }
-   if(L<SE.L2)
-   { SE.L2=L; SE.EQ=SE.L2+(SE.L1-SE.L2)*0.5;
-     if(SE.Bias==BIAS_BULLISH)
-     { SE.Bias=BIAS_BEARISH; SE.L3L4_Active=false; SE.L3=0; SE.L4=0;
-       SE.Phase=PHASE_CONTINUATION; choch=-1; } }
-   if(choch!=0) return;
-
-   //--- Trigger: cierre más allá de L1/L2 con reacción activa
+   //--- Si L3/L4 ya estaban activos, la vela cerrada también cuenta
+   //    sus mechas dentro de la reacción.
    if(SE.L3L4_Active)
-   { if(C>oL1)      { trig=+1; SE.Phase=PHASE_TRIGGERED; }
-     else if(C<oL2) { trig=-1; SE.Phase=PHASE_TRIGGERED; }
-     else { if(L<SE.L4) SE.L4=L; if(H>SE.L3) SE.L3=H; }
-     return; }
+   {
+      if(H>SE.L3) SE.L3=H;
+      if(L<SE.L4) SE.L4=L;
+      trig=SE_CheckBreakAndCommit(SE,O,C,choch);
+      if(trig==0) SE.Phase=PHASE_REACTION;
+      return;
+   }
 
-   //--- Activación de L3/L4 con vela contraria dentro del rango
-   if(SE.Bias==BIAS_BULLISH&&red&&L>SE.L2&&L<SE.L1)
-   { SE.L3L4_Active=true; SE.L3=SE.L1; SE.L4=L; SE.Phase=PHASE_REACTION; }
-   else if(SE.Bias==BIAS_BEARISH&&green&&H>SE.L2&&H<SE.L1)
-   { SE.L3L4_Active=true; SE.L4=SE.L2; SE.L3=H; SE.Phase=PHASE_REACTION; }
+   //--- Reconstrucción de la continuidad con la vela que acaba de
+   //    cerrar: antes de saber el color final, L1/L2 se mueven al tick.
+   //    Alcista: solo L1 sube. Bajista: solo L2 baja.
+   if(SE.Bias==BIAS_BULLISH)
+   {
+      if(H>SE.L1)
+      { SE.L1=H; SE_UpdateEQ(SE); }
+   }
+   else if(SE.Bias==BIAS_BEARISH)
+   {
+      if(L<SE.L2)
+      { SE.L2=L; SE_UpdateEQ(SE); }
+   }
+
+   //--- Activación de L3/L4 únicamente por cierre contrario.
+   if(SE.Bias==BIAS_BULLISH && red)
+   {
+      SE.L3L4_Active=true;
+      SE.L3=SE.L1;   // en alcista L3 inicia en L1
+      SE.L4=L;       // L4 inicia en el mínimo de la vela contraria
+      SE.Phase=PHASE_REACTION;
+      trig=SE_CheckBreakAndCommit(SE,O,C,choch);
+   }
+   else if(SE.Bias==BIAS_BEARISH && green)
+   {
+      SE.L3L4_Active=true;
+      SE.L3=H;       // en bajista L3 inicia en el máximo de la vela contraria
+      SE.L4=SE.L2;   // en bajista L4 inicia en L2
+      SE.Phase=PHASE_REACTION;
+      trig=SE_CheckBreakAndCommit(SE,O,C,choch);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1199,28 +1324,47 @@ void UpdateStructureState(int si)
    string sym=g_Symbols[si].name;
    g_SysState[si].sigPersonal=0;
 
+   if(!g_SysState[si].SE.Valid)    SE_Init(g_SysState[si].SE,sym,PERIOD_CURRENT);
+   if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
+
+   //--- vela del TF nueva → procesar la vela cerrada una sola vez
    datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
    if(bt!=g_SysState[si].structLastBar)
-   { g_SysState[si].structLastBar=bt;
-     if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
-     if(!g_SysState[si].SE.Valid)    SE_Init(g_SysState[si].SE,sym,PERIOD_CURRENT);
-     int c2=0,t2=0;
-     if(g_SysState[si].SE.Valid)
-     { SE_OnClose(g_SysState[si].SE,sym,c2,t2);
-       g_SysState[si].sigPersonal=t2; } }
+   {
+      g_SysState[si].structLastBar=bt;
+      int c2=0,t2=0;
+      if(g_SysState[si].SE.Valid)
+      {
+         SE_OnClose(g_SysState[si].SE,sym,c2,t2);
+         if(t2!=0) g_SysState[si].sigPersonal=t2;
+      }
+   }
 
    //--- vela D1 nueva → actualizar motor D1 (solo una vez por día)
    datetime d1=(datetime)SeriesInfoInteger(sym,PERIOD_D1,SERIES_LASTBAR_DATE);
    if(d1!=g_SysState[si].d1LastBar)
-   { g_SysState[si].d1LastBar=d1;
-     if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
-     int c1=0,t1=0;
-     if(g_SysState[si].SE_D1.Valid) SE_OnClose(g_SysState[si].SE_D1,sym,c1,t1); }
+   {
+      g_SysState[si].d1LastBar=d1;
+      int c1=0,t1=0;
+      if(g_SysState[si].SE_D1.Valid) SE_OnClose(g_SysState[si].SE_D1,sym,c1,t1);
+   }
+
+   //--- actualización al tick: L1/L2 en continuidad y L3/L4 activos.
+   int ct=0;
+   int tt=0;
+   if(g_SysState[si].SE.Valid)
+   {
+      tt=SE_OnTick(g_SysState[si].SE,sym,ct);
+      if(tt!=0) g_SysState[si].sigPersonal=tt; // si coincide con otra señal, gana la última
+   }
+
+   int cd=0;
+   if(g_SysState[si].SE_D1.Valid) SE_OnTick(g_SysState[si].SE_D1,sym,cd);
 }
 
 //+------------------------------------------------------------------+
-//| PERSONAL (ÚNICA) — lógica de líneas smc2: entra en el trigger     |
-//| (cierre sobre L1 o bajo L2 con L3/L4 activos)                    |
+//| PERSONAL (ÚNICA) — lógica de líneas: trigger al tick             |
+//| (L3>L1 compra o L4<L2 venta con L3/L4 activos)                  |
 //+------------------------------------------------------------------+
 int CheckPersonalSignal(int si)
 { return g_SysState[si].sigPersonal; }
@@ -1305,10 +1449,17 @@ void DrawChartStructure()
 
 int CheckStrategySignal(int si, int st)
 {
-   if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
+   if(!g_SysState[si].strategies[st].enabled) return 0;
+
    switch(st)
-   { case STRAT_PERSONAL:  return CheckPersonalSignal(si);
-     default:              return 0; }
+   {
+      // La lógica de líneas ahora dispara al tick cuando L3/L4 rompen L1/L2.
+      // No se filtra por IsNewBar para no perder rupturas intrabar.
+      case STRAT_PERSONAL:  return CheckPersonalSignal(si);
+      default:
+         if(!IsNewBar(si,st)) return 0;
+         return 0;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1758,7 +1909,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.31  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.32  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2651,7 +2802,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.31           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.32           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -2691,7 +2842,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.31 === X=",InpXActivacion,
+   Print("=== DIAG v8.32 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -2800,7 +2951,7 @@ int OnInit()
      if(g_LimitPrice>0) UpdateLimitLine();
      DrawChartStructure(); }
 
-   Print("EA v8.31 | Símbolos:",g_SymCount,
+   Print("EA v8.32 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -2815,7 +2966,7 @@ void OnDeinit(const int reason)
    if(!IsTester()) SaveState();
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); RemoveStructureLines(); }
    Comment("");
-   Print("EA v8.31 cerrado | Razón:",reason);
+   Print("EA v8.32 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+

@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright   "SMC EA"
 #property link        ""
-#property version     "4.02"
+#property version     "4.03"
 #property description "SMC EA - Estructura MTF completa en M1"
 #property strict
 
@@ -155,7 +155,7 @@ int OnInit()
    ScanHistoricalFVGs();
    RenderAllVisuals();
 
-   Print("=== SMC v4.02 iniciado ===");
+   Print("=== SMC v4.03 iniciado ===");
    return(INIT_SUCCEEDED);
 }
 
@@ -188,9 +188,12 @@ void OnTick()
 
    if(NewBar_D1) UpdateEngineOnClose(G_SE_D1);
    if(NewBar_H1) UpdateEngineOnClose(G_SE_H1);
-
-   UpdateEngineTick(G_SE_TF, CurrentPrice);
    if(NewBar_TF) UpdateEngineOnClose(G_SE_TF);
+
+   //--- L1/L2/L3/L4 se actualizan al tick en todos los motores visuales
+   UpdateEngineTick(G_SE_D1, CurrentPrice);
+   UpdateEngineTick(G_SE_H1, CurrentPrice);
+   UpdateEngineTick(G_SE_TF, CurrentPrice);
 
    if(NewBar_H1)
    {
@@ -252,7 +255,90 @@ bool InitEngine(StructureEngine &SE, ENUM_TIMEFRAMES TF)
 }
 
 //+------------------------------------------------------------------+
-//| SECCIÓN 10: ACTUALIZACIÓN AL CIERRE DE BARRA                   |
+//| SECCIÓN 10: MOTOR DE ESTRUCTURA DE LÍNEAS                       |
+//| L1 = tick más alto del rango; L2 = tick más bajo del rango.      |
+//| En continuidad alcista solo sube L1; en continuidad bajista solo |
+//| baja L2. L3/L4 se activan únicamente con una vela cerrada        |
+//| contraria a la estructura, y desde ahí guardan máximos/mínimos   |
+//| por tick (mechas incluidas). Cuando L3>L1 o L4<L2 se hace swap   |
+//| inmediato: L1=L3, L2=L4 y L3/L4 desaparecen.                    |
+//+------------------------------------------------------------------+
+void UpdateStructureEQ(StructureEngine &SE)
+{
+   SE.EQ = SE.L2 + (SE.L1 - SE.L2) * 0.5;
+}
+
+void ClearStructureReaction(StructureEngine &SE)
+{
+   SE.L3          = 0.0;
+   SE.L4          = 0.0;
+   SE.L3L4_Active = false;
+   SE.Phase       = PHASE_CONTINUATION;
+}
+
+int CommitStructureMove(StructureEngine &SE, int Dir)
+{
+   if(Dir == 0 || !SE.L3L4_Active) return(0);
+
+   ENUM_STRUCTURE_BIAS OldBias = SE.Bias;
+   ENUM_STRUCTURE_BIAS NewBias = BIAS_BULLISH;
+   if(Dir < 0) NewBias = BIAS_BEARISH;
+
+   SE.L1 = SE.L3;
+   SE.L2 = SE.L4;
+   if(SE.L1 < SE.L2)
+   {
+      double Tmp = SE.L1;
+      SE.L1 = SE.L2;
+      SE.L2 = Tmp;
+   }
+
+   SE.Bias = NewBias;
+   UpdateStructureEQ(SE);
+   ClearStructureReaction(SE);
+
+   if(InpShowLogs)
+   {
+      string Tag = (OldBias != BIAS_UNDEFINED && OldBias != NewBias)
+                   ? (Dir > 0 ? "[CHoCH BULL]" : "[CHoCH BEAR]")
+                   : (Dir > 0 ? "[CONT BULL]"  : "[CONT BEAR]");
+      Print(Tag,"[", EnumToString(SE.TF), "] L1=",
+            DoubleToString(SE.L1, G_Digits),
+            " L2=", DoubleToString(SE.L2, G_Digits));
+   }
+
+   return(Dir);
+}
+
+int LastBreakDirectionFromCandle(double O, double C, ENUM_STRUCTURE_BIAS CurrentBias)
+{
+   //--- Si solo tenemos OHLC y la misma vela toca ambos lados, se usa
+   //    el sentido del cuerpo como último movimiento. Con ticks reales
+   //    UpdateEngineTick procesa las rupturas en orden.
+   if(C > O) return(+1);
+   if(C < O) return(-1);
+   if(CurrentBias == BIAS_BEARISH) return(+1);
+   return(-1);
+}
+
+int CheckBreakAndCommit(StructureEngine &SE, double O, double C)
+{
+   if(!SE.Valid || !SE.L3L4_Active) return(0);
+
+   bool BreakUp = (SE.L3 > SE.L1);  // L3 sobrepasa L1
+   bool BreakDn = (SE.L4 < SE.L2);  // L4 sobrepasa L2 hacia abajo
+   if(!BreakUp && !BreakDn) return(0);
+
+   int Dir = 0;
+   if(BreakUp && BreakDn) Dir = LastBreakDirectionFromCandle(O, C, SE.Bias);
+   else if(BreakUp)       Dir = +1;
+   else                   Dir = -1;
+
+   return(CommitStructureMove(SE, Dir));
+}
+
+//+------------------------------------------------------------------+
+//| ACTUALIZACIÓN AL CIERRE DE BARRA                                |
 //+------------------------------------------------------------------+
 void UpdateEngineOnClose(StructureEngine &SE)
 {
@@ -262,7 +348,8 @@ void UpdateEngineOnClose(StructureEngine &SE)
    double ClosedClose = iClose(_Symbol, SE.TF, 1);
    double ClosedHigh  = iHigh(_Symbol, SE.TF, 1);
    double ClosedLow   = iLow(_Symbol, SE.TF, 1);
-   if(ClosedOpen <= 0.0 || ClosedClose <= 0.0) return;
+   if(ClosedOpen <= 0.0 || ClosedClose <= 0.0 ||
+      ClosedHigh <= 0.0 || ClosedLow <= 0.0) return;
 
    bool ClosedGreen = (ClosedClose > ClosedOpen);
    bool ClosedRed   = (ClosedClose < ClosedOpen);
@@ -274,106 +361,97 @@ void UpdateEngineOnClose(StructureEngine &SE)
       return;
    }
 
-   //--- Trigger pendiente → swap al cierre
-   if(SE.Phase == PHASE_TRIGGERED)
+   //--- Si L3/L4 ya estaban activos, la vela cerrada también cuenta
+   //    sus mechas dentro de la reacción.
+   if(SE.L3L4_Active)
    {
-      SE.L1          = SE.L3;
-      SE.L2          = SE.L4;
-      SE.EQ          = SE.L2 + (SE.L1 - SE.L2) * 0.5;
-      SE.L3          = 0.0;
-      SE.L4          = 0.0;
-      SE.L3L4_Active = false;
-      SE.Phase       = PHASE_CONTINUATION;
-
-      if(InpShowLogs)
-         Print("[SWAP][", EnumToString(SE.TF), "] L1=",
-               DoubleToString(SE.L1, G_Digits),
-               " L2=", DoubleToString(SE.L2, G_Digits));
+      if(ClosedHigh > SE.L3) SE.L3 = ClosedHigh;
+      if(ClosedLow  < SE.L4) SE.L4 = ClosedLow;
+      if(CheckBreakAndCommit(SE, ClosedOpen, ClosedClose) == 0)
+         SE.Phase = PHASE_REACTION;
       return;
    }
 
-   bool StructBreak = false;
-
-   //--- Actualizar L1 tick más alto
-   if(ClosedHigh > SE.L1)
+   //--- Reconstrucción de continuidad con la vela cerrada: antes de
+   //    saber el color final, L1/L2 se mueven al tick.
+   if(SE.Bias == BIAS_BULLISH)
    {
-      SE.L1 = ClosedHigh;
-      SE.EQ = SE.L2 + (SE.L1 - SE.L2) * 0.5;
-      if(SE.Bias == BIAS_BEARISH)
+      if(ClosedHigh > SE.L1)
       {
-         SE.Bias = BIAS_BULLISH;
-         SE.L3L4_Active = false;
-         SE.L3 = 0.0; SE.L4 = 0.0;
-         SE.Phase = PHASE_CONTINUATION;
-         StructBreak = true;
-         if(InpShowLogs)
-            Print("[CHoCH BULL][", EnumToString(SE.TF), "] L1=",
-                  DoubleToString(SE.L1, G_Digits));
+         SE.L1 = ClosedHigh;
+         UpdateStructureEQ(SE);
+      }
+   }
+   else if(SE.Bias == BIAS_BEARISH)
+   {
+      if(ClosedLow < SE.L2)
+      {
+         SE.L2 = ClosedLow;
+         UpdateStructureEQ(SE);
       }
    }
 
-   //--- Actualizar L2 tick más bajo
-   if(ClosedLow < SE.L2)
+   //--- Activación de L3/L4 únicamente por cierre contrario.
+   if(SE.Bias == BIAS_BULLISH && ClosedRed)
    {
-      SE.L2 = ClosedLow;
-      SE.EQ = SE.L2 + (SE.L1 - SE.L2) * 0.5;
-      if(SE.Bias == BIAS_BULLISH)
-      {
-         SE.Bias = BIAS_BEARISH;
-         SE.L3L4_Active = false;
-         SE.L3 = 0.0; SE.L4 = 0.0;
-         SE.Phase = PHASE_CONTINUATION;
-         StructBreak = true;
-         if(InpShowLogs)
-            Print("[CHoCH BEAR][", EnumToString(SE.TF), "] L2=",
-                  DoubleToString(SE.L2, G_Digits));
-      }
+      SE.L3L4_Active = true;
+      SE.L3          = SE.L1;       // en alcista L3 inicia en L1
+      SE.L4          = ClosedLow;   // L4 inicia en el mínimo de la vela contraria
+      SE.Phase       = PHASE_REACTION;
+      CheckBreakAndCommit(SE, ClosedOpen, ClosedClose);
+
+      if(InpShowLogs && SE.L3L4_Active)
+         Print("[L3/L4 BULL][", EnumToString(SE.TF),
+               "] L3=", DoubleToString(SE.L3, G_Digits),
+               " L4=", DoubleToString(SE.L4, G_Digits));
    }
-
-   if(StructBreak) return;
-
-   //--- Activar L3/L4 con vela contraria
-   if(SE.Phase == PHASE_CONTINUATION && !SE.L3L4_Active)
+   else if(SE.Bias == BIAS_BEARISH && ClosedGreen)
    {
-      if(SE.Bias == BIAS_BULLISH && ClosedRed &&
-         ClosedLow > SE.L2 && ClosedLow < SE.L1)
-      {
-         SE.L3L4_Active = true;
-         SE.L3  = SE.L1;
-         SE.L4  = ClosedLow;
-         SE.Phase = PHASE_REACTION;
-         if(InpShowLogs)
-            Print("[L3/L4 BULL][", EnumToString(SE.TF),
-                  "] L3=", DoubleToString(SE.L3, G_Digits),
-                  " L4=", DoubleToString(SE.L4, G_Digits));
-      }
-      else if(SE.Bias == BIAS_BEARISH && ClosedGreen &&
-              ClosedHigh > SE.L2 && ClosedHigh < SE.L1)
-      {
-         SE.L3L4_Active = true;
-         SE.L4  = SE.L2;
-         SE.L3  = ClosedHigh;
-         SE.Phase = PHASE_REACTION;
-         if(InpShowLogs)
-            Print("[L3/L4 BEAR][", EnumToString(SE.TF),
-                  "] L3=", DoubleToString(SE.L3, G_Digits),
-                  " L4=", DoubleToString(SE.L4, G_Digits));
-      }
+      SE.L3L4_Active = true;
+      SE.L3          = ClosedHigh;  // L3 inicia en el máximo de la vela contraria
+      SE.L4          = SE.L2;       // en bajista L4 inicia en L2
+      SE.Phase       = PHASE_REACTION;
+      CheckBreakAndCommit(SE, ClosedOpen, ClosedClose);
+
+      if(InpShowLogs && SE.L3L4_Active)
+         Print("[L3/L4 BEAR][", EnumToString(SE.TF),
+               "] L3=", DoubleToString(SE.L3, G_Digits),
+               " L4=", DoubleToString(SE.L4, G_Digits));
    }
 }
 
 //+------------------------------------------------------------------+
-//| SECCIÓN 11: ACTUALIZACIÓN TICK A TICK                          |
+//| SECCIÓN 11: ACTUALIZACIÓN TICK A TICK                           |
 //+------------------------------------------------------------------+
 void UpdateEngineTick(StructureEngine &SE, double Price)
 {
-   if(!SE.Valid || !SE.L3L4_Active) return;
+   if(!SE.Valid || Price <= 0.0) return;
+   if(SE.Bias == BIAS_UNDEFINED) return;
 
-   if(Price > SE.L3) SE.L3 = Price;
-   if(Price < SE.L4) SE.L4 = Price;
+   if(SE.L3L4_Active)
+   {
+      if(Price > SE.L3) SE.L3 = Price;
+      if(Price < SE.L4) SE.L4 = Price;
+      CheckBreakAndCommit(SE, Price, Price);
+      return;
+   }
 
-   if(Price > SE.L1) SE.Phase = PHASE_TRIGGERED;
-   if(Price < SE.L2) SE.Phase = PHASE_TRIGGERED;
+   if(SE.Bias == BIAS_BULLISH)
+   {
+      if(Price > SE.L1)
+      {
+         SE.L1 = Price;
+         UpdateStructureEQ(SE);
+      }
+   }
+   else if(SE.Bias == BIAS_BEARISH)
+   {
+      if(Price < SE.L2)
+      {
+         SE.L2 = Price;
+         UpdateStructureEQ(SE);
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
