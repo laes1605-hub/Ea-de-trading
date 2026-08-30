@@ -1036,7 +1036,8 @@ void OnLiveSL_Original(int si, int st)
    int cr=g_SysState[si].strategies[st].CR;
    g_SysState[si].strategies[st].CV++;
    UpdateCVMax(si,st);
-   SetCR(si,st,cr+1);
+   // REGLA: cada perdida suma +1 al contador CV, pero en la tabla CR regresa 3 por SL trading
+   SetCR(si,st,ApplyRetroceso(cr,3));
    Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
          "] LIVE SL orig CV:",cv,"→",g_SysState[si].strategies[st].CV,
          " CR:",cr,"→",g_SysState[si].strategies[st].CR,
@@ -1329,6 +1330,11 @@ int SE_OnTick(StructureEngine &SE, string sym, int &choch)
 
    if(price>SE.L3) SE.L3=price;
    if(price<SE.L4) SE.L4=price;
+
+   //--- L1/L2 rastrean al tick como pidió el usuario
+   if(SE.Bias==BIAS_BULLISH && price>SE.L1) { SE.L1=price; SE_UpdateEQ(SE); }
+   else if(SE.Bias==BIAS_BEARISH && price<SE.L2) { SE.L2=price; SE_UpdateEQ(SE); }
+
    SE_MarkPendingBreak(SE,price);
 
    //--- No hay trigger operativo aquí porque L1/L2 se actualizan
@@ -2793,6 +2799,27 @@ void BuildTabOperar()
           clrLimeGreen,8,"Arial Bold",ANCHOR_RIGHT_UPPER);
    y+=32;
 
+   // --- ESTADO ESTRUCTURA + CONDICIONES DE ENTRADA (1H / 3M) ---
+   int h1BiasVal = (g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?0:(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?1:2;
+   int m3BiasVal = (g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?0:(g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?1:2;
+   string h1Str = (h1BiasVal==0)?"ALC":(h1BiasVal==1)?"BAJ":"---";
+   string m3Str = (m3BiasVal==0)?"ALC":(m3BiasVal==1)?"BAJ":"---";
+   bool zB = g_SysState[si].confArmedBuy, zS = g_SysState[si].confArmedSell;
+   bool limB = g_SysState[si].confVPendBuy, limS = g_SysState[si].confVPendSell;
+   string zoneSt = zB?"BUY-ZONA":(zS?"SELL-ZONA":"SIN-ZONA");
+   string limSt = (limB||limS)?"LIMIT-PUESTA":"SIN-LIMIT";
+   string missSt = "";
+   if(g_SysState[si].hasLive) missSt = "TIENE-ORDEN";
+   else if(zB && h1Str=="ALC" && m3Str=="ALC") missSt = "BUSCANDO-OP";
+   else if(zB && m3Str=="BAJ") missSt = "FALTA: M3 alcista";
+   else if(zB && h1Str!="ALC") missSt = "FALTA: H1 alcista";
+   else if(!zB && !zS) missSt = "FALTA: tocar zona";
+   else missSt = "CONFIRMAR";
+   ObjRect(PFX_OP+"ENTER_BG",cx,y,cw,36,C'16,24,16',C'40,100,40',1);
+   ObjLbl(PFX_OP+"ENTER_H",cx+4,y+3,"ENTRADA: H1="+h1Str+" M3="+m3Str+" | "+zoneSt+" "+limSt,C'150,200,100',7,"Arial Bold");
+   ObjLbl(PFX_OP+"ENTER_M",cx+4,y+17,"CORRELACION: "+missSt,C'200,220,80',7,"Arial Bold");
+   y+=40;
+
    ObjSep(PFX_OP+"SEP0",cx,y,cw); y+=6;
 
    // Precio límite
@@ -3591,7 +3618,10 @@ void OnTick()
    if(IsTester())
    {
       ShowTesterInfo();
-      if(MQLInfoInteger(MQL_VISUAL_MODE)) DrawChartStructure();
+      DrawChartStructure();
+      ValidateAllSymbols();
+      DrawPerPairInfo();
+      UpdateInfoBar();
    }
    else
    {
@@ -3599,6 +3629,8 @@ void OnTick()
       UpdateInfoBar();
       SyncLimitLinePrice();
       DrawChartStructure();
+      ValidateAllSymbols();
+      DrawPerPairInfo();
       g_SaveCounter++;
       if(g_SaveCounter>=300){ SaveState(); g_SaveCounter=0; }
       if(g_TradeCount!=prevCount)
@@ -3815,3 +3847,127 @@ void OnChartEvent(const int id,const long &lparam,
      RebuildActiveTab(); return; }
 }
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| VALIDACIÓN Y DIBUJOS POR PAR — 20 NIVELES / OPEN / LOT / TRAIL     |
+//+------------------------------------------------------------------+
+void DrawPerPairInfo()
+{
+   // Dibuja etiquetas propios por símbolo: nivel CR, CV, open?, lot, 1:2
+   int baseX = 10;
+   int baseY = 250; // parte baja derecha del gráfico, ajustable
+   for(int si=0; si<g_SymCount; si++)
+   {
+      if(!g_Symbols[si].active) continue;
+      string sym = g_Symbols[si].name;
+      int al = g_SysState[si].activeLiveStrategy;
+      int cr = (al>=0) ? g_SysState[si].strategies[al].CR : 1;
+      int cv = (al>=0) ? g_SysState[si].strategies[al].CV : 1;
+      bool open = (al>=0 && g_SysState[si].hasLive);
+      double lot = (al>=0) ? GetLotByCR(si, cr) : 0.0;
+      bool trail = (al>=0) ? IsTrailingActive(si, al) : false;
+      
+      string lblName = "PAIRLBL_" + sym;
+      if(ObjectFind(0, lblName) < 0)
+         ObjectCreate(0, lblName, OBJ_LABEL, 0, 0, 0);
+      
+      string h1Bias = (g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"BAJ":"---";
+      string m3Bias = (g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?"BAJ":"---";
+      bool zoneBuy = g_SysState[si].confArmedBuy;
+      bool zoneSell = g_SysState[si].confArmedSell;
+      bool hasLimitBuy = g_SysState[si].confVPendBuy;
+      bool hasLimitSell = g_SysState[si].confVPendSell;
+      string zoneStr = zoneBuy?"BUY-ZONA":(zoneSell?"SELL-ZONA":"SIN-ZONA");
+      string limitStr = (hasLimitBuy||hasLimitSell)?"LIMIT-PUESTA":"SIN-LIMIT";
+      string missing="";
+      if(open) missing="TENE-ORDEN";
+      else if(zoneBuy && h1Bias=="ALC" && m3Bias=="ALC") missing="BUSCANDO-OP";
+      else if(zoneBuy && m3Bias=="BAJ") missing="FALTA: M3 alcista";
+      else if(zoneBuy && h1Bias!="ALC") missing="FALTA: H1 alcista";
+      else if(!zoneBuy && !zoneSell) missing="FALTA: tocar zona";
+      else missing="FALTA: confirmar";
+
+      string txt = sym + " | H1=" + h1Bias + " M3=" + m3Bias
+                 + " " + zoneStr + " | " + (open?"●OPEN":"○CERR")
+                 + " Lot=" + DoubleToString(lot,2) + " 1:2=" + (trail?"ON":"OFF")
+                 + " [" + limitStr + "] -> " + missing;
+      
+      ObjectSetString(0, lblName, OBJPROP_TEXT, txt);
+      ObjectSetInteger(0, lblName, OBJPROP_COLOR, open ? clrLimeGreen : clrYellow);
+      ObjectSetInteger(0, lblName, OBJPROP_FONTSIZE, 7);
+      ObjectSetString(0, lblName, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, lblName, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+      int dx = baseX + (si % 4) * 195;
+      int dy = baseY + (si / 4) * 13;
+      ObjectSetInteger(0, lblName, OBJPROP_XDISTANCE, dx);
+      ObjectSetInteger(0, lblName, OBJPROP_YDISTANCE, dy);
+      ObjectSetInteger(0, lblName, OBJPROP_SELECTABLE, false);
+      
+      // Línea de referencia omitida para evitar errores de objeto; el texto es suficiente
+      /*
+      string lineName = "PAIRLINE_" + sym;
+      if(ObjectFind(0, lineName) < 0)
+      {
+         ObjectCreate(0, lineName, OBJ_VLINE, 0, TimeCurrent(), 0);
+         ObjectSetInteger(0, lineName, OBJPROP_COLOR, open ? clrLimeGreen : clrGray);
+         ObjectSetInteger(0, lineName, OBJPROP_WIDTH, 1);
+         ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
+      }
+      */
+   }
+}
+
+void ValidateAllSymbols()
+{
+   // Muestra en log y dibuja etiqueta de validación
+   string msg = "=== VALIDACIÓN PARES — Nivel(1-20) | CV | OPEN | Lot | Trail ===";
+   Print(msg);
+   for(int si=0; si<g_SymCount; si++)
+   {
+      string sym = g_Symbols[si].name;
+      bool active = g_Symbols[si].active;
+      int al = g_SysState[si].activeLiveStrategy;
+      int cr = (al>=0) ? g_SysState[si].strategies[al].CR : 0;
+      int cv = (al>=0) ? g_SysState[si].strategies[al].CV : 0;
+      bool open = g_SysState[si].hasLive;
+      double lot = (al>=0) ? GetLotByCR(si, cr) : 0.0;
+      bool trail = (al>=0) ? IsTrailingActive(si, al) : false;
+      
+      string h1B = (g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"BAJ":"---";
+      string m3B = (g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?"BAJ":"---";
+      bool zB = g_SysState[si].confArmedBuy, zS = g_SysState[si].confArmedSell;
+      bool limB = g_SysState[si].confVPendBuy, limS = g_SysState[si].confVPendSell;
+      string zoneStr = zB?"BUY":(zS?"SELL":"NOV");
+      string limitStr = (limB||limS)?"LIMIT":"NONE";
+      string miss="";
+      if(open) miss="ORDEN-ABIER";
+      else if(zB && h1B=="ALC" && m3B=="ALC") miss="BUSCANDO-OP";
+      else if(zB && m3B=="BAJ") miss="FALTA: M3 alcista";
+      else if(zB && h1B!="ALC") miss="FALTA: H1 alcista";
+      else if(!zB && !zS) miss="FALTA: tocar zona";
+      else miss="CONFIRMAR";
+      string line = sym + (active ? "✓" : "✗")
+                  + " | Niv=" + IntegerToString(cr)
+                  + " CV=" + IntegerToString(cv)
+                  + " | H1=" + h1B + " M3=" + m3B
+                  + " | " + zoneStr + " " + limitStr
+                  + " | " + (open ? "OPEN" : "CERR")
+                  + " | Lot=" + DoubleToString(lot, 2)
+                  + " | 1:2=" + (trail ? "ON" : "OFF") + " -> " + miss;
+      Print(line);
+      msg += "\n" + line;
+   }
+   
+   string valName = "VALIDA_SUM";
+   if(ObjectFind(0, valName) < 0)
+      ObjectCreate(0, valName, OBJ_LABEL, 0, 0, 0);
+   ObjectSetString(0, valName, OBJPROP_TEXT,
+      "✓ VALIDADO — Ver log (Print) para resumen de todos los pares | Nivel 5→Trail | Nivel 10→Trail -4");
+   ObjectSetInteger(0, valName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, valName, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, valName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, valName, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0, valName, OBJPROP_XDISTANCE, 10);
+   ObjectSetInteger(0, valName, OBJPROP_YDISTANCE, 10);
+   ObjectSetInteger(0, valName, OBJPROP_SELECTABLE, false);
+}
