@@ -227,7 +227,7 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 //+------------------------------------------------------------------+
 #define MAX_SYMBOLS      20
 #define MAX_TABLE_SIZE   20
-#define PNL_W            440
+#define PNL_W            520
 #define PNL_H            660
 #define TITLE_H          36
 #define INFOBAR_H        52
@@ -2525,8 +2525,11 @@ void ProcessClosedQueue()
                 " PL=",DoubleToString(cPL,2)," → NIVEL intacto, próxima operación con el mismo nivel");
           if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si); }
         else
-        { if(hTP) OnStrategyLiveTP(si,st);
-          else    OnStrategyLiveSL(si,st,snap.slMoved,snap.CR_level); }
+        { // Un SL que dejó beneficio es necesariamente el trailing/protegido,
+          // aunque el broker no cierre exactamente en el precio guardado.
+          bool trailingClose=(snap.slMoved || (hSL && cPL>0.0));
+          if(hTP && !trailingClose) OnStrategyLiveTP(si,st);
+          else                     OnStrategyLiveSL(si,st,trailingClose,snap.CR_level); }
      }
      anyP=true; }
    ArrayResize(g_ClosedQueue,pc);
@@ -3906,11 +3909,11 @@ void MPDrawAccount(int x,int y,int w)
 #define MPC_X_M3  122
 #define MPC_X_ZONA 152
 #define MPC_X_LIM  188
-#define MPC_X_POS  256
-#define MPC_X_NIV  348
-#define MPC_X_LOT  378
-#define MPC_X_PNL  414
-#define MPC_X_EST  462
+#define MPC_X_POS  236
+#define MPC_X_NIV  350
+#define MPC_X_LOT  390
+#define MPC_X_PNL  430
+#define MPC_X_EST  470
 
 void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
 {
@@ -3922,7 +3925,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
    MPText(x+MPC_X_ZONA,y+3,"ZONA",clrSilver,true,8);
    MPText(x+MPC_X_LIM ,y+3,"LÍMITE",clrSilver,true,8);
    MPText(x+MPC_X_POS ,y+3,"POSICIÓN",clrSilver,true,8);
-   MPText(x+MPC_X_NIV ,y+3,"NIV",clrSilver,true,8);
+   MPText(x+MPC_X_NIV ,y+3,"NTV",clrSilver,true,8);
    MPText(x+MPC_X_LOT ,y+3,"LOT",clrSilver,true,8);
    MPText(x+MPC_X_PNL ,y+3,"P&L",clrSilver,true,8);
    MPText(x+MPC_X_EST ,y+3,"ESTADO / PRÓXIMO PASO",clrSilver,true,8);
@@ -3952,7 +3955,7 @@ void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int &ord[],int nShown)
                                   (s.posDir>0)?"▲":"▼",DoubleToString(s.posLots,2),
                                   DoubleToString(s.posEntry,s.dg)):"-",
              s.hasPos?clrWhite:clrGray,false,8);
-      MPText(x+MPC_X_NIV ,ry+3,StringFormat("%d",s.cr),clrDodgerBlue,false,8);
+      MPText(x+MPC_X_NIV ,ry+2,StringFormat("%d",s.cr),clrAqua,true,10);
       MPText(x+MPC_X_LOT ,ry+3,DoubleToString(s.lot,2),clrDodgerBlue,false,8);
       MPText(x+MPC_X_PNL ,ry+3,s.hasPos?StringFormat("%s%.2f",(s.posPL>=0)?"+":"",s.posPL):"-",
              s.hasPos?((s.posPL>=0)?clrLimeGreen:clrTomato):clrGray,false,8);
