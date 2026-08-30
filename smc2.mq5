@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright   "SMC EA"
 #property link        ""
-#property version     "4.03"
+#property version     "4.04"
 #property description "SMC EA - Estructura MTF completa en M1"
 #property strict
 
@@ -59,6 +59,7 @@ struct StructureEngine
    double               L4;
    double               EQ;
    bool                 L3L4_Active;
+   int                  PendingBreakDir;
    ENUM_STRUCTURE_BIAS  Bias;
    ENUM_STRUCTURE_PHASE Phase;
    bool                 Valid;
@@ -155,7 +156,7 @@ int OnInit()
    ScanHistoricalFVGs();
    RenderAllVisuals();
 
-   Print("=== SMC v4.03 iniciado ===");
+   Print("=== SMC v4.04 iniciado ===");
    return(INIT_SUCCEEDED);
 }
 
@@ -190,7 +191,7 @@ void OnTick()
    if(NewBar_H1) UpdateEngineOnClose(G_SE_H1);
    if(NewBar_TF) UpdateEngineOnClose(G_SE_TF);
 
-   //--- L1/L2/L3/L4 se actualizan al tick en todos los motores visuales
+   //--- L3/L4 se actualizan al tick; L1/L2 esperan cierre de vela
    UpdateEngineTick(G_SE_D1, CurrentPrice);
    UpdateEngineTick(G_SE_H1, CurrentPrice);
    UpdateEngineTick(G_SE_TF, CurrentPrice);
@@ -220,6 +221,7 @@ bool InitEngine(StructureEngine &SE, ENUM_TIMEFRAMES TF)
    SE.L4          = 0.0;
    SE.EQ          = 0.0;
    SE.L3L4_Active = false;
+   SE.PendingBreakDir = 0;
    SE.Bias        = BIAS_UNDEFINED;
    SE.Phase       = PHASE_CONTINUATION;
 
@@ -256,12 +258,12 @@ bool InitEngine(StructureEngine &SE, ENUM_TIMEFRAMES TF)
 
 //+------------------------------------------------------------------+
 //| SECCIÓN 10: MOTOR DE ESTRUCTURA DE LÍNEAS                       |
-//| L1 = tick más alto del rango; L2 = tick más bajo del rango.      |
-//| En continuidad alcista solo sube L1; en continuidad bajista solo |
-//| baja L2. L3/L4 se activan únicamente con una vela cerrada        |
-//| contraria a la estructura, y desde ahí guardan máximos/mínimos   |
-//| por tick (mechas incluidas). Cuando L3>L1 o L4<L2 se hace swap   |
-//| inmediato: L1=L3, L2=L4 y L3/L4 desaparecen.                    |
+//| L1 = techo del rango; L2 = suelo del rango.                     |
+//| L1/L2 solo se actualizan al cierre de vela (con high/low,       |
+//| mechas incluidas). L3/L4 se activan únicamente con una vela      |
+//| cerrada contraria, y desde ahí guardan máximos/mínimos al tick. |
+//| Si L3>L1 o L4<L2 intrabar, la ruptura queda pendiente y el      |
+//| swap L1=L3, L2=L4 se consolida al cierre.                       |
 //+------------------------------------------------------------------+
 void UpdateStructureEQ(StructureEngine &SE)
 {
@@ -273,6 +275,7 @@ void ClearStructureReaction(StructureEngine &SE)
    SE.L3          = 0.0;
    SE.L4          = 0.0;
    SE.L3L4_Active = false;
+   SE.PendingBreakDir = 0;
    SE.Phase       = PHASE_CONTINUATION;
 }
 
@@ -312,16 +315,16 @@ int CommitStructureMove(StructureEngine &SE, int Dir)
 
 int LastBreakDirectionFromCandle(double O, double C, ENUM_STRUCTURE_BIAS CurrentBias)
 {
-   //--- Si solo tenemos OHLC y la misma vela toca ambos lados, se usa
-   //    el sentido del cuerpo como último movimiento. Con ticks reales
-   //    UpdateEngineTick procesa las rupturas en orden.
+   //--- Si no hay ticks suficientes y la vela toca ambos lados, se usa
+   //    el sentido del cuerpo. Con ticks reales, PendingBreakDir guarda
+   //    el último lado que fue sobrepasado durante la vela.
    if(C > O) return(+1);
    if(C < O) return(-1);
    if(CurrentBias == BIAS_BEARISH) return(+1);
    return(-1);
 }
 
-int CheckBreakAndCommit(StructureEngine &SE, double O, double C)
+int BreakDirection(StructureEngine &SE, double O, double C)
 {
    if(!SE.Valid || !SE.L3L4_Active) return(0);
 
@@ -329,11 +332,36 @@ int CheckBreakAndCommit(StructureEngine &SE, double O, double C)
    bool BreakDn = (SE.L4 < SE.L2);  // L4 sobrepasa L2 hacia abajo
    if(!BreakUp && !BreakDn) return(0);
 
-   int Dir = 0;
-   if(BreakUp && BreakDn) Dir = LastBreakDirectionFromCandle(O, C, SE.Bias);
-   else if(BreakUp)       Dir = +1;
-   else                   Dir = -1;
+   if(BreakUp && BreakDn)
+   {
+      if(SE.PendingBreakDir != 0) return(SE.PendingBreakDir);
+      return(LastBreakDirectionFromCandle(O, C, SE.Bias));
+   }
+   if(BreakUp) return(+1);
+   return(-1);
+}
 
+void MarkPendingBreak(StructureEngine &SE, double Price)
+{
+   if(!SE.Valid || !SE.L3L4_Active || Price <= 0.0) return;
+
+   //--- L3/L4 se actualizan al tick, pero L1/L2 solo cambian al cierre.
+   if(Price > SE.L1)
+   {
+      SE.Phase = PHASE_TRIGGERED;
+      SE.PendingBreakDir = +1;
+   }
+   if(Price < SE.L2)
+   {
+      SE.Phase = PHASE_TRIGGERED;
+      SE.PendingBreakDir = -1;
+   }
+}
+
+int CheckBreakAndCommit(StructureEngine &SE, double O, double C)
+{
+   int Dir = BreakDirection(SE, O, C);
+   if(Dir == 0) return(0);
    return(CommitStructureMove(SE, Dir));
 }
 
@@ -362,7 +390,7 @@ void UpdateEngineOnClose(StructureEngine &SE)
    }
 
    //--- Si L3/L4 ya estaban activos, la vela cerrada también cuenta
-   //    sus mechas dentro de la reacción.
+   //    sus mechas; L1/L2 solo cambian al consolidar cierre.
    if(SE.L3L4_Active)
    {
       if(ClosedHigh > SE.L3) SE.L3 = ClosedHigh;
@@ -372,8 +400,7 @@ void UpdateEngineOnClose(StructureEngine &SE)
       return;
    }
 
-   //--- Reconstrucción de continuidad con la vela cerrada: antes de
-   //    saber el color final, L1/L2 se mueven al tick.
+   //--- Continuación sin reacción activa: L1/L2 se actualizan al cierre.
    if(SE.Bias == BIAS_BULLISH)
    {
       if(ClosedHigh > SE.L1)
@@ -425,33 +452,11 @@ void UpdateEngineOnClose(StructureEngine &SE)
 //+------------------------------------------------------------------+
 void UpdateEngineTick(StructureEngine &SE, double Price)
 {
-   if(!SE.Valid || Price <= 0.0) return;
-   if(SE.Bias == BIAS_UNDEFINED) return;
+   if(!SE.Valid || !SE.L3L4_Active || Price <= 0.0) return;
 
-   if(SE.L3L4_Active)
-   {
-      if(Price > SE.L3) SE.L3 = Price;
-      if(Price < SE.L4) SE.L4 = Price;
-      CheckBreakAndCommit(SE, Price, Price);
-      return;
-   }
-
-   if(SE.Bias == BIAS_BULLISH)
-   {
-      if(Price > SE.L1)
-      {
-         SE.L1 = Price;
-         UpdateStructureEQ(SE);
-      }
-   }
-   else if(SE.Bias == BIAS_BEARISH)
-   {
-      if(Price < SE.L2)
-      {
-         SE.L2 = Price;
-         UpdateStructureEQ(SE);
-      }
-   }
+   if(Price > SE.L3) SE.L3 = Price;
+   if(Price < SE.L4) SE.L4 = Price;
+   MarkPendingBreak(SE, Price);
 }
 
 //+------------------------------------------------------------------+

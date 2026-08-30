@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.32** (estrategia PERSONAL de líneas).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.34** (estrategia PERSONAL de líneas).
 
 ## Archivos
 
@@ -10,20 +10,21 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `ea.txt` | Copia en texto plano del mismo archivo (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
 
-## Estrategia (v8.32 — solo la PERSONAL)
+## Estrategia (v8.34 — solo la PERSONAL)
 
 **LINEAS** — lógica de las 4 líneas L1-L4, operativa con la **gestión de riesgo integrada** (virtual → LIVE, tabla de 20 niveles, SL/TP 1:3).
 
-- Entra en el *trigger* al tick: **L3** sobrepasa **L1** (compra/estructura alcista) o **L4** sobrepasa **L2** hacia abajo (venta/estructura bajista) con la zona de reacción **L3/L4** activa.
+- Entra en el *trigger* al cierre: si durante la reacción **L3** sobrepasa **L1** (compra/estructura alcista) o **L4** sobrepasa **L2** hacia abajo (venta/estructura bajista), el rompimiento queda pendiente y se consolida con vela cerrada.
+- **Operativa pausada por seguridad**: `InpAllowPersonalOrders=false` por defecto, así que el EA solo calcula/dibuja líneas y no abre compras/ventas ni virtuales ni LIVE hasta activar ese input.
 - Las estrategias antiguas **SMC (CHoCH), FVG y OB-H1 fueron eliminadas**; ya no aparecen en Inputs ni en el panel ESTRAT.
 - Parámetro: `InpUsePersonal` (única estrategia, por defecto `true`) y `InpLookbackBars=300`.
 
 ### Motor de estructura (las 4 líneas)
 
-- **L1/L2** = techo/suelo del rango; **EQ** = punto medio. Tras inicializar con `InpLookbackBars`, se actualizan **al tick**: en estructura alcista solo sube **L1** y en estructura bajista solo baja **L2**.
-- **L3/L4** = zona de reacción. Solo aparece cuando cierra una vela contraria a la estructura (bajista en alcista, alcista en bajista) y desde ese momento guarda máximo/mínimo al tick, contando mechas.
+- **L1/L2** = techo/suelo del rango; **EQ** = punto medio. Tras inicializar con `InpLookbackBars`, se actualizan **solo al cierre de vela**, usando high/low para incluir mechas: en estructura alcista solo sube **L1** y en estructura bajista solo baja **L2**.
+- **L3/L4** = zona de reacción. Solo aparece cuando cierra una vela contraria a la estructura (bajista en alcista, alcista en bajista) y desde ese momento guarda máximo/mínimo **al tick**, contando mechas.
 - Activación: en alcista **L3=L1** y **L4=mínimo** de la vela contraria; en bajista **L3=máximo** de la vela contraria y **L4=L2**.
-- **Trigger/swap inmediato** = si **L3>L1** o **L4<L2**, entonces **L1=L3**, **L2=L4**, se ocultan L3/L4 y el bias queda en la dirección del rompimiento. Si una vela toca ambos extremos y solo hay OHLC, se marca el último movimiento según el sentido del cuerpo; con ticks reales se procesa en orden.
+- **Trigger/swap al cierre** = si durante la reacción **L3>L1** o **L4<L2**, se marca la ruptura como pendiente; al cierre se consolida **L1=L3**, **L2=L4**, se ocultan L3/L4 y el bias queda en la dirección del rompimiento. Si una vela toca ambos extremos, se respeta el último lado roto por tick; si solo hay OHLC, se usa el sentido del cuerpo.
 
 ## Líneas visibles en el gráfico
 
