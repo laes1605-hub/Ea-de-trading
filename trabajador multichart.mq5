@@ -214,6 +214,7 @@ input string InpComment          = "QA_EA";
 
 input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
+input bool   InpUseVirtualBeforeLive = false; // true: X operaciones virtuales antes de LIVE
 input int    InpTableSize        = 20;
 
 input group "=== PARAMETROS MOTOR DE LINEAS ==="
@@ -1118,22 +1119,45 @@ void ClearVirtualState(int si,int st)
 //    Los cierres virtuales únicamente actualizan el CV de activación.
 void OnVirtualSL_Original(int si, int st)
 {
-   // Las operaciones virtuales son únicamente señales: no modifican CV,
-   // nivel ni ningún contador de operaciones de la cuenta.
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL ignorado: operación no ejecutada en cuenta real");
+   g_SysState[si].strategies[st].CV++;
+   UpdateCVMax(si,st);
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+            "→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelUp(si);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+           "→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
+   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
+   if(!g_SysState[si].hasLive&&
+      g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
+      SelectNextLiveStrategy(si);
 }
 
 void OnVirtualSL_Protected(int si, int st)
 {
+   int cv=g_SysState[si].strategies[st].CV;
+   int r=(cv>=10)?4:3;
+   g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
+   UpdateCVMax(si,st);
    Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL protegido ignorado: operación no ejecutada en cuenta real");
+         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
+   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
 {
    Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vTP ignorado: operación no ejecutada en cuenta real");
+         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
+         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
+   g_SysState[si].strategies[st].CV=1;
+   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
 }
 
 //--- cierre LIVE (real)
@@ -2173,9 +2197,12 @@ void UpdateAllStrategies()
          if(!hasPos&&IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st); if(sig!=0) OpenByStrategy(si,st,sig); } }
        else
-       { // Solo se contabilizan y ejecutan operaciones reales.
-         // No crear operaciones virtuales que luego parezcan posiciones.
-         if(IsTradeTimeAllowed())
+       { if(InpUseVirtualBeforeLive)
+         { UpdateStrategyVirtual(si,st);
+           if(!g_SysState[si].strategies[st].virtualActive)
+           { int sig=CheckStrategySignal(si,st);
+             if(sig!=0) StartStrategyVirtual(si,st,sig); } }
+         else if(IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st);
            if(sig!=0) OpenByStrategy(si,st,sig); } } } }
 }
