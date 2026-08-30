@@ -1118,45 +1118,22 @@ void ClearVirtualState(int si,int st)
 //    Los cierres virtuales únicamente actualizan el CV de activación.
 void OnVirtualSL_Original(int si, int st)
 {
-   g_SysState[si].strategies[st].CV++;
-   UpdateCVMax(si,st);
-   if(g_SysState[si].hasLive)
-      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
-            "→",g_SysState[si].strategies[st].CV,
-            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
-   else
-   { int lv=PairLevel(si); PairLevelUp(si);
-     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
-           "→",g_SysState[si].strategies[st].CV,
-           " NIVEL:",lv,"→",PairLevel(si),
-           " Lot:",DoubleToString(GetPairLot(si),2)); }
-   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
-   if(!g_SysState[si].hasLive&&
-      g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
-      SelectNextLiveStrategy(si);
+   // Las operaciones virtuales son únicamente señales: no modifican CV,
+   // nivel ni ningún contador de operaciones de la cuenta.
+   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+         "] vSL ignorado: operación no ejecutada en cuenta real");
 }
 
 void OnVirtualSL_Protected(int si, int st)
 {
-   int cv=g_SysState[si].strategies[st].CV;
-   int r=(cv>=10)?4:3;
-   g_SysState[si].strategies[st].CV=ApplyRetroceso(cv,r);
-   UpdateCVMax(si,st);
    Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL prot CV:",cv,"→",g_SysState[si].strategies[st].CV,
-         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
-   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
+         "] vSL protegido ignorado: operación no ejecutada en cuenta real");
 }
 
 void OnVirtualTP(int si, int st)
 {
    Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vTP CV:",g_SysState[si].strategies[st].CV,"→1",
-         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
-   g_SysState[si].strategies[st].CV=1;
-   if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
+         "] vTP ignorado: operación no ejecutada en cuenta real");
 }
 
 //--- cierre LIVE (real)
