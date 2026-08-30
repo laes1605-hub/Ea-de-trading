@@ -55,8 +55,16 @@ Las líneas ahora **se marcan con colores vivos y etiqueta con nombre + precio**
 ## Cómo probar
 
 1. Estrategia Tester: elige símbolo + timeframe (las señales se calculan en el TF del gráfico), cuenta demo. **Marca "Modo visual"** para ver las líneas.
+   - **Ya no necesitas rellenar `InpSymbol1..20` en el tester**: el EA añade automáticamente el símbolo del gráfico que estás probando, opera sobre él y dibuja sus líneas.
+   - En el log verás `TESTER: símbolo del gráfico [XXX] añadido automáticamente.` y las líneas calculadas (`LINEAS [...] L1=… L2=…`).
 2. En el log: `vOPEN` (simulación), `LIVE`, `CV/CR`, `CIRCUIT BREAKER`.
 3. Métricas: profit factor, win rate, nº de trades, **máximo drawdown** (crítico por la tabla de riesgo).
+
+### Si no ves las líneas en el tester
+
+1. **"Modo visual" tiene que estar marcado** — sin él el tester no muestra gráfico, así que no hay dónde dibujar las líneas.
+2. Mira el **log del tester**: debe aparecer `LINEAS [símbolo] L1=… L2=…`. Si no aparece, es que `InpShowStructureLines=false` o el símbolo no cargó datos (prueba con otro símbolo/timeframe).
+3. Las líneas **L3/L4 solo aparecen cuando la zona de reacción está activa** (así funciona el motor); L1/L2/EQ y las D1 sí se ven siempre.
 
 ## Verificación
 

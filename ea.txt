@@ -2731,6 +2731,30 @@ int OnInit()
    InitRiskTable();
    LoadSymbolInputParams();
 
+   //--- En el tester, si el símbolo del gráfico no está en InpSymbol1..20,
+   //    añadirlo automáticamente para poder operar y DIBUJAR LAS LÍNEAS
+   //    sobre el símbolo que se está probando (no requiere configuración).
+   if(IsTester())
+   {
+      bool chartSymPresent=false;
+      for(int s0=0;s0<g_SymCount;s0++)
+         if(g_Symbols[s0].name==_Symbol){ chartSymPresent=true; break; }
+      if(!chartSymPresent && g_SymCount<MAX_SYMBOLS)
+      {
+         SymbolSelect(_Symbol,true);
+         int idx=g_SymCount;
+         g_Symbols[idx].name        = _Symbol;
+         g_Symbols[idx].active      = true;
+         g_Symbols[idx].sl_points   = 0.0;   // usa el SL global
+         g_Symbols[idx].sl_offset   = 0.0;
+         g_Symbols[idx].tp_points   = 0.0;   // usa el TP global
+         g_Symbols[idx].activation  = 0.0;
+         g_Symbols[idx].protectedSL = 0.0;
+         g_SymCount++;
+         Print("TESTER: símbolo del gráfico [",_Symbol,"] añadido automáticamente.");
+      }
+   }
+
    if(g_SymCount==0)
    { Print("ERROR: No hay símbolos. Configura InpSymbol1..20");
      return INIT_FAILED; }
@@ -2747,6 +2771,25 @@ int OnInit()
 
    //--- Inicializar motores de líneas para poder dibujar de inmediato
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
+
+   //--- Diagnóstico en el log: confirma que las líneas se calcularon
+   if(IsTester() && InpShowStructureLines)
+   {
+      for(int si=0;si<g_SymCount;si++)
+      {
+         if(g_SysState[si].SE.Valid)
+            Print("LINEAS [",g_Symbols[si].name,"] L1=",
+                  DoubleToString(g_SysState[si].SE.L1,_Digits),
+                  "  L2=",DoubleToString(g_SysState[si].SE.L2,_Digits),
+                  "  EQ=",DoubleToString(g_SysState[si].SE.EQ,_Digits),
+                  "  L3L4=",g_SysState[si].SE.L3L4_Active?"ACTIVO":"-");
+         if(g_SysState[si].SE_D1.Valid)
+            Print("LINEAS D1 [",g_Symbols[si].name,"] L1=",
+                  DoubleToString(g_SysState[si].SE_D1.L1,_Digits),
+                  "  L2=",DoubleToString(g_SysState[si].SE_D1.L2,_Digits));
+      }
+      Print("LINEAS: se dibujan en el gráfico SOLO en Modo Visual del tester.");
+   }
 
    if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
 
