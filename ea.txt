@@ -2505,7 +2505,7 @@ void ProcessClosedQueue()
      Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
            wc?" [SEMANAL]":"");
      if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
-        g_SysState[si].strategies[st].isLive&&!counted[si][st])
+        !counted[si][st])
      {
         counted[si][st]=true;
         if(wc&&cPL<0)
