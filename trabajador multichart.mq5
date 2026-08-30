@@ -2,8 +2,10 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.35"
+#property version   "8.36"
 #property strict
+
+#include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
@@ -192,6 +194,15 @@ input double InpSym20_ProtSL     = 0.0;
 input group "=== CONFIGURACIÓN PANEL ==="
 input int    InpPanelX           = 20;
 input int    InpPanelY           = 50;
+
+input group "=== PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL) ==="
+input bool   InpShowMultiPanel   = true;   // Panel organizado por par (tabla legible)
+input bool   InpShowMiniCharts   = true;   // Mini-gráfico con líneas por par
+input bool   InpMPChartsAll      = false;  // Mini-gráficos también de pares sin posición/limit
+input int    InpMPBars           = 48;     // Velas del mini-gráfico (16-240)
+input int    InpMPX              = 0;      // X del panel (0 = automático: esquina derecha)
+input int    InpMPY              = 24;     // Y del panel
+input bool   InpShowPosLines     = true;   // Líneas ENTRADA/SL/TP/LIMIT en el gráfico
 input long   InpMagicNumber      = 123456;
 input string InpComment          = "QA_EA";
 
@@ -2487,7 +2498,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.35  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.36  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3392,6 +3403,648 @@ void SyncLimitLinePrice()
 }
 
 //+------------------------------------------------------------------+
+//| PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL)                   |
+//|                                                                  |
+//| Panel organizado y legible con una fila por par: bias H1/M3,     |
+//| zona, limit congelada, posición abierta (lotes/P&L), nivel de    |
+//| riesgo, lote y el PRÓXIMO PASO de la estrategia. Debajo, un      |
+//| mini-gráfico por par con sus líneas: L1/L2 del TF de entrada,    |
+//| rango H1, 50% H1, entrada limit congelada y ENTRADA/SL/TP de la  |
+//| posición. Se dibuja igual en el Strategy Tester (modo visual) y  |
+//| en el gráfico real, sobre un único bitmap (rápido, sin parpadeo).|
+//+------------------------------------------------------------------+
+#define MP_CANVAS_NAME  "MPNL_CANVAS"
+#define MP_PSLINE_PFX   "PSLN_"
+#define MP_MAX_ROWS     10
+#define MP_MAX_CHARTS   6
+#define MP_ROW_H        15
+#define MP_BOX_H        104
+
+CCanvas  g_MP;
+bool     g_MPReady       = false;
+int      g_MPW           = 0;
+int      g_MPH           = 0;
+uint     g_MPLastUpd     = 0;
+uint     g_MPLastPosLine = 0;
+int      g_MPLastTrades  = -1;
+
+//--- ¿hay gráfico visible donde dibujar? (tester: solo modo visual)
+bool IsVisual()
+{ return(!IsTester() || MQLInfoInteger(MQL_VISUAL_MODE)==1); }
+
+uint MPC(color c)
+{ return(ColorToARGB(c,255)); }
+
+//--- nombre corto del TF (H1, M3, ...)
+string MPTFName(ENUM_TIMEFRAMES tf)
+{
+   string s=EnumToString(tf);
+   StringReplace(s,"PERIOD_","");
+   return(s);
+}
+
+//+------------------------------------------------------------------+
+//| Snapshot legible por símbolo (una fila del panel)                |
+//+------------------------------------------------------------------+
+struct MPSnapshot
+{
+   int    si;
+   string sym;
+   int    dg;
+   double bid;
+   string h1Txt, m3Txt;
+   color  h1Clr, m3Clr;
+   bool   zBuy, zSell;
+   bool   hasLim;  double limPrice; int limDir;
+   bool   hasPos;  double posLots, posPL, posEntry; int posDir;
+   int    cr, cv;
+   double lot;
+   bool   trail, paused;
+   string state;
+   color  stateClr;
+   int    prio;    // 3=posición · 2=limit · 1=esperando · 0=resto
+};
+
+void MPFillSnapshot(int si,MPSnapshot &s)
+{
+   s.si=si;
+   s.sym=g_Symbols[si].name;
+   s.dg =(int)SymbolInfoInteger(s.sym,SYMBOL_DIGITS);
+   s.bid=SymbolInfoDouble(s.sym,SYMBOL_BID);
+
+   s.h1Txt=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ALC":
+           (g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"BAJ":"--";
+   s.h1Clr=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?clrLimeGreen:
+           (g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?clrTomato:clrGray;
+   s.m3Txt=(g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?"ALC":
+           (g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?"BAJ":"--";
+   s.m3Clr=(g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?clrLimeGreen:
+           (g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?clrTomato:clrGray;
+
+   s.zBuy =g_SysState[si].confArmedBuy;
+   s.zSell=g_SysState[si].confArmedSell;
+
+   //--- limit pendiente: primero la virtual de confluencia, luego órdenes reales
+   s.hasLim=false; s.limPrice=0.0; s.limDir=0;
+   if(g_SysState[si].confVPendBuy && g_SysState[si].confVPendBuyPrice>0)
+   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendBuyPrice; s.limDir=1; }
+   else if(g_SysState[si].confVPendSell && g_SysState[si].confVPendSellPrice>0)
+   { s.hasLim=true; s.limPrice=g_SysState[si].confVPendSellPrice; s.limDir=-1; }
+   else
+   {
+      for(int i=OrdersTotal()-1;i>=0;i--)
+      { ulong ot=OrderGetTicket(i); if(ot==0) continue;
+        if(OrderGetString(ORDER_SYMBOL)!=s.sym) continue;
+        if(!IsAnyMagic((long)OrderGetInteger(ORDER_MAGIC))) continue;
+        long ty=OrderGetInteger(ORDER_TYPE);
+        if(ty!=ORDER_TYPE_BUY_LIMIT &&ty!=ORDER_TYPE_SELL_LIMIT &&
+           ty!=ORDER_TYPE_BUY_STOP &&ty!=ORDER_TYPE_SELL_STOP) continue;
+        s.hasLim=true; s.limPrice=OrderGetDouble(ORDER_PRICE_OPEN);
+        s.limDir=(ty==ORDER_TYPE_BUY_LIMIT||ty==ORDER_TYPE_BUY_STOP)?1:-1;
+        break; }
+   }
+
+   //--- posición abierta (agregada: puede haber split de lotes)
+   s.hasPos=false; s.posLots=0.0; s.posPL=0.0; s.posEntry=0.0; s.posDir=0;
+   for(int k=0;k<g_TradeCount;k++)
+   { if(g_Trades[k].symbolIdx!=si) continue;
+     s.hasPos=true; s.posLots+=g_Trades[k].lots; s.posPL+=g_Trades[k].profit;
+     s.posEntry=g_Trades[k].openPrice;
+     s.posDir=(g_Trades[k].orderType==POSITION_TYPE_BUY)?1:-1; }
+
+   int al=g_SysState[si].activeLiveStrategy;
+   s.cr=(al>=0)?g_SysState[si].strategies[al].CR:1;
+   s.cv=(al>=0)?g_SysState[si].strategies[al].CV:1;
+   s.lot=(al>=0)?GetLotByCR(si,s.cr):GetLotByCR(si,1);
+   s.trail=(al>=0)?IsTrailingActive(si,al):false;
+   s.paused=(g_CircuitBreakerOn||
+             g_SysState[si].strategies[STRAT_CONFLUENCIA].cbPaused||
+             g_SysState[si].strategies[STRAT_PERSONAL].cbPaused);
+
+   //--- estado legible: qué está pasando / qué falta
+   if(s.hasPos)
+   { s.state="POSICIÓN ABIERTA"; s.stateClr=clrLimeGreen; s.prio=3; }
+   else if(s.hasLim)
+   { s.state=StringFormat("LIMIT %s %s",(s.limDir>0?"B":"S"),
+                          DoubleToString(s.limPrice,s.dg));
+     s.stateClr=(s.limDir>0)?clrLime:clrOrangeRed; s.prio=2; }
+   else if(g_SysState[si].confWaitBuy)
+   { s.state="ESPERA CRUCE 50% (C)"; s.stateClr=clrGold; s.prio=1; }
+   else if(g_SysState[si].confWaitSell)
+   { s.state="ESPERA CRUCE 50% (V)"; s.stateClr=clrGold; s.prio=1; }
+   else if(s.zBuy)
+   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ZONA C ✓ CHoCH M3"
+                                                       :"ZONA C ✓ H1 NO ALCISTA";
+     s.stateClr=clrYellow; s.prio=1; }
+   else if(s.zSell)
+   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"ZONA V ✓ CHoCH M3"
+                                                       :"ZONA V ✓ H1 NO BAJISTA";
+     s.stateClr=clrYellow; s.prio=1; }
+   else if(s.paused)
+   { s.state="PAUSA (CIRCUIT BREAKER)"; s.stateClr=clrTomato; s.prio=0; }
+   else
+   { s.state="FUERA DE ZONA"; s.stateClr=clrSilver; s.prio=0; }
+}
+
+//+------------------------------------------------------------------+
+//| Helpers de dibujo sobre el canvas                                |
+//+------------------------------------------------------------------+
+//--- tamaño en "puntos" como los OBJ_LABEL del panel → décimas negativas
+void MPText(int x,int y,string t,color c,bool bold=false,int size=8)
+{
+   g_MP.FontSet("Consolas",-size*10,bold?FW_BOLD:0);
+   g_MP.TextOut(x,y,t,MPC(c));
+}
+int MPTextW(string t,bool bold=false,int size=8)
+{
+   g_MP.FontSet("Consolas",-size*10,bold?FW_BOLD:0);
+   return(g_MP.TextWidth(t));
+}
+void MPTextR(int xRight,int y,string t,color c,bool bold=false,int size=8)
+{ MPText(xRight-MPTextW(t,bold,size),y,t,c,bold,size); }
+
+void MPRect(int x,int y,int w,int h,color c)
+{ g_MP.FillRectangle(x,y,x+w-1,y+h-1,MPC(c)); }
+void MPFrame(int x,int y,int w,int h,color c)
+{ g_MP.Rectangle(x,y,x+w-1,y+h-1,MPC(c)); }
+void MPSeg(int x1,int x2,int y,color c)
+{ if(x2<x1) return; g_MP.Line(x1,y,x2,y,MPC(c)); }
+void MPDash(int x1,int x2,int y,color c,int on,int off)
+{
+   for(int x=x1;x<=x2;x+=on+off)
+   { int xe=MathMin(x2,x+on-1);
+     for(int xx=x;xx<=xe;xx++) g_MP.PixelSet(xx,y,MPC(c)); }
+}
+void MPDot(int x,int y,color c,int r=2)
+{ g_MP.FillRectangle(x-r,y-r,x+r,y+r,MPC(c)); }
+
+//--- añade un nivel al listado de líneas del mini-gráfico (si está cerca)
+int MPAddLvl(double &lv[],color &lc[],int &ls[],string &ln[],
+             int nl,double p,color c,int st,string nm,
+             double extLo,double extHi)
+{
+   if(p>0.0 && p>=extLo && p<=extHi && nl<16)
+   { lv[nl]=p; lc[nl]=c; ls[nl]=st; ln[nl]=nm; nl++; }
+   return(nl);
+}
+
+//+------------------------------------------------------------------+
+//| Mini-gráfico de un par con sus líneas                            |
+//+------------------------------------------------------------------+
+void MPDrawMini(int x,int y,int w,int h,int si,MPSnapshot &s)
+{
+   MPRect(x,y,w,h,C'13,15,25');
+   MPFrame(x,y,w,h,C'55,65,110');
+
+   ENUM_TIMEFRAMES tf=InpUseConfluencia?InpConfTFEntrada:PERIOD_CURRENT;
+   double cArr[];
+   int nb=MathMax(16,MathMin(240,InpMPBars));
+   int n=CopyClose(s.sym,tf,0,nb,cArr);
+   if(n<8) n=CopyClose(s.sym,PERIOD_CURRENT,0,nb,cArr);
+   if(n<8)
+   { MPText(x+8,y+8,"SIN DATOS",clrGray,true,9); return; }
+
+   //--- posición/limit de este par (para dibujar sus niveles)
+   double ePX=0,eSL=0,eTP=0;
+   for(int k=0;k<g_TradeCount;k++)
+   { if(g_Trades[k].symbolIdx!=si) continue;
+     ePX=g_Trades[k].openPrice; eSL=g_Trades[k].sl; eTP=g_Trades[k].tp; }
+
+   //--- rango de la serie
+   double hi=-DBL_MAX, lo=DBL_MAX;
+   for(int i=0;i<n;i++)
+   { if(cArr[i]>hi) hi=cArr[i]; if(cArr[i]<lo) lo=cArr[i]; }
+   double span=(hi-lo); if(span<=0.0) span=MathMax(hi*0.0005,_Point);
+   double extLo=lo-span*1.6, extHi=hi+span*1.6;
+
+   //--- niveles: 0 sólida · 1 discontinua · 2 punteada · 3 raya-punto
+   double lv[16]; color lc[16]; int ls[16]; string ln[16]; int nl=0;
+   if(g_SysState[si].SE_M3.Valid)
+   {
+      nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_M3.L1,clrDeepSkyBlue,0,"L1",extLo,extHi);
+      nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_M3.L2,clrDeepSkyBlue,0,"L2",extLo,extHi);
+      if(g_SysState[si].SE_M3.L3L4_Active)
+      { nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_M3.L3,clrMagenta,1,"L3",extLo,extHi);
+        nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_M3.L4,clrOrangeRed,1,"L4",extLo,extHi); }
+   }
+   if(g_SysState[si].SE_H1.Valid)
+   {
+      nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.L1,clrOrange,1,"H1L1",extLo,extHi);
+      nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.L2,clrOrange,1,"H1L2",extLo,extHi);
+      nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.EQ,clrGold,2,"50%",extLo,extHi);
+   }
+   if(s.hasLim)
+      nl=MPAddLvl(lv,lc,ls,ln,nl,s.limPrice,(s.limDir>0)?clrLime:clrRed,3,
+                  (s.limDir>0)?"LIM B":"LIM S",extLo,extHi);
+   if(s.hasPos)
+   {
+      nl=MPAddLvl(lv,lc,ls,ln,nl,ePX,clrWhite,3,"ENTRADA",extLo,extHi);
+      nl=MPAddLvl(lv,lc,ls,ln,nl,eSL,clrOrangeRed,2,"SL",extLo,extHi);
+      nl=MPAddLvl(lv,lc,ls,ln,nl,eTP,clrSpringGreen,2,"TP",extLo,extHi);
+   }
+
+   //--- escala final (serie + niveles incluidos, con margen)
+   double hiF=hi+span*0.15, loF=lo-span*0.15;
+   for(int j=0;j<nl;j++)
+   { if(lv[j]>hiF) hiF=lv[j]; if(lv[j]<loF) loF=lv[j]; }
+   double rng=(hiF-loF); if(rng<=0.0) rng=span;
+   hiF+=rng*0.06; loF-=rng*0.06; rng=hiF-loF;
+
+   int px0=x+6, px1=x+w-46, py0=y+18, py1=y+h-10;
+
+   //--- niveles
+   for(int j=0;j<nl;j++)
+   {
+      int yy=(int)MathRound(py1-(lv[j]-loF)/rng*(py1-py0));
+      if(yy<py0||yy>py1) continue;
+      switch(ls[j])
+      { case 0:  MPSeg(px0,px1,yy,lc[j]);               break;
+        case 1:  MPDash(px0,px1,yy,lc[j],5,4);          break;
+        case 2:  MPDash(px0,px1,yy,lc[j],1,2);          break;
+        default: MPDash(px0,px1,yy,lc[j],7,3);          break; }
+      MPText(px1+4,yy-4,ln[j],lc[j],false,7);
+   }
+
+   //--- escala mín/máx
+   MPText(px0,py0+1,DoubleToString(hiF,s.dg),C'110,110,130',false,7);
+   MPText(px0,py1-8,DoubleToString(loF,s.dg),C'110,110,130',false,7);
+
+   //--- serie de precios
+   int prevx=px0, prevy=(int)MathRound(py1-(cArr[0]-loF)/rng*(py1-py0));
+   for(int i=1;i<n;i++)
+   { int xx=(int)MathRound(px0+(double)i/(n-1)*(px1-px0));
+     int yy=(int)MathRound(py1-(cArr[i]-loF)/rng*(py1-py0));
+     g_MP.Line(prevx,prevy,xx,yy,MPC(clrDeepSkyBlue));
+     prevx=xx; prevy=yy; }
+   MPDot(px1,prevy,clrYellow,2);
+
+   //--- cabecera del box: par · TF · precio + chip de estado
+   double cur=(s.bid>0)?s.bid:cArr[n-1];
+   string ttl=s.sym+"  "+MPTFName(tf);
+   MPText(x+6,y+3,ttl,clrGold,true,9);
+   string chip;
+   color  chipClr;
+   if(s.hasPos)
+   { chip=StringFormat("%s %s  %+.2f",(s.posDir>0)?"▲":"▼",
+                       DoubleToString(s.posLots,2),s.posPL);
+     chipClr=(s.posPL>=0)?clrLimeGreen:clrTomato; }
+   else if(s.hasLim)
+   { chip=(s.limDir>0)?"LIMIT B":"LIMIT S"; chipClr=(s.limDir>0)?clrLime:clrOrangeRed; }
+   else { chip="---"; chipClr=clrGray; }
+   MPTextR(x+w-6,y+4,chip,chipClr,true,9);
+   MPText(x+6+MPTextW(ttl,true,9)+8,y+4,DoubleToString(cur,s.dg),clrWhite,false,8);
+}
+
+//+------------------------------------------------------------------+
+//| Cabecera, resumen de cuenta, tabla y leyenda                     |
+//+------------------------------------------------------------------+
+void MPDrawHeader(int x,int y,int w,int nOpen,int nLim)
+{
+   MPRect(x,y,w,22,C'22,22,58');
+   MPFrame(x,y,w,22,C'70,80,150');
+   string mode=IsTester()?"TESTER VISUAL":"REAL";
+   string t=StringFormat("MULTI-PAR · %s · %d pares · %d abiertos · %d limits",
+                         mode,g_SymCount,nOpen,nLim);
+   MPText(x+8,y+6,t,clrGold,true,9);
+   MPTextR(x+w-8,y+7,TimeToString(TimeCurrent(),TIME_DATE|TIME_MINUTES),
+           C'150,150,170',false,8);
+}
+
+void MPDrawAccount(int x,int y,int w)
+{
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq =AccountInfoDouble(ACCOUNT_EQUITY);
+   double fPL=eq-bal;
+   double lp =GetDailyLossPct();
+
+   MPRect(x,y,w,24,C'15,17,27');
+   int cw=w/4;
+   string cap[4]={"BALANCE","EQUIDAD","P&L FLOTANTE","CB DÍA"};
+   string val[4];
+   val[0]=DoubleToString(bal,2);
+   val[1]=DoubleToString(eq,2);
+   val[2]=StringFormat("%s%.2f",(fPL>=0)?"+":"",fPL);
+   val[3]=(g_CircuitBreakerOn)?"BLOQUEADO":
+          StringFormat("%.2f%% / %.1f%%",lp,InpMaxDailyLossPct);
+   color vc[4];
+   vc[0]=clrWhite;
+   vc[1]=(eq>=bal)?clrLimeGreen:clrTomato;
+   vc[2]=(fPL>=0)?clrLimeGreen:clrTomato;
+   vc[3]=g_CircuitBreakerOn?clrTomato:
+          (lp>=InpMaxDailyLossPct*0.8)?clrOrange:
+          (lp>=InpMaxDailyLossPct*0.5)?clrYellow:C'120,180,120';
+   for(int i=0;i<4;i++)
+   { MPText(x+i*cw+8,y+3,cap[i],C'130,130,150',false,7);
+     MPText(x+i*cw+8,y+11,val[i],vc[i],true,9);
+     if(i>0) g_MP.Line(x+i*cw,y+3,x+i*cw,y+20,MPC(C'45,50,75')); }
+}
+
+//--- columnas de la tabla (offsets X dentro del panel, ancho 620)
+#define MPC_X_PAR   8
+#define MPC_X_H1   92
+#define MPC_X_M3  122
+#define MPC_X_ZONA 152
+#define MPC_X_LIM  188
+#define MPC_X_POS  256
+#define MPC_X_NIV  348
+#define MPC_X_LOT  378
+#define MPC_X_PNL  414
+#define MPC_X_EST  462
+
+void MPDrawTable(int x,int y,int w,MPSnapshot &snaps[],int ord[],int nShown)
+{
+   //--- cabecera de columnas
+   MPRect(x,y,w,14,C'26,26,50');
+   MPText(x+MPC_X_PAR ,y+3,"PAR",clrSilver,true,8);
+   MPText(x+MPC_X_H1  ,y+3,"H1",clrSilver,true,8);
+   MPText(x+MPC_X_M3  ,y+3,"M3",clrSilver,true,8);
+   MPText(x+MPC_X_ZONA,y+3,"ZONA",clrSilver,true,8);
+   MPText(x+MPC_X_LIM ,y+3,"LÍMITE",clrSilver,true,8);
+   MPText(x+MPC_X_POS ,y+3,"POSICIÓN",clrSilver,true,8);
+   MPText(x+MPC_X_NIV ,y+3,"NIV",clrSilver,true,8);
+   MPText(x+MPC_X_LOT ,y+3,"LOT",clrSilver,true,8);
+   MPText(x+MPC_X_PNL ,y+3,"P&L",clrSilver,true,8);
+   MPText(x+MPC_X_EST ,y+3,"ESTADO / PRÓXIMO PASO",clrSilver,true,8);
+   y+=14;
+
+   for(int r=0;r<nShown;r++)
+   {
+      int si=ord[r];
+      MPSnapshot s=snaps[si];
+      int ry=y+r*MP_ROW_H;
+
+      color bg=s.hasPos?C'8,52,30':
+              s.hasLim?C'10,34,64':
+              s.paused?C'55,18,18':((r%2)?C'20,20,32':C'15,15,25');
+      MPRect(x,ry,w,MP_ROW_H,bg);
+      g_MP.Line(x,ry+MP_ROW_H-1,x+w-1,ry+MP_ROW_H-1,MPC(C'35,35,55'));
+
+      MPText(x+MPC_X_PAR ,ry+3,s.sym,s.hasPos?clrLime:clrGold,true,8);
+      MPText(x+MPC_X_H1  ,ry+3,s.h1Txt,s.h1Clr,false,8);
+      MPText(x+MPC_X_M3  ,ry+3,s.m3Txt,s.m3Clr,false,8);
+      string zs=(s.zBuy&&s.zSell)?"C+V":s.zBuy?"C":s.zSell?"V":"-";
+      MPText(x+MPC_X_ZONA,ry+3,zs,s.zBuy?clrLime:(s.zSell?clrTomato:clrGray),false,8);
+      MPText(x+MPC_X_LIM ,ry+3,s.hasLim?StringFormat("%s %s",(s.limDir>0)?"B":"S",
+                                  DoubleToString(s.limPrice,s.dg)):"-",
+             s.hasLim?((s.limDir>0)?clrLime:clrOrangeRed):clrGray,false,8);
+      MPText(x+MPC_X_POS ,ry+3,s.hasPos?StringFormat("%s %s %s",
+                                  (s.posDir>0)?"▲":"▼",DoubleToString(s.posLots,2),
+                                  DoubleToString(s.posEntry,s.dg)):"-",
+             s.hasPos?clrWhite:clrGray,false,8);
+      MPText(x+MPC_X_NIV ,ry+3,StringFormat("%d",s.cr),clrDodgerBlue,false,8);
+      MPText(x+MPC_X_LOT ,ry+3,DoubleToString(s.lot,2),clrDodgerBlue,false,8);
+      MPText(x+MPC_X_PNL ,ry+3,s.hasPos?StringFormat("%s%.2f",(s.posPL>=0)?"+":"",s.posPL):"-",
+             s.hasPos?((s.posPL>=0)?clrLimeGreen:clrTomato):clrGray,false,8);
+      MPText(x+MPC_X_EST ,ry+3,s.state,s.stateClr,false,8);
+   }
+
+   if(g_SymCount>nShown)
+      MPText(x+MPC_X_PAR,y+nShown*MP_ROW_H+2,
+             StringFormat("… y %d pares más (ordenados por actividad)",g_SymCount-nShown),
+             C'130,130,150',false,8);
+}
+
+void MPDrawLegend(int x,int y)
+{
+   int lx=x+8;
+   MPSeg(lx,lx+12,y+6,clrDeepSkyBlue);            lx+=16;
+   MPText(lx,y+2,"precio",clrSilver,false,7);      lx+=MPTextW("precio",false,7)+12;
+   MPSeg(lx,lx+12,y+6,clrOrange);                  lx+=16;
+   MPText(lx,y+2,"H1 L1/L2",clrSilver,false,7);    lx+=MPTextW("H1 L1/L2",false,7)+12;
+   MPDash(lx,lx+12,y+6,clrGold,1,2);               lx+=16;
+   MPText(lx,y+2,"50% H1",clrSilver,false,7);      lx+=MPTextW("50% H1",false,7)+12;
+   MPDash(lx,lx+12,y+6,clrLime,7,3);               lx+=16;
+   MPText(lx,y+2,"limit",clrSilver,false,7);       lx+=MPTextW("limit",false,7)+12;
+   MPDash(lx,lx+12,y+6,clrWhite,7,3);              lx+=16;
+   MPText(lx,y+2,"entrada",clrSilver,false,7);     lx+=MPTextW("entrada",false,7)+12;
+   MPDash(lx,lx+12,y+6,clrOrangeRed,1,2);          lx+=16;
+   MPText(lx,y+2,"SL",clrSilver,false,7);          lx+=MPTextW("SL",false,7)+12;
+   MPDash(lx,lx+12,y+6,clrSpringGreen,1,2);        lx+=16;
+   MPText(lx,y+2,"TP",clrSilver,false,7);
+}
+
+//+------------------------------------------------------------------+
+//| Actualización del panel (con throttle para no frenar el tester)  |
+//+------------------------------------------------------------------+
+void MultiPanelUpdate(bool force=false)
+{
+   if(!InpShowMultiPanel || !IsVisual()) return;
+
+   uint now=GetTickCount();
+   if(!force && g_MPReady && now-g_MPLastUpd<250) return;
+   g_MPLastUpd=now;
+
+   //--- snapshot de todos los pares + orden por actividad
+   MPSnapshot snaps[MAX_SYMBOLS];
+   int ord[MAX_SYMBOLS];
+   int nOpen=0, nLim=0;
+   for(int i=0;i<g_SymCount;i++)
+   { if(!g_Symbols[i].active){ ord[i]=-1; continue; }
+      MPFillSnapshot(i,snaps[i]);
+      if(snaps[i].hasPos) nOpen++;
+      if(snaps[i].hasLim) nLim++; }
+   int nAct=0;
+   for(int i=0;i<g_SymCount;i++)
+      if(g_Symbols[i].active){ ord[nAct++]=i; }
+   for(int i=1;i<nAct;i++)                      // inserción estable por prioridad
+   { int key=ord[i]; int kv=snaps[key].prio; int j=i-1;
+     while(j>=0 && snaps[ord[j]].prio<kv){ ord[j+1]=ord[j]; j--; }
+     ord[j+1]=key; }
+
+   //--- tamaño del panel
+   int rows=MathMin(nAct,MP_MAX_ROWS);
+   int chartSlots=0;
+   if(InpShowMiniCharts)
+   { chartSlots=(InpMPChartsAll)?nAct:(nOpen+nLim);
+      if(chartSlots==0) chartSlots=MathMin(1,nAct);
+      chartSlots=MathMin(chartSlots,MP_MAX_CHARTS); }
+   int chartRows=(chartSlots+1)/2;
+   int W=620;
+   int H=22+24+14+rows*MP_ROW_H;
+   if(nAct>rows) H+=13;
+   if(chartRows>0) H+=8+chartRows*MP_BOX_H+(chartRows-1)*6;
+   H+=20;
+
+   //--- posición (auto: esquina superior derecha)
+   int cw=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS,0);
+   int ch=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS,0);
+   if(cw<=0) cw=800;
+   if(ch<=0) ch=600;
+   int px=(InpMPX>0)?InpMPX:MathMax(0,cw-W-12);
+   int py=MathMin(InpMPY,MathMax(0,ch-H-6));
+
+   //--- crear/recrear bitmap si cambia el tamaño
+   if(!g_MPReady || g_MPW!=W || g_MPH!=H)
+   {
+      if(g_MPReady){ g_MP.Destroy(); g_MPReady=false; }
+      ObjectDelete(0,MP_CANVAS_NAME);
+      if(!g_MP.CreateBitmapLabel(MP_CANVAS_NAME,px,py,W,H,COLOR_FORMAT_XRGB_NOALPHA))
+         return;
+      g_MPReady=true; g_MPW=W; g_MPH=H;
+      ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+      ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_HIDDEN,true);
+      ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_BACK,false);
+      ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_ZORDER,10);
+   }
+   ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_XDISTANCE,px);
+   ObjectSetInteger(0,MP_CANVAS_NAME,OBJPROP_YDISTANCE,py);
+
+   //--- dibujo
+   g_MP.Erase(MPC(C'10,10,18'));
+   int y=0;
+   MPDrawHeader(0,y,W,nOpen,nLim);  y+=22;
+   MPDrawAccount(0,y,W);            y+=24;
+   MPDrawTable(0,y,W,snaps,ord,rows);
+   y+=14+rows*MP_ROW_H;
+   if(nAct>rows) y+=13;
+
+   if(chartSlots>0)
+   {
+      y+=8;
+      int bw=(W-18)/2, drawn=0;
+      //--- 1º: pares con posición o limit
+      for(int i=0;i<nAct && drawn<chartSlots;i++)
+      { int si=ord[i];
+         if(!snaps[si].hasPos && !snaps[si].hasLim) continue;
+         MPDrawMini(6+(drawn%2)*(bw+6),y+(drawn/2)*(MP_BOX_H+6),bw,MP_BOX_H,si,snaps[si]);
+         drawn++; }
+      //--- 2º: si no hay nada abierto, mostrar el símbolo del gráfico
+      if(!InpMPChartsAll && drawn==0 && chartSlots>0)
+      {
+         int cs=-1;
+         for(int i=0;i<nAct;i++)
+            if(g_Symbols[ord[i]].name==_Symbol){ cs=ord[i]; break; }
+         if(cs<0 && nAct>0) cs=ord[0];
+         if(cs>=0 && snaps[cs].sym!="")
+         { MPDrawMini(6,y,bw,MP_BOX_H,cs,snaps[cs]); drawn++; }
+      }
+      //--- 3º: rellenar el resto de huecos (solo con InpMPChartsAll)
+      for(int i=0;i<nAct && drawn<chartSlots;i++)
+      { int si=ord[i];
+         if(snaps[si].hasPos || snaps[si].hasLim) continue;
+         if(!InpMPChartsAll) break;
+         MPDrawMini(6+(drawn%2)*(bw+6),y+(drawn/2)*(MP_BOX_H+6),bw,MP_BOX_H,si,snaps[si]);
+         drawn++; }
+      y+=chartRows*MP_BOX_H+(chartRows-1)*6;
+   }
+   MPDrawLegend(0,y+2);
+
+   g_MP.Update(true);
+   ChartRedraw();
+}
+
+void MultiPanelDestroy()
+{
+   if(g_MPReady){ g_MP.Destroy(); g_MPReady=false; }
+   ObjectDelete(0,MP_CANVAS_NAME);
+}
+
+//+------------------------------------------------------------------+
+//| LÍNEAS DE POSICIONES/LIMITS DEL SÍMBOLO DEL GRÁFICO              |
+//| ENTRADA (blanca), SL (roja), TP (verde) y LIMIT (lima/rojo)      |
+//| visibles en el tester visual y en el gráfico real                |
+//+------------------------------------------------------------------+
+void PL_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,
+              int wdt,string lbl)
+{
+   string tn=name+"_T";
+   if(price<=0.0){ ObjectDelete(0,name); ObjectDelete(0,tn); return; }
+   if(ObjectFind(0,name)<0)
+   { ObjectCreate(0,name,OBJ_HLINE,0,0,price);
+     ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+     ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+     ObjectSetInteger(0,name,OBJPROP_BACK,true); }
+   ObjectSetDouble (0,name,OBJPROP_PRICE,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,sty);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,wdt);
+   datetime tt=iTime(_Symbol,PERIOD_CURRENT,0)
+             +PeriodSeconds(PERIOD_CURRENT)*8;
+   if(ObjectFind(0,tn)<0)
+   { ObjectCreate(0,tn,OBJ_TEXT,0,tt,price);
+     ObjectSetInteger(0,tn,OBJPROP_SELECTABLE,false);
+     ObjectSetInteger(0,tn,OBJPROP_HIDDEN,true);
+     ObjectSetString (0,tn,OBJPROP_FONT,"Arial Bold");
+     ObjectSetInteger(0,tn,OBJPROP_FONTSIZE,8);
+     ObjectSetInteger(0,tn,OBJPROP_ANCHOR,ANCHOR_LEFT); }
+   ObjectSetInteger(0,tn,OBJPROP_TIME,tt);
+   ObjectSetDouble (0,tn,OBJPROP_PRICE,price);
+   ObjectSetString (0,tn,OBJPROP_TEXT,lbl);
+   ObjectSetInteger(0,tn,OBJPROP_COLOR,clr);
+}
+
+void RemovePositionLines()
+{
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   { string n=ObjectName(0,i,0,-1);
+     if(StringFind(n,MP_PSLINE_PFX)==0) ObjectDelete(0,n); }
+}
+
+void DrawPositionLines()
+{
+   if(!InpShowPosLines || !IsVisual()) return;
+
+   uint now=GetTickCount();
+   if(now-g_MPLastPosLine<300 && g_MPLastTrades==g_TradeCount) return;
+   g_MPLastPosLine=now; g_MPLastTrades=g_TradeCount;
+
+   string keep[]; int kn=0; ArrayResize(keep,0);
+   for(int k=0;k<g_TradeCount;k++)
+   {
+      int si=g_Trades[k].symbolIdx;
+      if(si<0 || g_Symbols[si].name!=_Symbol) continue;
+      ulong  t=g_Trades[k].ticket;
+      bool   isBuy=(g_Trades[k].orderType==POSITION_TYPE_BUY);
+      string tag=StringFormat("#%I64u",t%100000);
+      string eN=StringFormat("%sE_%I64u",MP_PSLINE_PFX,t);
+      string sN=StringFormat("%sS_%I64u",MP_PSLINE_PFX,t);
+      string tN=StringFormat("%sT_%I64u",MP_PSLINE_PFX,t);
+      PL_HLine(eN,g_Trades[k].openPrice,clrWhite,STYLE_DASH,1,
+               StringFormat("ENTRADA %s %s %s",(isBuy?"▲":"▼"),
+                            DoubleToString(g_Trades[k].lots,2),tag));
+      PL_HLine(sN,g_Trades[k].sl,clrRed,STYLE_DOT,1,"SL "+tag);
+      PL_HLine(tN,g_Trades[k].tp,clrLime,STYLE_DOT,1,"TP "+tag);
+      for(int q=0;q<3;q++)
+      { string base=(q==0)?eN:(q==1)?sN:tN;
+         ArrayResize(keep,kn+2); keep[kn]=base; keep[kn+1]=base+"_T"; kn+=2; }
+   }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong ot=OrderGetTicket(i); if(ot==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=_Symbol) continue;
+      if(!IsAnyMagic((long)OrderGetInteger(ORDER_MAGIC))) continue;
+      long ty=OrderGetInteger(ORDER_TYPE);
+      if(ty!=ORDER_TYPE_BUY_LIMIT &&ty!=ORDER_TYPE_SELL_LIMIT &&
+         ty!=ORDER_TYPE_BUY_STOP &&ty!=ORDER_TYPE_SELL_STOP) continue;
+      bool b=(ty==ORDER_TYPE_BUY_LIMIT||ty==ORDER_TYPE_BUY_STOP);
+      string lN=StringFormat("%sL_%I64u",MP_PSLINE_PFX,ot);
+      PL_HLine(lN,OrderGetDouble(ORDER_PRICE_OPEN),b?clrLime:clrOrangeRed,
+               STYLE_DASHDOT,1,b?"LIMIT COMPRA":"LIMIT VENTA");
+      ArrayResize(keep,kn+2); keep[kn]=lN; keep[kn+1]=lN+"_T"; kn+=2;
+   }
+   //--- borrar líneas de tickets que ya no existen
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   { string n=ObjectName(0,i,0,-1);
+      if(StringFind(n,MP_PSLINE_PFX)!=0) continue;
+      bool found=false;
+      for(int j=0;j<kn;j++) if(keep[j]==n){ found=true; break; }
+      if(!found) ObjectDelete(0,n); }
+   ChartRedraw();
+}
+
+//--- limpia objetos sueltos de versiones anteriores
+void CleanupLegacyObjects()
+{
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   { string n=ObjectName(0,i,0,-1);
+      if(StringFind(n,"PAIRLBL_")==0 || n=="VALIDA_SUM") ObjectDelete(0,n); }
+}
+
+//+------------------------------------------------------------------+
 //| TESTER INFO                                                      |
 //+------------------------------------------------------------------+
 void ShowTesterInfo()
@@ -3401,7 +4054,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.35           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.36           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -3441,7 +4094,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.35 === X=",InpXActivacion,
+   Print("=== DIAG v8.36 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -3470,6 +4123,8 @@ int OnInit()
    PNL_X=InpPanelX; PNL_Y=InpPanelY;
    g_PanelTableSize=MathMax(1,MathMin(MAX_TABLE_SIZE,InpTableSize));
    g_TradeCount=0; g_ScrollOffset=0; g_SaveCounter=0;
+   g_MPLastUpd=0; g_MPLastPosLine=0; g_MPLastTrades=-1;
+   CleanupLegacyObjects();
    g_ClosedCount=0; g_LastDiagTime=0;
    g_Dragging=false; g_PendingRebuild=false;
    ArrayResize(g_Trades,0); ArrayResize(g_ClosedQueue,0);
@@ -3562,7 +4217,11 @@ int OnInit()
      if(g_LimitPrice>0) UpdateLimitLine();
      DrawChartStructure(); }
 
-   Print("EA v8.35 | Símbolos:",g_SymCount,
+   //--- PANEL MULTI-PAR + líneas de posiciones (tester visual y real)
+   if(IsVisual())
+   { MultiPanelUpdate(true); DrawPositionLines(); }
+
+   Print("EA v8.36 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -3576,8 +4235,10 @@ void OnDeinit(const int reason)
 {
    if(!IsTester()) SaveState();
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); RemoveStructureLines(); }
+   MultiPanelDestroy();
+   RemovePositionLines();
    Comment("");
-   Print("EA v8.35 cerrado | Razón:",reason);
+   Print("EA v8.36 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -3617,10 +4278,12 @@ void OnTick()
 
    if(IsTester())
    {
-      ShowTesterInfo();
+      //--- Comment de respaldo solo si el panel MULTI-PAR está apagado
+      if(!(InpShowMultiPanel&&IsVisual())) ShowTesterInfo();
       DrawChartStructure();
+      MultiPanelUpdate();
+      DrawPositionLines();
       ValidateAllSymbols();
-      DrawPerPairInfo();
       UpdateInfoBar();
    }
    else
@@ -3629,8 +4292,9 @@ void OnTick()
       UpdateInfoBar();
       SyncLimitLinePrice();
       DrawChartStructure();
+      MultiPanelUpdate();
+      DrawPositionLines();
       ValidateAllSymbols();
-      DrawPerPairInfo();
       g_SaveCounter++;
       if(g_SaveCounter>=300){ SaveState(); g_SaveCounter=0; }
       if(g_TradeCount!=prevCount)
@@ -3846,128 +4510,35 @@ void OnChartEvent(const int id,const long &lparam,
    { if(si>=0&&si<g_SymCount) SelectNextLiveStrategy(si);
      RebuildActiveTab(); return; }
 }
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-//| VALIDACIÓN Y DIBUJOS POR PAR — 20 NIVELES / OPEN / LOT / TRAIL     |
-//+------------------------------------------------------------------+
-void DrawPerPairInfo()
-{
-   // Dibuja etiquetas propios por símbolo: nivel CR, CV, open?, lot, 1:2
-   int baseX = 10;
-   int baseY = 250; // parte baja derecha del gráfico, ajustable
-   for(int si=0; si<g_SymCount; si++)
-   {
-      if(!g_Symbols[si].active) continue;
-      string sym = g_Symbols[si].name;
-      int al = g_SysState[si].activeLiveStrategy;
-      int cr = (al>=0) ? g_SysState[si].strategies[al].CR : 1;
-      int cv = (al>=0) ? g_SysState[si].strategies[al].CV : 1;
-      bool open = (al>=0 && g_SysState[si].hasLive);
-      double lot = (al>=0) ? GetLotByCR(si, cr) : 0.0;
-      bool trail = (al>=0) ? IsTrailingActive(si, al) : false;
-      
-      string lblName = "PAIRLBL_" + sym;
-      if(ObjectFind(0, lblName) < 0)
-         ObjectCreate(0, lblName, OBJ_LABEL, 0, 0, 0);
-      
-      string h1Bias = (g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"BAJ":"---";
-      string m3Bias = (g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?"BAJ":"---";
-      bool zoneBuy = g_SysState[si].confArmedBuy;
-      bool zoneSell = g_SysState[si].confArmedSell;
-      bool hasLimitBuy = g_SysState[si].confVPendBuy;
-      bool hasLimitSell = g_SysState[si].confVPendSell;
-      string zoneStr = zoneBuy?"BUY-ZONA":(zoneSell?"SELL-ZONA":"SIN-ZONA");
-      string limitStr = (hasLimitBuy||hasLimitSell)?"LIMIT-PUESTA":"SIN-LIMIT";
-      string missing="";
-      if(open) missing="TENE-ORDEN";
-      else if(zoneBuy && h1Bias=="ALC" && m3Bias=="ALC") missing="BUSCANDO-OP";
-      else if(zoneBuy && m3Bias=="BAJ") missing="FALTA: M3 alcista";
-      else if(zoneBuy && h1Bias!="ALC") missing="FALTA: H1 alcista";
-      else if(!zoneBuy && !zoneSell) missing="FALTA: tocar zona";
-      else missing="FALTA: confirmar";
 
-      string txt = sym + " | H1=" + h1Bias + " M3=" + m3Bias
-                 + " " + zoneStr + " | " + (open?"●OPEN":"○CERR")
-                 + " Lot=" + DoubleToString(lot,2) + " 1:2=" + (trail?"ON":"OFF")
-                 + " [" + limitStr + "] -> " + missing;
-      
-      ObjectSetString(0, lblName, OBJPROP_TEXT, txt);
-      ObjectSetInteger(0, lblName, OBJPROP_COLOR, open ? clrLimeGreen : clrYellow);
-      ObjectSetInteger(0, lblName, OBJPROP_FONTSIZE, 7);
-      ObjectSetString(0, lblName, OBJPROP_FONT, "Arial");
-      ObjectSetInteger(0, lblName, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
-      int dx = baseX + (si % 4) * 195;
-      int dy = baseY + (si / 4) * 13;
-      ObjectSetInteger(0, lblName, OBJPROP_XDISTANCE, dx);
-      ObjectSetInteger(0, lblName, OBJPROP_YDISTANCE, dy);
-      ObjectSetInteger(0, lblName, OBJPROP_SELECTABLE, false);
-      
-      // Línea de referencia omitida para evitar errores de objeto; el texto es suficiente
-      /*
-      string lineName = "PAIRLINE_" + sym;
-      if(ObjectFind(0, lineName) < 0)
-      {
-         ObjectCreate(0, lineName, OBJ_VLINE, 0, TimeCurrent(), 0);
-         ObjectSetInteger(0, lineName, OBJPROP_COLOR, open ? clrLimeGreen : clrGray);
-         ObjectSetInteger(0, lineName, OBJPROP_WIDTH, 1);
-         ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
-         ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
-      }
-      */
-   }
-}
+//+------------------------------------------------------------------+
+//| VALIDACIÓN POR PAR — resumen en el LOG (throttle 5 min)          |
+//| El resumen visual en gráfico lo da el PANEL MULTI-PAR; esto      |
+//| deja constancia periódica en el journal sin inundarlo por tick.  |
+//+------------------------------------------------------------------+
+datetime g_LastValidateTime=0;
 
 void ValidateAllSymbols()
 {
-   // Muestra en log y dibuja etiqueta de validación
-   string msg = "=== VALIDACIÓN PARES — Nivel(1-20) | CV | OPEN | Lot | Trail ===";
-   Print(msg);
-   for(int si=0; si<g_SymCount; si++)
+   datetime now=TimeCurrent();
+   if(g_LastValidateTime!=0 && now-g_LastValidateTime<300) return;
+   g_LastValidateTime=now;
+
+   Print("=== VALIDACIÓN PARES — Nivel | CV | OPEN | Lot | Trail | Estado ===");
+   for(int si=0;si<g_SymCount;si++)
    {
-      string sym = g_Symbols[si].name;
-      bool active = g_Symbols[si].active;
-      int al = g_SysState[si].activeLiveStrategy;
-      int cr = (al>=0) ? g_SysState[si].strategies[al].CR : 0;
-      int cv = (al>=0) ? g_SysState[si].strategies[al].CV : 0;
-      bool open = g_SysState[si].hasLive;
-      double lot = (al>=0) ? GetLotByCR(si, cr) : 0.0;
-      bool trail = (al>=0) ? IsTrailingActive(si, al) : false;
-      
-      string h1B = (g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"BAJ":"---";
-      string m3B = (g_SysState[si].SE_M3.Bias==BIAS_BULLISH)?"ALC":(g_SysState[si].SE_M3.Bias==BIAS_BEARISH)?"BAJ":"---";
-      bool zB = g_SysState[si].confArmedBuy, zS = g_SysState[si].confArmedSell;
-      bool limB = g_SysState[si].confVPendBuy, limS = g_SysState[si].confVPendSell;
-      string zoneStr = zB?"BUY":(zS?"SELL":"NOV");
-      string limitStr = (limB||limS)?"LIMIT":"NONE";
-      string miss="";
-      if(open) miss="ORDEN-ABIER";
-      else if(zB && h1B=="ALC" && m3B=="ALC") miss="BUSCANDO-OP";
-      else if(zB && m3B=="BAJ") miss="FALTA: M3 alcista";
-      else if(zB && h1B!="ALC") miss="FALTA: H1 alcista";
-      else if(!zB && !zS) miss="FALTA: tocar zona";
-      else miss="CONFIRMAR";
-      string line = sym + (active ? "✓" : "✗")
-                  + " | Niv=" + IntegerToString(cr)
-                  + " CV=" + IntegerToString(cv)
-                  + " | H1=" + h1B + " M3=" + m3B
-                  + " | " + zoneStr + " " + limitStr
-                  + " | " + (open ? "OPEN" : "CERR")
-                  + " | Lot=" + DoubleToString(lot, 2)
-                  + " | 1:2=" + (trail ? "ON" : "OFF") + " -> " + miss;
+      if(!g_Symbols[si].active) continue;
+      MPSnapshot s;
+      MPFillSnapshot(si,s);
+      string line=s.sym
+         +" | Niv="+IntegerToString(s.cr)
+         +" CV="+IntegerToString(s.cv)
+         +" | H1="+s.h1Txt+" M3="+s.m3Txt
+         +" | ZONA="+((s.zBuy&&s.zSell)?"C+V":s.zBuy?"C":s.zSell?"V":"-")
+         +" | "+(s.hasPos?"OPEN":"CERR")
+         +" | Lot="+DoubleToString(s.lot,2)
+         +" | 1:2="+((s.trail)?"ON":"OFF")
+         +" -> "+s.state;
       Print(line);
-      msg += "\n" + line;
    }
-   
-   string valName = "VALIDA_SUM";
-   if(ObjectFind(0, valName) < 0)
-      ObjectCreate(0, valName, OBJ_LABEL, 0, 0, 0);
-   ObjectSetString(0, valName, OBJPROP_TEXT,
-      "✓ VALIDADO — Ver log (Print) para resumen de todos los pares | Nivel 5→Trail | Nivel 10→Trail -4");
-   ObjectSetInteger(0, valName, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, valName, OBJPROP_FONTSIZE, 8);
-   ObjectSetString(0, valName, OBJPROP_FONT, "Arial Bold");
-   ObjectSetInteger(0, valName, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(0, valName, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, valName, OBJPROP_YDISTANCE, 10);
-   ObjectSetInteger(0, valName, OBJPROP_SELECTABLE, false);
 }

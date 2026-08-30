@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.35** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.36** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3 + **panel MULTI-PAR**).
 
 ## Archivos
 
@@ -75,8 +75,33 @@ Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 - Etiqueta al lado derecho de cada línea con su nombre y precio (ej. `L1  1.08452`).
 - Inputs `InpShowStructureLines` (líneas del TF) e `InpShowConfluencias` (zonas H1/M3).
 - L3/L4 solo aparecen cuando la zona de reacción está activa (así funciona el motor).
+- Además, para cada **posición abierta** del símbolo del gráfico se dibujan: **ENTRADA** (blanca discontinua, con dirección y lotes), **SL** (roja punteada), **TP** (verde punteada) y las órdenes **LIMIT** pendientes (lima/rojo raya-punto) — en el tester visual y en el gráfico real (`InpShowPosLines`).
 
 \* Con RR 1:3 el punto de equilibrio es ~25% de aciertos (más costos ≈ 27–30%), así que un win rate del 40% ya da expectativa positiva. Mide con **profit factor** (>1.5 sólido, >2.0 excelente) y **máximo drawdown**, no solo el win rate.
+
+## PANEL MULTI-PAR (v8.36) — tester visual y gráfico real
+
+Panel **organizado y legible con una fila por par**, dibujado sobre un único bitmap (canvas, sin parpadeo). Aparece automáticamente en la **esquina superior derecha** del gráfico, **igual en el Strategy Tester (modo visual) que en el gráfico real**:
+
+1. **Cabecera**: modo (TESTER VISUAL / REAL), nº de pares, posiciones abiertas y limits pendientes, fecha/hora.
+2. **Resumen de cuenta**: Balance · Equidad · P&L flotante · Circuit breaker del día (con color).
+3. **Tabla por par** (hasta 10 filas, ordenadas por actividad: posición > limit > esperando):
+
+   | PAR | H1 | M3 | ZONA | LÍMITE | POSICIÓN | NIV | LOT | P&L | ESTADO / PRÓXIMO PASO |
+   |---|---|---|---|---|---|---|---|---|---|
+   | EURUSD | ALC | BAJ | C | B 1.08452 | ▲ 0.02 1.0845 | 3 | 0.03 | +1.25 | POSICIÓN ABIERTA |
+
+   - Fila **verde** = posición abierta · **azul** = limit pendiente · **roja** = pausa por circuit breaker.
+   - **ESTADO** dice qué falta en lenguaje claro: `ESPERA CRUCE 50% (C)`, `ZONA C ✓ CHoCH M3`, `ZONA C ✓ H1 NO ALCISTA`, `FUERA DE ZONA`, `LIMIT B 1.08452`, `POSICIÓN ABIERTA`.
+4. **Mini-gráficos por par** (hasta 6): precio del TF de entrada (M3) con **sus propias líneas** — L1/L2/L3/L4 del motor, rango H1 y 50% H1, entrada limit congelada y ENTRADA/SL/TP de la posición. Cada par tiene su propia escala, así que **todos los pares abiertos se ven con sus líneas aunque el tester solo muestre un gráfico**.
+5. **Leyenda** de colores al pie.
+
+Inputs (grupo `PANEL MULTI-PAR`): `InpShowMultiPanel` (panel on/off), `InpShowMiniCharts` (mini-gráficos on/off), `InpMPChartsAll` (mostrar también pares sin posición), `InpMPBars` (velas del mini-gráfico), `InpMPX`/`InpMPY` (posición; X=0 = automática derecha), `InpShowPosLines` (líneas ENTRADA/SL/TP/LIMIT en el gráfico).
+
+Extras de esta versión:
+
+- El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
+- Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
 
 ## Gestión de riesgo (intacta)
 
@@ -84,12 +109,13 @@ Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 - **Sistema virtual → LIVE**: la estrategia opera en simulación (CV) y pasa a dinero real al alcanzar `InpXActivacion` pérdidas virtuales.
 - **SL/TP con gestión 1:2**: SL a `InpSL_Points` (95), TP a `InpTP_Points` (305) → RR ≈ 1:3.2; con activación de SL protegido (`InpActivationPoints=210` / `InpProtectedSL=205`).
 - **Circuit breaker diario** (`InpMaxDailyLossPct=4.5%`), **base dinámica de capital**, **split de lotes**, **filtro de horario**, hasta 20 símbolos con SL/TP propios.
-- Panel gráfico en MT5 (Operar / Cuenta / Posic. / Config / Estrat).
+- Panel gráfico en MT5 (Operar / Cuenta / Posic. / Config / Estrat) + **PANEL MULTI-PAR** por par (tester visual y real).
 
 ## Cómo probar
 
-1. Estrategia Tester: elige símbolo + timeframe (las señales se calculan en el TF del gráfico), cuenta demo. **Marca "Modo visual"** para ver las líneas.
+1. Estrategia Tester: elige símbolo + timeframe (las señales se calculan en el TF del gráfico), cuenta demo. **Marca "Modo visual"** para ver las líneas y el panel.
    - **Ya no necesitas rellenar `InpSymbol1..20` en el tester**: el EA añade automáticamente el símbolo del gráfico que estás probando, opera sobre él y dibuja sus líneas.
+   - El **PANEL MULTI-PAR** aparece arriba a la derecha: tabla con el estado de cada par + mini-gráficos con sus líneas. Si pruebas varios pares (rellenando `InpSymbol1..20`), cada par abierto muestra su mini-gráfico con L1/L2, H1, 50%, entrada y SL/TP — todo en el único gráfico del tester.
    - En el log verás `TESTER: símbolo del gráfico [XXX] añadido automáticamente.` y las líneas calculadas (`LINEAS [...] L1=… L2=…`).
 2. En el log: `vOPEN` (simulación), `LIVE`, `CV/CR`, `CIRCUIT BREAKER`.
 3. Métricas: profit factor, win rate, nº de trades, **máximo drawdown** (crítico por la tabla de riesgo).
@@ -126,6 +152,14 @@ git show --stat HEAD
   ```bash
   grep -cE "UpdateConfluencia|ConfluenciaTryPlace|ConfluenciaProcessChoch|InpUseConfluencia" "trabajador multichart.mq5"
   ```
+- Panel MULTI-PAR presente (debe dar `> 0`):
+  ```bash
+  grep -cE "MultiPanelUpdate|MPDrawMini|DrawPositionLines|InpShowMultiPanel" "trabajador multichart.mq5"
+  ```
+- Etiquetas sueltas antiguas eliminadas (debe dar `0`):
+  ```bash
+  grep -cE "void DrawPerPairInfo" "trabajador multichart.mq5"
+  ```
 - Sin líneas D1 ni EQ dibujadas (debe dar `0`):
   ```bash
   grep -cE "SE_D1|d1LastBar|D1L1|D1EQ|TFEQ" "trabajador multichart.mq5"
@@ -134,9 +168,9 @@ git show --stat HEAD
 ### 2) En MetaTrader 5 (funcional)
 
 1. Abre **MetaEditor** → `Archivo > Abrir datos > MQL5 > Experts` → pega `trabajador multichart.mq5`.
-2. Pulsa **F7 (Compilar)**: debe compilar sin errores.
-3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)`, `ESTRATEGIA 1: CONFLUENCIA (H1 MADRE + M3 ENTRADA)` y `PARAMETROS MOTOR DE LINEAS`.
-4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y la entrada 50% M3 cuando se congele. En el tester, activa el **modo visual** para verlas.
+2. Pulsa **F7 (Compilar)**: debe compilar sin errores (usa `Canvas.mqh` de la librería estándar de MT5, ya incluida en la instalación).
+3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)`, `ESTRATEGIA 1: CONFLUENCIA (H1 MADRE + M3 ENTRADA)`, `PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL)` y `PARAMETROS MOTOR DE LINEAS`.
+4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y la entrada 50% M3 cuando se congele. Arriba a la derecha, el **PANEL MULTI-PAR** con la tabla de todos los pares y sus mini-gráficos. En el tester, activa el **modo visual** para verlas.
 
 ## ⚠️ Advertencia
 
