@@ -2,17 +2,14 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.30"
+#property version   "8.31"
 #property strict
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
-input group "=== ESTRATEGIAS SMC (RR 1:3) ==="
-input bool   InpUseSMC       = true;   // 0 Estructura / CHoCH
-input bool   InpUseFVG       = true;   // 1 Fair Value Gap H1
-input bool   InpUseOBBounce  = true;   // 2 Rebote en Order Block H1
-input bool   InpUsePersonal  = true;   // 3 Líneas smc2 (L1-L4, trigger)
+input group "=== ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3) ==="
+input bool   InpUsePersonal  = true;   // Estrategia personal: líneas smc2 (L1-L4, trigger)
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input double InpSL_Points        = 95.0;
@@ -194,9 +191,9 @@ input group "=== SISTEMA DE GESTIÓN (VIRTUAL → LIVE) ==="
 input int    InpXActivacion      = 4;
 input int    InpTableSize        = 20;
 
-input group "=== PARAMETROS MOTOR SMC ==="
+input group "=== PARAMETROS MOTOR DE LINEAS ==="
 input int    InpLookbackBars        = 300;  // velas para L1/L2 del motor
-input int    InpZoneScanBars        = 80;   // velas H1 escaneadas para OB/FVG
+input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en el gráfico
 
 
 //+------------------------------------------------------------------+
@@ -218,7 +215,7 @@ input int    InpZoneScanBars        = 80;   // velas H1 escaneadas para OB/FVG
 #define TAB_CONFIG       3
 #define TAB_ESTRAT       4
 #define N_TABS           5
-#define STRAT_COUNT      4
+#define STRAT_COUNT      1
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -239,10 +236,7 @@ input int    InpZoneScanBars        = 80;   // velas H1 escaneadas para OB/FVG
 //+------------------------------------------------------------------+
 enum ENUM_STRATEGY_ID
 {
-   STRAT_SMC       = 0,   // CHoCH / cambio de estructura
-   STRAT_FVG       = 1,   // retest de Fair Value Gap H1
-   STRAT_OB_BOUNCE = 2,   // rebote en Order Block H1
-   STRAT_PERSONAL  = 3    // lógica de líneas smc2 (trigger L1/L2)
+   STRAT_PERSONAL  = 0    // lógica de líneas smc2 (trigger L1/L2) — ÚNICA estrategia
 };
 
 enum ENUM_STRUCTURE_BIAS
@@ -309,17 +303,11 @@ struct SymbolSystemState
    bool     hasLive;
    int      activeLiveStrategy;
    StrategyState strategies[STRAT_COUNT];
-   StructureEngine SE;       // motor del TF del gráfico (SMC / PERSONAL)
-   StructureEngine SE_D1;    // motor D1 (filtro premium/discount)
+   StructureEngine SE;       // motor del TF del gráfico (PERSONAL)
+   StructureEngine SE_D1;    // motor D1 (líneas D1 del gráfico)
    datetime structLastBar;   // última vela del TF procesada
-   datetime h1LastBar;       // última vela H1 procesada
-   bool     zonesScanned;    // escaneo histórico de OB/FVG hecho
-   int      sigSMC;          // señal CHoCH de la vela cerrada
+   datetime d1LastBar;       // última vela D1 procesada
    int      sigPersonal;     // señal trigger de la vela cerrada
-   bool     obBullActive,  obBearActive;
-   double   obBullHigh, obBullLow, obBearHigh, obBearLow;
-   bool     fvgBullActive, fvgBearActive;
-   double   fvgBullTop, fvgBullBot, fvgBearTop, fvgBearBot;
 };
 
 struct TradeRecord
@@ -459,10 +447,7 @@ long MagicManual(int symIdx)
 string GetStrategyName(int sid)
 {
    switch(sid)
-   { case STRAT_SMC:       return "SMC";
-     case STRAT_FVG:       return "FVG";
-     case STRAT_OB_BOUNCE: return "OB-H1";
-     case STRAT_PERSONAL:  return "LINEAS";
+   { case STRAT_PERSONAL:  return "LINEAS";
      default:              return "???"; }
 }
 
@@ -790,13 +775,10 @@ void InitSystemState(int si)
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
    g_SysState[si].SE.Valid=false;      g_SysState[si].SE_D1.Valid=false;
-   g_SysState[si].structLastBar=0;     g_SysState[si].h1LastBar=0;
-   g_SysState[si].zonesScanned=false;
-   g_SysState[si].sigSMC=0;            g_SysState[si].sigPersonal=0;
-   g_SysState[si].obBullActive=false;  g_SysState[si].obBearActive=false;
-   g_SysState[si].fvgBullActive=false; g_SysState[si].fvgBearActive=false;
+   g_SysState[si].structLastBar=0;     g_SysState[si].d1LastBar=0;
+   g_SysState[si].sigPersonal=0;
 
-   bool ena[STRAT_COUNT]={InpUseSMC,InpUseFVG,InpUseOBBounce,InpUsePersonal};
+   bool ena[STRAT_COUNT]={InpUsePersonal};
    for(int st=0;st<STRAT_COUNT;st++)
    { g_SysState[si].strategies[st].enabled        = ena[st];
      g_SysState[si].strategies[st].isLive         = false;
@@ -1134,7 +1116,7 @@ bool IsNewBar(int si, int st)
 }
 
 //+------------------------------------------------------------------+
-//| MOTOR DE ESTRUCTURA SMC (adaptado de smc2.mq5)                   |
+//| MOTOR DE ESTRUCTURA DE LÍNEAS (adaptado de smc2.mq5)             |
 //| L1/L2 = máximo/mínimo del rango; EQ = punto medio (equilibrio);  |
 //| L3/L4 = zona de reacción; bias por color de vela;                |
 //| CHoCH = cambio de bias al romper L1/L2.                          |
@@ -1210,148 +1192,93 @@ void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
 }
 
 //+------------------------------------------------------------------+
-//| Zonas H1: order blocks y FVGs filtrados por D1                   |
+//| Actualiza motores de líneas por símbolo (llamar en cada tick)    |
 //+------------------------------------------------------------------+
-void EvalZonesAtBar(int si, int i)
+void UpdateStructureState(int si)
 {
    string sym=g_Symbols[si].name;
-   double O1=iOpen(sym,PERIOD_H1,i),  C1=iClose(sym,PERIOD_H1,i);
-   double H1v=iHigh(sym,PERIOD_H1,i), L1v=iLow(sym,PERIOD_H1,i);
-   double O2=iOpen(sym,PERIOD_H1,i+1), C2=iClose(sym,PERIOD_H1,i+1);
-   if(O1<=0||O2<=0) return;
-   bool green=C1>O1, red=C1<O1;
-   bool G2=C2>O2,   R2=C2<O2;
-   double eq =g_SysState[si].SE_D1.EQ;
-   double dL1=g_SysState[si].SE_D1.L1, dL2=g_SysState[si].SE_D1.L2;
-
-   //--- Order block H1 (vela que toca zona discount/premium de D1)
-   if(red   && L1v<eq && L1v>dL2)
-   { g_SysState[si].obBullActive=true; g_SysState[si].obBullHigh=H1v; g_SysState[si].obBullLow=L1v; }
-   if(green && H1v>eq && H1v<dL1)
-   { g_SysState[si].obBearActive=true; g_SysState[si].obBearHigh=H1v; g_SysState[si].obBearLow=L1v; }
-
-   //--- FVG H1 (hueco de 3 velas) filtrado por D1
-   if(green&&R2&&L1v>O2&&L1v<eq&&L1v>dL2)
-   { g_SysState[si].fvgBullActive=true; g_SysState[si].fvgBullTop=L1v; g_SysState[si].fvgBullBot=O2; }
-   if(red  &&G2&&H1v<O2&&H1v>eq&&H1v<dL1)
-   { g_SysState[si].fvgBearActive=true; g_SysState[si].fvgBearTop=O2; g_SysState[si].fvgBearBot=H1v; }
-}
-
-void DetectZones_H1(int si){ EvalZonesAtBar(si,1); }
-
-void ScanHistoricalZones(int si)
-{ for(int i=2;i<=InpZoneScanBars;i++) EvalZonesAtBar(si,i); }
-
-void InvalidateZones(int si, double price)
-{
-   if(price<=0) return;
-   if(g_SysState[si].obBullActive  && price<g_SysState[si].obBullLow)  g_SysState[si].obBullActive=false;
-   if(g_SysState[si].obBearActive  && price>g_SysState[si].obBearHigh) g_SysState[si].obBearActive=false;
-   if(g_SysState[si].fvgBullActive && price<g_SysState[si].fvgBullBot) g_SysState[si].fvgBullActive=false;
-   if(g_SysState[si].fvgBearActive && price>g_SysState[si].fvgBearTop) g_SysState[si].fvgBearActive=false;
-}
-
-//+------------------------------------------------------------------+
-//| Actualiza motores SMC por símbolo (llamar en cada tick)          |
-//+------------------------------------------------------------------+
-void UpdateSMCState(int si)
-{
-   string sym=g_Symbols[si].name;
-   g_SysState[si].sigSMC=0; g_SysState[si].sigPersonal=0;
+   g_SysState[si].sigPersonal=0;
 
    datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
    if(bt!=g_SysState[si].structLastBar)
    { g_SysState[si].structLastBar=bt;
      if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
      if(!g_SysState[si].SE.Valid)    SE_Init(g_SysState[si].SE,sym,PERIOD_CURRENT);
-     if(g_SysState[si].SE_D1.Valid&&!g_SysState[si].zonesScanned)
-     { ScanHistoricalZones(si); g_SysState[si].zonesScanned=true; }
-     int c1=0,t1=0,c2=0,t2=0;
-     if(g_SysState[si].SE_D1.Valid) SE_OnClose(g_SysState[si].SE_D1,sym,c1,t1);
+     int c2=0,t2=0;
      if(g_SysState[si].SE.Valid)
      { SE_OnClose(g_SysState[si].SE,sym,c2,t2);
-       g_SysState[si].sigSMC=c2; g_SysState[si].sigPersonal=t2; } }
+       g_SysState[si].sigPersonal=t2; } }
 
-   datetime h1=(datetime)SeriesInfoInteger(sym,PERIOD_H1,SERIES_LASTBAR_DATE);
-   if(h1!=g_SysState[si].h1LastBar)
-   { g_SysState[si].h1LastBar=h1; if(g_SysState[si].SE_D1.Valid) DetectZones_H1(si); }
-
-   InvalidateZones(si,SymbolInfoDouble(sym,SYMBOL_BID));
+   //--- vela D1 nueva → actualizar motor D1 (solo una vez por día)
+   datetime d1=(datetime)SeriesInfoInteger(sym,PERIOD_D1,SERIES_LASTBAR_DATE);
+   if(d1!=g_SysState[si].d1LastBar)
+   { g_SysState[si].d1LastBar=d1;
+     if(!g_SysState[si].SE_D1.Valid) SE_Init(g_SysState[si].SE_D1,sym,PERIOD_D1);
+     int c1=0,t1=0;
+     if(g_SysState[si].SE_D1.Valid) SE_OnClose(g_SysState[si].SE_D1,sym,c1,t1); }
 }
 
 //+------------------------------------------------------------------+
-//| 1) SMC — CHoCH: entra en dirección del cambio de estructura      |
-//+------------------------------------------------------------------+
-int CheckSMCSignal(int si)
-{ return g_SysState[si].sigSMC; }
-
-//+------------------------------------------------------------------+
-//| 2) FVG — retest del último fair value gap H1 activo              |
-//|    Compra: la vela entra al gap alcista y cierra sobre su piso   |
-//+------------------------------------------------------------------+
-int CheckFVGSignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   double O=iOpen(sym,PERIOD_CURRENT,1), C=iClose(sym,PERIOD_CURRENT,1);
-   double H=iHigh(sym,PERIOD_CURRENT,1), L=iLow(sym,PERIOD_CURRENT,1);
-   if(C<=0) return 0;
-   if(g_SysState[si].fvgBullActive&&L<=g_SysState[si].fvgBullTop&&C>=g_SysState[si].fvgBullBot)
-   { g_SysState[si].fvgBullActive=false; return +1; }
-   if(g_SysState[si].fvgBearActive&&H>=g_SysState[si].fvgBearBot&&C<=g_SysState[si].fvgBearTop)
-   { g_SysState[si].fvgBearActive=false; return -1; }
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| 3) OB-H1 — rebote en order block: toca la zona y cierra a favor  |
-//|    (como si el precio rebotara en el bloque)                     |
-//+------------------------------------------------------------------+
-int CheckOBBounceSignal(int si)
-{
-   string sym=g_Symbols[si].name;
-   double O=iOpen(sym,PERIOD_CURRENT,1), C=iClose(sym,PERIOD_CURRENT,1);
-   double H=iHigh(sym,PERIOD_CURRENT,1), L=iLow(sym,PERIOD_CURRENT,1);
-   if(C<=0) return 0;
-   if(g_SysState[si].obBullActive&&L<=g_SysState[si].obBullHigh&&C>=g_SysState[si].obBullLow&&C>O)
-      return +1;
-   if(g_SysState[si].obBearActive&&H>=g_SysState[si].obBearLow&&C<=g_SysState[si].obBearHigh&&C<O)
-      return -1;
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| 4) PERSONAL — lógica de líneas smc2: entra en el trigger         |
-//|    (cierre sobre L1 o bajo L2 con L3/L4 activos)                 |
+//| PERSONAL (ÚNICA) — lógica de líneas smc2: entra en el trigger     |
+//| (cierre sobre L1 o bajo L2 con L3/L4 activos)                    |
 //+------------------------------------------------------------------+
 int CheckPersonalSignal(int si)
 { return g_SysState[si].sigPersonal; }
 
 //+------------------------------------------------------------------+
 //| DIBUJO DE LÍNEAS DE ESTRUCTURA EN EL GRÁFICO (visual de smc2)    |
+//| Colores vivos (visibles en fondo claro y oscuro) + etiqueta con  |
+//| nombre y precio al lado derecho de cada línea.                   |
 //+------------------------------------------------------------------+
-void SE_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,int w)
+#define SE_PREFIX      "GQP_SE_"
+#define SE_LBL_OFF_BARS 6          // barras hacia el futuro para la etiqueta
+
+void SE_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,int w,string lbl)
 {
-   if(price<=0){ ObjectDelete(0,name); return; }
+   string tn=name+"_T";
+   if(price<=0){ ObjectDelete(0,name); ObjectDelete(0,tn); return; }
    if(ObjectFind(0,name)<0)
    { ObjectCreate(0,name,OBJ_HLINE,0,0,price);
-     ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
-     ObjectSetInteger(0,name,OBJPROP_STYLE,sty);
-     ObjectSetInteger(0,name,OBJPROP_WIDTH,w);
-     ObjectSetInteger(0,name,OBJPROP_BACK,true);
-     ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false); }
-   else ObjectSetDouble(0,name,OBJPROP_PRICE,price);
+     ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+     ObjectSetInteger(0,name,OBJPROP_HIDDEN,true); }
+   ObjectSetDouble (0,name,OBJPROP_PRICE,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,sty);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,w);
+   ObjectSetInteger(0,name,OBJPROP_BACK,true);
+
+   //--- etiqueta con nombre + precio a la derecha de la línea
+   datetime tt=iTime(_Symbol,PERIOD_CURRENT,0)
+             +PeriodSeconds(PERIOD_CURRENT)*SE_LBL_OFF_BARS;
+   string   txt=lbl+"  "+DoubleToString(price,(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS));
+   if(ObjectFind(0,tn)<0)
+   { ObjectCreate(0,tn,OBJ_TEXT,0,tt,price);
+     ObjectSetInteger(0,tn,OBJPROP_SELECTABLE,false);
+     ObjectSetInteger(0,tn,OBJPROP_HIDDEN,true); }
+   ObjectSetInteger(0,tn,OBJPROP_TIME,tt);
+   ObjectSetDouble (0,tn,OBJPROP_PRICE,price);
+   ObjectSetString (0,tn,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,tn,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,tn,OBJPROP_FONTSIZE,8);
+   ObjectSetString (0,tn,OBJPROP_FONT,"Arial Bold");
+   ObjectSetInteger(0,tn,OBJPROP_ANCHOR,ANCHOR_LEFT);
+   ObjectSetInteger(0,tn,OBJPROP_BACK,false);
 }
 
 void DrawStructureLines(int si)
 {
-   SE_HLine("GQP_SE_D1L1",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L1:0,C'30,30,30',STYLE_SOLID,3);
-   SE_HLine("GQP_SE_D1L2",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L2:0,C'30,30,30',STYLE_SOLID,3);
-   SE_HLine("GQP_SE_D1EQ",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.EQ:0,C'180,180,180',STYLE_DOT,1);
-   SE_HLine("GQP_SE_TFL1",g_SysState[si].SE.Valid?g_SysState[si].SE.L1:0,C'150,150,150',STYLE_SOLID,1);
-   SE_HLine("GQP_SE_TFL2",g_SysState[si].SE.Valid?g_SysState[si].SE.L2:0,C'150,150,150',STYLE_SOLID,1);
-   SE_HLine("GQP_SE_TFEQ",g_SysState[si].SE.Valid?g_SysState[si].SE.EQ:0,C'180,180,180',STYLE_DOT,1);
-   SE_HLine("GQP_SE_TFL3",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L3:0,C'100,100,180',STYLE_DASH,2);
-   SE_HLine("GQP_SE_TFL4",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L4:0,C'180,100,100',STYLE_DASH,2);
+   if(!InpShowStructureLines){ RemoveStructureLines(); return; }
+   //--- D1: naranja gruesas | EQ gris punteada
+   SE_HLine(SE_PREFIX+"D1L1",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L1:0,clrOrange,STYLE_SOLID,3,"D1 L1");
+   SE_HLine(SE_PREFIX+"D1L2",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.L2:0,clrOrange,STYLE_SOLID,3,"D1 L2");
+   SE_HLine(SE_PREFIX+"D1EQ",g_SysState[si].SE_D1.Valid?g_SysState[si].SE_D1.EQ:0,clrGray,STYLE_DOT,1,"D1 EQ");
+   //--- TF del gráfico: azul | EQ gris punteada
+   SE_HLine(SE_PREFIX+"TFL1",g_SysState[si].SE.Valid?g_SysState[si].SE.L1:0,clrDodgerBlue,STYLE_SOLID,2,"L1");
+   SE_HLine(SE_PREFIX+"TFL2",g_SysState[si].SE.Valid?g_SysState[si].SE.L2:0,clrDodgerBlue,STYLE_SOLID,2,"L2");
+   SE_HLine(SE_PREFIX+"TFEQ",g_SysState[si].SE.Valid?g_SysState[si].SE.EQ:0,clrGray,STYLE_DOT,1,"EQ");
+   //--- L3/L4 (zona de reacción activa): magenta/rojo discontinuas
+   SE_HLine(SE_PREFIX+"TFL3",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L3:0,clrMagenta,STYLE_DASH,2,"L3");
+   SE_HLine(SE_PREFIX+"TFL4",(g_SysState[si].SE.Valid&&g_SysState[si].SE.L3L4_Active)?g_SysState[si].SE.L4:0,clrRed,STYLE_DASH,2,"L4");
    ChartRedraw();
 }
 
@@ -1360,18 +1287,27 @@ void RemoveStructureLines()
    int total=ObjectsTotal(0,0,-1);
    for(int i=total-1;i>=0;i--)
    { string n=ObjectName(0,i,0,-1);
-     if(StringFind(n,"GQP_SE_")==0) ObjectDelete(0,n); }
+     if(StringFind(n,SE_PREFIX)==0) ObjectDelete(0,n); }
    ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Dibuja (o borra) las líneas del símbolo del gráfico actual       |
+//+------------------------------------------------------------------+
+void DrawChartStructure()
+{
+   int cs=-1;
+   for(int s2=0;s2<g_SymCount;s2++)
+      if(g_Symbols[s2].name==_Symbol){cs=s2;break;}
+   if(cs>=0&&g_SysState[cs].SE.Valid) DrawStructureLines(cs);
+   else                               RemoveStructureLines();
 }
 
 int CheckStrategySignal(int si, int st)
 {
    if(!g_SysState[si].strategies[st].enabled||!IsNewBar(si,st)) return 0;
    switch(st)
-   { case STRAT_SMC:       return CheckSMCSignal(si);
-     case STRAT_FVG:       return CheckFVGSignal(si);
-     case STRAT_OB_BOUNCE: return CheckOBBounceSignal(si);
-     case STRAT_PERSONAL:  return CheckPersonalSignal(si);
+   { case STRAT_PERSONAL:  return CheckPersonalSignal(si);
      default:              return 0; }
 }
 
@@ -1822,7 +1758,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.30  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.31  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -2005,6 +1941,7 @@ void DeletePanel()
    for(int i=total-1;i>=0;i--)
    {
       string name=ObjectName(0,i,0,-1);
+      if(StringFind(name,SE_PREFIX)==0) continue;   // no borrar líneas de estructura
       if(StringFind(name,PFX)==0) ObjectDelete(0,name);
    }
    ObjectDelete(0,EDIT_PRICE_NAME);
@@ -2714,7 +2651,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.30           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.31           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
@@ -2754,7 +2691,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.30 === X=",InpXActivacion,
+   Print("=== DIAG v8.31 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",DoubleToString(g_BaseCapital,2));
    for(int si=0;si<g_SymCount;si++)
@@ -2808,15 +2745,19 @@ int OnInit()
 
    if(!IsTester()) LoadState();
 
+   //--- Inicializar motores de líneas para poder dibujar de inmediato
+   for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
+
    if(g_PanelSymIdx>=g_SymCount) g_PanelSymIdx=0;
 
    SyncAllTrades();
 
    if(!IsTester())
    { BuildStaticStructure(); RebuildActiveTab(); UpdateInfoBar();
-     if(g_LimitPrice>0) UpdateLimitLine(); }
+     if(g_LimitPrice>0) UpdateLimitLine();
+     DrawChartStructure(); }
 
-   Print("EA v8.30 | Símbolos:",g_SymCount,
+   Print("EA v8.31 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -2831,7 +2772,7 @@ void OnDeinit(const int reason)
    if(!IsTester()) SaveState();
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); RemoveStructureLines(); }
    Comment("");
-   Print("EA v8.30 cerrado | Razón:",reason);
+   Print("EA v8.31 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -2847,8 +2788,8 @@ void OnTick()
    ProcessClosedQueue();
    CheckCircuitBreaker();
 
-   //--- Motores SMC (estructura, OB, FVG) por símbolo
-   for(int si=0;si<g_SymCount;si++) UpdateSMCState(si);
+   //--- Motores de líneas (estructura) por símbolo
+   for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
 
    if(!g_CircuitBreakerOn)
    { EnforceSLTP();
@@ -2868,16 +2809,14 @@ void OnTick()
    if(IsTester())
    {
       ShowTesterInfo();
+      if(MQLInfoInteger(MQL_VISUAL_MODE)) DrawChartStructure();
    }
    else
    {
       PrintDiag();
       UpdateInfoBar();
       SyncLimitLinePrice();
-      { int cs=-1;
-        for(int s2=0;s2<g_SymCount;s2++)
-           if(g_Symbols[s2].name==_Symbol){cs=s2;break;}
-        if(cs>=0) DrawStructureLines(cs); else RemoveStructureLines(); }
+      DrawChartStructure();
       g_SaveCounter++;
       if(g_SaveCounter>=300){ SaveState(); g_SaveCounter=0; }
       if(g_TradeCount!=prevCount)
