@@ -2173,10 +2173,11 @@ void UpdateAllStrategies()
          if(!hasPos&&IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st); if(sig!=0) OpenByStrategy(si,st,sig); } }
        else
-       { UpdateStrategyVirtual(si,st);
-         if(!g_SysState[si].strategies[st].virtualActive)
+       { // Solo se contabilizan y ejecutan operaciones reales.
+         // No crear operaciones virtuales que luego parezcan posiciones.
+         if(IsTradeTimeAllowed())
          { int sig=CheckStrategySignal(si,st);
-           if(sig!=0) StartStrategyVirtual(si,st,sig); } } } }
+           if(sig!=0) OpenByStrategy(si,st,sig); } } } }
 }
 
 //+------------------------------------------------------------------+
@@ -2272,7 +2273,7 @@ void OpenByStrategy(int si, int st, int signal)
 {
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
-   if(signal==0||!g_SysState[si].strategies[st].isLive) return;
+   if(signal==0) return;
    if(IsWeeklyCloseWindow()) return;   // no abrir durante la ventana de cierre semanal
    // Límite de exposición: como máximo una posición abierta por símbolo,
    // independientemente de la estrategia o del origen de la posición.
