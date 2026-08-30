@@ -2274,8 +2274,9 @@ void OpenByStrategy(int si, int st, int signal)
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(signal==0||!g_SysState[si].strategies[st].isLive) return;
    if(IsWeeklyCloseWindow()) return;   // no abrir durante la ventana de cierre semanal
-   for(int i=0;i<g_TradeCount;i++)
-      if(g_Trades[i].symbolIdx==si&&g_Trades[i].strategyId==st&&!g_Trades[i].isPending) return;
+   // Límite de exposición: como máximo una posición abierta por símbolo,
+   // independientemente de la estrategia o del origen de la posición.
+   if(HasAnyPositionSymbol(si)) return;
    double lots=GetPairLot(si);
    ENUM_ORDER_TYPE ot=(signal>0)?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    Print("Orden [",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,"] ",
