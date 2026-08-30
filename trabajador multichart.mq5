@@ -2489,9 +2489,16 @@ void ProcessClosedQueue()
      if(!found){ArrayResize(pending,pc+1);pending[pc]=snap;pc++;continue;}
      int si=snap.symbolIdx; int st=snap.strategyId;
      double tol=(si>=0)?SymbolInfoDouble(g_Symbols[si].name,SYMBOL_POINT)*5:0.00001;
-     bool hTP=(dR==DEAL_REASON_TP)||(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
-     bool hSL=(dR==DEAL_REASON_SL)||(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
-     if(!hTP&&!hSL&&!snap.slMoved){hTP=(cPL>0);hSL=(cPL<=0);}
+     // Si el SL fue movido a protección, esa marca tiene prioridad sobre
+     // la razón/precio reportados por el broker: es una ganancia protegida.
+     bool hTP=false;
+     bool hSL=false;
+     if(snap.slMoved)
+     { hSL=true; hTP=false; }
+     else
+     { hTP=(dR==DEAL_REASON_TP)||(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
+       hSL=(dR==DEAL_REASON_SL)||(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
+       if(!hTP&&!hSL){hTP=(cPL>0);hSL=(cPL<=0);} }
      string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
      string sym=(si>=0)?g_Symbols[si].name:"?";
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
