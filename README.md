@@ -6,8 +6,11 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 
 | Archivo | Descripción |
 |---|---|
-| `trabajador multichart.mq5` | **Versión actual (v8.42)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + la regla de LIVE desde nivel 1. |
-| `trabajador v8.40 LINEAS+CONFL.mq5` | **Versión anterior (v8.40)**: la que tenía **DOS estrategias** — PERSONAL (`LINEAS`, entrada a mercado por ruptura L3>L1 / L4<L2, desactivada por defecto) + CONFLUENCIA (`CONFL`, H1+M3, orden limit). Se recuperó del historial (commit `c5bb1a7`); misma gestión de riesgo, 3 modos de capital y sección VIRTUAL→LIVE. |
+| `trabajador INICIAL v8.37.mq5` | **Código inicial del proyecto (v8.37, commit `b9df22f`)** — tal como estaba antes de empezar este chat: DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), base dinámica de capital, panel MULTI-PAR, gestión de riesgo de Asistente 3 por par. |
+| `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
+| `README INICIAL v8.37.md` | README original de esa versión. |
+| `trabajador multichart.mq5` | **Versión actual (v8.42)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
