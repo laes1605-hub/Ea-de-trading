@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.46"
+#property version   "8.47"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -349,9 +349,10 @@ struct StructureEngine
 //    COMPRA: última vela BAJISTA antes del impulso al alza, confirmada por
 //    un FVG/imbalance (misma vela o grupo de 3). Zona = inicio del imbalance
 //    → final del order block. VENTA: simétrico con la última vela ALCISTA.
-//    El rectángulo se extiende a la derecha hasta que la zona se MITIGA
-//    (el precio vuelve a tocar el order block); si no se ha mitigado,
-//    se extiende hasta el momento actual.
+//    El rectángulo se extiende a la derecha hasta que la zona se MITIGA:
+//    la mitigación ocurre cuando el precio CRUZA el imbalance (no lo
+//    respeta), no cuando toca el OB. Si no se ha mitigado, se extiende
+//    hasta el momento actual.
 struct Strat2OrderBlock
 {
    bool     Active;
@@ -362,8 +363,8 @@ struct Strat2OrderBlock
    datetime GroupStart, GroupEnd; // rango temporal (vela inicial → final del grupo)
    bool     InRange;            // la zona está DENTRO del rango L1-L2 de 4H
    datetime FoundTime;          // para ordenar por cercanía (más reciente primero)
-   bool     Mitigated;          // el precio ya volvió a tocar el order block
-   datetime MitigateTime;       // momento exacto de la mitigación
+   bool     Mitigated;          // el precio CRUZÓ el imbalance (ya no lo respeta)
+   datetime MitigateTime;       // momento exacto en que se cruzó el imbalance
 };
 
 struct SymbolSystemState
@@ -2384,9 +2385,13 @@ void Strat2ScanOBs(int si)
    Strat2ComputeMitigation(si,true);
 }
 
-//--- Mitigación: el precio vuelve a tocar el order block de la zona.--
-//    COMPRA: se mitiga cuando una vela baja hasta el OB (low <= OBHigh).
-//    VENTA : se mitiga cuando una vela sube hasta el OB (high >= OBLow).
+//--- Mitigación: el precio CRUZA el imbalance (deja de respetarlo).--
+//    COMPRA: la zona se invalida cuando el precio vuelve a bajar y
+//    perfora el INICIO del imbalance (borde superior del gap = ZoneTop).
+//    VENTA : la zona se invalida cuando el precio vuelve a subir y
+//    perfora el INICIO del imbalance (borde inferior del gap = ZoneBottom).
+//    NO es mitigación tocar el order block: el rebote sigue siendo
+//    válido mientras el imbalance se respete.
 //    full=true  → revisar todo el historial tras el grupo.
 //    full=false → revisar solo la vela actual (intrabar, cada tick).
 void Strat2ComputeMitigation(int si,bool full)
@@ -2410,23 +2415,21 @@ void Strat2ComputeMitigation(int si,bool full)
          for(int i=0;i<=look;i++)
          {
             datetime t=(datetime)iTime(sym,tf,i);
-            if(t<ob.GroupEnd) continue;      // la vela actual (0) también puede mitigar
+            if(t<ob.GroupEnd) continue;      // solo velas posteriores al grupo
             double hi=iHigh(sym,tf,i), lo=iLow(sym,tf,i);
             bool hit=false;
-            if(ob.IsBullish) hit=(lo<=ob.OBHigh);
-            else             hit=(hi>=ob.OBLow);
+            if(ob.IsBullish) hit=(lo<=ob.ZoneTop);      // cruza el imbalance (compra)
+            else             hit=(hi>=ob.ZoneBottom);   // cruza el imbalance (venta)
             if(hit)
             { ob.Mitigated=true; ob.MitigateTime=t; break; }
          }
       }
       else
       {
-         // velas ya cerradas posteriores al último rescatado no se revisan aquí
-         // (se revisan en full al cerrar vela); aquí solo la vela actual.
          datetime t0=TimeCurrent();
          bool hit=false;
-         if(ob.IsBullish) hit=(lac<=ob.OBHigh);
-         else             hit=(hac>=ob.OBLow);
+         if(ob.IsBullish) hit=(lac<=ob.ZoneTop);
+         else             hit=(hac>=ob.ZoneBottom);
          if(hit && t0>=ob.GroupEnd)
          { ob.Mitigated=true; ob.MitigateTime=t0; }
       }
@@ -3191,7 +3194,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.46  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.47  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -4921,7 +4924,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.46           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.47           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4962,7 +4965,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.46 === X=",InpXActivacion,
+   Print("=== DIAG v8.47 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5087,7 +5090,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.46 | Símbolos:",g_SymCount,
+   Print("EA v8.47 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5104,7 +5107,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.46 cerrado | Razón:",reason);
+   Print("EA v8.47 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
