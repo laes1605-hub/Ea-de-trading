@@ -1,9 +1,9 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.44**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.45**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
-- **Estrategia 2 (en construcción — marcado visual)** — zona **L1-L2 en 4H** + su **50%**, y los **order blocks de 1H** que aparecen dentro de esa zona (OB de compra en la zona de compras, OB de venta en la zona de ventas).
+- **Estrategia 2 (marcado visual)** — rango **L1-L2 en 4H** + su **50%**, y **order blocks históricos con confirmación de imbalance**: última vela bajista antes de un impulso al alza (compras) o última vela alcista antes de un impulso a la baja (ventas), confirmados por un FVG/imbalance. Se marcan **por debajo del precio** (rebote a compra) y **por encima del precio** (rebote a venta); los del rango tienen prioridad y los externos se activan cuando el precio sobrepasa L1/L2.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
 ## Archivos
@@ -22,7 +22,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.44)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3, con fix del 50%) + **Estrategia 2 en marcado visual (zona 4H L1-L2 + 50% + order blocks 1H)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.45)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3, con fix del 50%) + **Estrategia 2 en marcado visual (rango 4H L1-L2 + 50% + order blocks históricos OB+imbalance)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -65,20 +65,27 @@ El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógic
 
 > Nota: el motor del TF del gráfico (L1-L4 azules L1/L2, magenta/rojo L3/L4) se mantiene **solo como referencia visual**; la estructura que manda la operativa es la de H1.
 
-## Estrategia 2 (v8.44) — zona 4H (L1-L2 + 50%) + order blocks 1H (marcado visual)
+## Estrategia 2 (v8.45) — rango 4H + order blocks históricos (OB + imbalance) — marcado visual
 
-La **Estrategia 2** usa la **misma lógica de líneas L1-L4**, pero en la temporalidad **4H**, y de momento **solo marca en el gráfico** (aún no abre órdenes):
+La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de líneas), pero los order blocks **ya no se buscan dentro del rango**: se buscan **históricos, donde el precio pueda rebotar**, estén donde estén.
 
-1. **Zona 4H**: el motor de líneas L1-L4 corre en `InpStrat2TF` (por defecto `PERIOD_H4`) → **L1/L2** = techo/suelo del rango y **50% = EQ** (punto medio).
-2. **Mitades de la zona**: la **zona de COMPRAS** es la mitad **inferior** (de L2 al 50%) y la **zona de VENTAS** la mitad **superior** (del 50% a L1).
-3. **Order blocks en 1H dentro de la zona**: en `InpStrat2OBTF` (por defecto `PERIOD_H1`) se escanean las velas y se marcan las de **origen**:
-   - **OB de COMPRA** = vela **bajista** cuyo mínimo cae en la zona de compras → ahí el precio puede **rebotar para una compra**.
-   - **OB de VENTA** = vela **alcista** cuyo máximo cae en la zona de ventas → ahí el precio puede **rebotar para una venta**.
-4. Se guardan hasta `InpStrat2MaxOBs` (5) por lado, de las velas más recientes hacia atrás (`InpStrat2Lookback` = 150 velas 1H). Se re-escanean al cerrar vela 4H o 1H.
+**Cómo se marca un order block (con confirmación):**
 
-**Dibujo:** líneas cian (`ZONA H4 L1`/`L2`), 50% dorado, rectángulos de zona (verde oscuro COMPRAS / rojo oscuro VENTAS) y rectángulos por OB (verde OB COMPRA / rojo OB VENTA) con su etiqueta. En la pestaña **OPERAR** del panel se muestra el rango 4H actual y cuántos OB de compra/venta hay en la zona.
+1. **COMPRA**: la **última vela bajista** antes de iniciar un **movimiento fuerte al alza**.
+2. **VENTA**: la **última vela alcista** antes de iniciar un **movimiento fuerte a la baja**.
+3. **Confirmación**: el OB debe ir acompañado de una **zona por mitigar / imbalance (FVG)**. Cuando OB e imbalance se juntan **en una misma vela o en un grupo de 3 velas**, se marca la zona.
+4. **Zona marcada (rectángulo)**: **desde el inicio del imbalance hasta el final del order block** (en el grupo de 3: vela antigua → vela media → vela nueva con el gap; el OB puede ser la vela media o la vela inicial del grupo).
 
-**Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5`, `InpStrat2Lookback=150`.
+**Dónde se buscan y cuándo se muestran:**
+
+- **COMPRA**: zonas **por DEBAJO del precio** → el precio puede rebotar para una **compra**.
+- **VENTA** : zonas **por ENCIMA del precio** → el precio puede rebotar para una **venta**.
+- **Prioridad dentro del rango**: mientras el precio está dentro de `L1-L2`, solo se muestran las zonas dentro del rango.
+- **Fuera del rango**: cuando el precio **sobrepasa L1** (arriba) o **L2** (abajo), se activan además los **order blocks históricos fuera del rango** (por debajo de L2 para compras si rompió abajo; por encima de L1 para ventas si rompió arriba) — **no importa si están fuera de L1-L2**, son los puntos de rebote que se buscan.
+
+**Dibujo:** líneas cian `RANGO H4 L1/L2`, 50% dorado, rectángulos de la zona (verde COMPRAS / rojo VENTAS) y rectángulos de cada zona histórico `REBOTE COMPRA (OB+FVG)` / `REBOTE VENTA (OB+FVG)` (verde/rojo), desde el inicio del imbalance hasta el final del OB, en su rango temporal. En el panel (pestaña OPERAR): rango 4H, `OBs: N COMPRA (en rango M) · N VENTA (en rango M)` y si el precio está EN o FUERA del rango.
+
+**Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas).
 
 ## Líneas visibles en el gráfico
 

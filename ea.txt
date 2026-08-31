@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.44"
+#property version   "8.45"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -242,7 +242,8 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 //| CONSTANTES                                                       |
 //+------------------------------------------------------------------+
 #define MAX_SYMBOLS      20
-#define STRAT2_MAX_OBS   5           // máx. order blocks por lado (compra/venta) de la Estrategia 2
+#define STRAT2_MAX_OBS   5           // máx. order blocks VISIBLES por lado (compra/venta) de la Estrategia 2
+#define STRAT2_STORED_OBS 20         // máx. order blocks guardados por símbolo (10 por lado)
 #define MAX_TABLE_SIZE   20
 #define PNL_W            520
 #define PNL_H            660
@@ -344,13 +345,20 @@ struct StructureEngine
    ENUM_TIMEFRAMES      TF;
 };
 
-//--- Order block de la Estrategia 2 (vela de origen en 1H, dentro de la zona 4H)
+//--- Zona de rebote de la Estrategia 2: order block + imbalance juntos.
+//    COMPRA: última vela BAJISTA antes del impulso al alza, confirmada por
+//    un FVG/imbalance (misma vela o grupo de 3). Zona = inicio del imbalance
+//    → final del order block. VENTA: simétrico con la última vela ALCISTA.
 struct Strat2OrderBlock
 {
    bool     Active;
-   double   High, Low;
-   datetime TimeStart;   // apertura de la vela 1H donde está el OB
-   bool     IsBullish;   // true = OB de COMPRA (vela bajista en zona de compras)
+   bool     IsBullish;    // true = zona de COMPRA (demanda), false = VENTA (oferta)
+   double   OBHigh, OBLow;      // la vela del order block
+   datetime OBTime;             // apertura de la vela del OB
+   double   ZoneTop, ZoneBottom;// zona marcada: inicio imbalance → final OB
+   datetime GroupStart, GroupEnd; // rango temporal (vela inicial → final del grupo)
+   bool     InRange;            // la zona está DENTRO del rango L1-L2 de 4H
+   datetime FoundTime;          // para ordenar por cercanía (más reciente primero)
 };
 
 struct SymbolSystemState
@@ -365,14 +373,17 @@ struct SymbolSystemState
    datetime h1LastBar;       // última vela del TF madre procesada
    datetime m3LastBar;       // última vela del TF de entrada procesada
 
-   //--- estado de la ESTRATEGIA 2 (zona 4H + order blocks 1H)
-   StructureEngine      SE_H4;        // estructura de la zona: líneas L1-L4 en 4H
-   datetime             h4LastBar;    // última vela 4H procesada
-   datetime             ob1hLastBar;  // última vela 1H procesada para order blocks
-   Strat2OrderBlock     ob2[STRAT2_MAX_OBS*2];  // OBs detectados dentro de la zona 4H
-   int                  ob2Count;     // total de OBs guardados
-   int                  ob2Buys;      // OBs de COMPRA (zona de compras → rebote compra)
-   int                  ob2Sells;     // OBs de VENTA (zona de ventas → rebote venta)
+   //--- estado de la ESTRATEGIA 2 (zona 4H + order blocks históricos)
+   StructureEngine      SE_H4;          // estructura de la zona: líneas L1-L4 en 4H
+   datetime             h4LastBar;      // última vela 4H procesada
+   datetime             ob1hLastBar;    // última vela 1H procesada para order blocks
+   Strat2OrderBlock     ob2[STRAT2_STORED_OBS]; // OB+imbalance detectados
+   int                  ob2Count;       // total de zonas guardadas
+   int                  ob2Buys;        // zonas de COMPRA HOY visibles (debajo del precio)
+   int                  ob2Sells;       // zonas de VENTA HOY visibles (encima del precio)
+   int                  ob2BuyRange;    // de las visibles, cuántas están DENTRO del rango 4H
+   int                  ob2SellRange;   // de las visibles, cuántas están DENTRO del rango 4H
+   bool                 ob2Outside;     // el precio está FUERA del rango (L1-L2) → OB externos activos
 
    //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
    int      m3ChochDir;      // CHoCH de M3 pendiente de procesar (+1/-1)
@@ -982,14 +993,17 @@ void InitSystemState(int si)
    g_SysState[si].h1LastBar=0;
    g_SysState[si].m3LastBar=0;
 
-   //--- Estrategia 2: zona 4H + order blocks (se recalcula, no se persiste)
+   //--- Estrategia 2: zona 4H + order blocks históricos (se recalcula, no se persiste)
    ZeroMemory(g_SysState[si].SE_H4);
    g_SysState[si].h4LastBar=0;
    g_SysState[si].ob1hLastBar=0;
    g_SysState[si].ob2Count=0;
    g_SysState[si].ob2Buys=0;
    g_SysState[si].ob2Sells=0;
-   for(int k=0;k<STRAT2_MAX_OBS*2;k++) ZeroMemory(g_SysState[si].ob2[k]);
+   g_SysState[si].ob2BuyRange=0;
+   g_SysState[si].ob2SellRange=0;
+   g_SysState[si].ob2Outside=false;
+   for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
    g_SysState[si].m3ChochDir=0;        g_SysState[si].m3ChochTime=0;
    g_SysState[si].confArmedBuy=false;  g_SysState[si].confArmedSell=false;
@@ -2236,16 +2250,21 @@ void SE_ZoneLabel(string name,double price,string txt,color clr)
 }
 
 //+==================================================================+
-//| ESTRATEGIA 2: ZONA 4H (L1-L2 + 50%) + ORDER BLOCKS 1H            |
+//| ESTRATEGIA 2: ZONA 4H (L1-L2 + 50%) + ORDER BLOCKS HISTÓRICOS    |
 //|                                                                  |
 //| 1) El motor de líneas L1-L4 corre en 4H → rango L1-L2 + 50%(EQ). |
-//| 2) Mitad inferior (L2→EQ) = zona de COMPRAS;                     |
-//|    mitad superior (EQ→L1) = zona de VENTAS.                      |
-//| 3) En 1H, DENTRO de la zona 4H se marcan los order blocks:       |
-//|    - OB de COMPRA = vela BAJISTA cuyo mínimo cae en la zona de   |
-//|      compras (origen del impulso alcista → rebote a compra).     |
-//|    - OB de VENTA  = vela ALCISTA cuyo máximo cae en la zona de   |
-//|      ventas (origen del impulso bajista → rebote a venta).       |
+//| 2) Se buscan order blocks HISTÓRICOS con confirmación:           |
+//|    - COMPRA: última vela BAJISTA antes de un movimiento fuerte al |
+//|      alza, confirmada por un imbalance/FVG (grupo de 3 velas).   |
+//|    - VENTA : última vela ALCISTA antes de un movimiento bajista,  |
+//|      confirmada por el mismo tipo de imbalance.                  |
+//| 3) La zona marcada = DESDE EL INICIO DEL IMBALANCE HASTA EL      |
+//|    FINAL DEL ORDER BLOCK (rectángulo de precio y tiempo).        |
+//| 4) El precio rebota en COMPRA en las zonas POR DEBAJO del precio |
+//|    y en VENTA en las zonas POR ENCIMA.                           |
+//| 5) Prioridad: zonas DENTRO del rango L1-L2 (siempre visibles).   |
+//|    Cuando el precio SOBREPASA L1/L2, se activan además las zonas |
+//|    históricas FUERA del rango, del lado por donde busca rebote.  |
 //+==================================================================+
 //--- borra los objetos gráficos de la Estrategia 2 del símbolo ------
 void Strat2DeleteObjects(int si)
@@ -2266,59 +2285,146 @@ void Strat2ResetState(int si)
    g_SysState[si].ob2Count=0;
    g_SysState[si].ob2Buys=0;
    g_SysState[si].ob2Sells=0;
-   for(int k=0;k<STRAT2_MAX_OBS*2;k++) ZeroMemory(g_SysState[si].ob2[k]);
+   g_SysState[si].ob2BuyRange=0;
+   g_SysState[si].ob2SellRange=0;
+   g_SysState[si].ob2Outside=false;
+   for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
    Strat2DeleteObjects(si);
 }
 
-//--- guarda un order block en el array del par ----------------------
-void Strat2AddOB(int si,bool isBull,double hi,double lo,datetime t)
+//--- guarda una zona (OB + imbalance) en el array del par -----------
+void Strat2AddZone(int si,bool isBull,
+                   double obH,double obL,datetime obT,
+                   double zT,double zB,datetime gA,datetime gB,
+                   double L1,double L2)
 {
-   if(g_SysState[si].ob2Count>=STRAT2_MAX_OBS*2) return;
+   int maxStore=STRAT2_STORED_OBS;
+   int lado=0;
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+      if(g_SysState[si].ob2[k].IsBullish==isBull) lado++;
+   if(lado>=maxStore/2) return;
+
    Strat2OrderBlock ob;
    ZeroMemory(ob);
-   ob.Active=true; ob.High=hi; ob.Low=lo; ob.IsBullish=isBull; ob.TimeStart=t;
+   ob.Active=true;
+   ob.IsBullish=isBull;
+   ob.OBHigh=obH; ob.OBLow=obL; ob.OBTime=obT;
+   ob.ZoneTop=zT; ob.ZoneBottom=zB;
+   ob.GroupStart=gA; ob.GroupEnd=gB;
+   ob.InRange=(zB>=L2 && zT<=L1);
+   ob.FoundTime=gB;
    g_SysState[si].ob2[g_SysState[si].ob2Count]=ob;
    g_SysState[si].ob2Count++;
 }
 
-   //--- escanea las velas 1H y guarda los OB dentro de la zona 4H ------
-   //    (los más recientes primero: í=1 = última vela cerrada)
-   void Strat2ScanOBs(int si)
+//--- escanea 1H: OB + imbalance en el grupo de 3 velas --------------
+//    Grupo [j (antigua), j+1 (medio), j+2 (reciente)]:
+//    - FVG ALCISTA: low(j+2) > high(j) → inicio del imbalance = high(j)
+//      OB de COMPRA: la vela BAJISTA del grupo (j+1 o j, si se juntan
+//      en la misma vela del grupo). Zona: high(j) → low(OB).
+//    - FVG BAJISTA: high(j+2) < low(j) → inicio del imbalance = low(j)
+//      OB de VENTA: la vela ALCISTA del grupo. Zona: low(j) → high(OB).
+void Strat2ScanOBs(int si)
 {
    g_SysState[si].ob2Count=0;
-   g_SysState[si].ob2Buys=0;
-   g_SysState[si].ob2Sells=0;
-   for(int k=0;k<STRAT2_MAX_OBS*2;k++) ZeroMemory(g_SysState[si].ob2[k]);
+   for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
    StructureEngine SE=g_SysState[si].SE_H4;
    if(!SE.Valid) return;
 
    string sym=g_Symbols[si].name;
    ENUM_TIMEFRAMES tf=InpStrat2OBTF;
-   int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
    int look=MathMax(30,InpStrat2Lookback);
-   int nb=0,ns=0;
+   int periodTF=PeriodSeconds(tf);
 
-   for(int i=1;i<=look && (nb<maxL || ns<maxL);i++)
+   for(int j=1;j<=look-2;j++)
    {
-      double O=iOpen(sym,tf,i), C=iClose(sym,tf,i);
-      double H=iHigh(sym,tf,i), L=iLow(sym,tf,i);
-      if(O<=0.0||C<=0.0) continue;
+      double O1=iOpen(sym,tf,j),   C1=iClose(sym,tf,j);
+      double H1=iHigh(sym,tf,j),   L1=iLow(sym,tf,j);
+      double O2=iOpen(sym,tf,j+1), C2=iClose(sym,tf,j+1);
+      double H2=iHigh(sym,tf,j+1), L2v=iLow(sym,tf,j+1);
+      double O3=iOpen(sym,tf,j+2), C3=iClose(sym,tf,j+2);
+      double H3=iHigh(sym,tf,j+2), L3=iLow(sym,tf,j+2);
+      if(O1<=0.0||O2<=0.0||O3<=0.0) continue;
 
-      bool green=(C>O), red=(C<O);
-      datetime t=(datetime)iTime(sym,tf,i);
+      datetime tA=(datetime)iTime(sym,tf,j);
+      datetime tB=tA+periodTF*3;
 
-      //--- OB de COMPRA: vela bajista con mínimo dentro de la zona de
-      //    compras (entre L2 y el 50% de la zona 4H)
-      if(red && nb<maxL && L>SE.L2 && L<=SE.EQ)
-      { Strat2AddOB(si,true,H,L,t); nb++; }
-      //--- OB de VENTA: vela alcista con máximo dentro de la zona de
-      //    ventas (entre el 50% y L1 de la zona 4H)
-      else if(green && ns<maxL && H>=SE.EQ && H<SE.L1)
-      { Strat2AddOB(si,false,H,L,t); ns++; }
+      //--- imbalance ALCISTA → zona de COMPRA
+      if(L3>H1)
+      {
+         // OB en la misma vela inicial del grupo (bajista)
+         if(C1<O1)
+            Strat2AddZone(si,true,H1,L1,tA,H1,L1,tA,tB,SE.L1,SE.L2);
+         // OB = vela del medio del grupo (bajista, última antes del impulso)
+         if(C2<O2)
+            Strat2AddZone(si,true,H2,L2v,tA+periodTF,H1,L2v,tA,tB,SE.L1,SE.L2);
+      }
+      //--- imbalance BAJISTA → zona de VENTA
+      if(H3<L1)
+      {
+         // OB en la misma vela inicial del grupo (alcista)
+         if(C1>O1)
+            Strat2AddZone(si,false,H1,L1,tA,H1,L1,tA,tB,SE.L1,SE.L2);
+         // OB = vela del medio del grupo (alcista, última antes del impulso)
+         if(C2>O2)
+            Strat2AddZone(si,false,H2,L2v,tA+periodTF,H2,L1,tA,tB,SE.L1,SE.L2);
+      }
    }
-   g_SysState[si].ob2Buys=nb;
-   g_SysState[si].ob2Sells=ns;
+}
+
+//--- cuenta las zonas HOY visibles (según precio y rango 4H) --------
+//    COMPRA: zona por DEBAJO del precio. Prioridad dentro del rango;
+//    fuera del rango (por debajo de L2) solo si el precio está < L2.
+//    VENTA : zona por ENCIMA del precio. Prioridad dentro del rango;
+//    fuera del rango (por encima de L1) solo si el precio está > L1.
+void Strat2RefreshCounts(int si)
+{
+   g_SysState[si].ob2Buys=0;
+   g_SysState[si].ob2Sells=0;
+   g_SysState[si].ob2BuyRange=0;
+   g_SysState[si].ob2SellRange=0;
+   g_SysState[si].ob2Outside=false;
+   if(!g_SysState[si].SE_H4.Valid) return;
+
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0) return;
+   double L1=g_SysState[si].SE_H4.L1, L2=g_SysState[si].SE_H4.L2;
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+   double tol=pt*2.0;
+   bool inR=(bid>=L2-tol && bid<=L1+tol);
+   g_SysState[si].ob2Outside=!inR;
+
+   int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
+   int cb=0,cs=0;
+   // prioridad: primero DENTRO del rango, luego FUERA (si aplica)
+   for(int pass=0;pass<2 && (cb<maxL || cs<maxL);pass++)
+      for(int k=0;k<g_SysState[si].ob2Count;k++)
+      {
+         Strat2OrderBlock ob=g_SysState[si].ob2[k];
+         if(!ob.Active) continue;
+         bool inRange=ob.InRange;
+         if(pass==0 && !inRange) continue;
+         if(pass==1 && inRange)  continue;
+         if(ob.IsBullish)
+         {
+            if(cb>=maxL) continue;
+            if(ob.ZoneTop>=bid) continue;               // no está debajo del precio
+            if(!pass && !inRange) continue;
+            if(!inRange && !(bid<L2-tol && ob.ZoneTop<=L2+tol)) continue;
+            cb++; if(inRange) g_SysState[si].ob2BuyRange++;
+         }
+         else
+         {
+            if(cs>=maxL) continue;
+            if(ob.ZoneBottom<=bid) continue;            // no está encima del precio
+            if(!inRange && !(bid>L1+tol && ob.ZoneBottom>=L1-tol)) continue;
+            cs++; if(inRange) g_SysState[si].ob2SellRange++;
+         }
+      }
+   g_SysState[si].ob2Buys=cb;
+   g_SysState[si].ob2Sells=cs;
 }
 
 //--- actualización por tick del motor 4H + resscaneo al cerrar vela -
@@ -2329,7 +2435,7 @@ void Strat2Update(int si)
 
    if(!g_SysState[si].SE_H4.Valid) SE_Init(g_SysState[si].SE_H4,sym,InpStrat2TF);
 
-   //--- vela 4H nueva → zona nueva → reescanear order blocks
+   //--- vela 4H nueva → rango nuevo → reescanear todas las zonas
    datetime t4=(datetime)SeriesInfoInteger(sym,InpStrat2TF,SERIES_LASTBAR_DATE);
    if(t4!=g_SysState[si].h4LastBar)
    {
@@ -2339,7 +2445,7 @@ void Strat2Update(int si)
       Strat2ScanOBs(si);
    }
 
-   //--- vela 1H nueva → revisar si hay OB nuevo en la zona
+   //--- vela 1H nueva → reescanear (zona 4H sigue igual)
    datetime t1=(datetime)SeriesInfoInteger(sym,InpStrat2OBTF,SERIES_LASTBAR_DATE);
    if(t1!=g_SysState[si].ob1hLastBar)
    {
@@ -2349,13 +2455,34 @@ void Strat2Update(int si)
 
    int ct4=0;
    SE_OnTick(g_SysState[si].SE_H4,sym,ct4);
+   Strat2RefreshCounts(si);
+}
+
+//--- ¿una zona está hoy visible? (misma regla que el conteo) --------
+bool Strat2IsVisible(int si,const Strat2OrderBlock &ob)
+{
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0 || !g_SysState[si].SE_H4.Valid) return false;
+   double L1=g_SysState[si].SE_H4.L1, L2=g_SysState[si].SE_H4.L2;
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT), tol=pt*2.0;
+   bool inR=(bid>=L2-tol && bid<=L1+tol);
+   if(ob.IsBullish)
+   {
+      if(ob.ZoneTop>=bid) return false;
+      if(!ob.InRange) return (bid<L2-tol && ob.ZoneTop<=L2+tol);
+      return true;
+   }
+   if(ob.ZoneBottom<=bid) return false;
+   if(!ob.InRange) return (bid>L1+tol && ob.ZoneBottom>=L1-tol);
+   return true;
 }
 
 //--- rectángulo genérico de la Estrategia 2 (zona ancha u OB) -------
 void Strat2ObjRect(string name,double top,double bot,datetime ta,datetime tb,color clr)
 {
    if(top<=0.0||bot<=0.0||ta<=0||tb<=0){ ObjectDelete(0,name); return; }
-   uchar  alpha=(uchar)(255-(80*255/100));          // transparencia 80%
+   uchar  alpha=(uchar)(255-(72*255/100));          // transparencia 72%
    color  c=(color)ColorToARGB(clr,alpha);
    double tp=MathMax(top,bot), bp=MathMin(top,bot);
    if(ObjectFind(0,name)<0)
@@ -2372,7 +2499,7 @@ void Strat2ObjRect(string name,double top,double bot,datetime ta,datetime tb,col
    ObjectSetInteger(0,name,OBJPROP_BGCOLOR,c);
 }
 
-//--- dibuja zona 4H + 50% + order blocks 1H de la Estrategia 2 ------
+//--- dibuja zona 4H + 50% + zonas OB históricas de la Estrategia 2 --
 void DrawStrat2(int si)
 {
    if(!InpUseStrat2 || !g_SysState[si].SE_H4.Valid) { Strat2DeleteObjects(si); return; }
@@ -2383,39 +2510,45 @@ void DrawStrat2(int si)
    double EQ=g_SysState[si].SE_H4.EQ;
    string tfz=EnumToString(InpStrat2TF);
    StringReplace(tfz,"PERIOD_","");
-   SE_HLine(pfx+"L1",L1,C'0,190,255',STYLE_SOLID,2,"ZONA "+tfz+" L1");
-   SE_HLine(pfx+"L2",L2,C'0,190,255',STYLE_SOLID,2,"ZONA "+tfz+" L2");
-   SE_HLine(pfx+"EQ",EQ,clrGold,STYLE_DOT,1,"50% ZONA "+tfz);
-
-   //--- zona de COMPRAS (L2→50%) y zona de VENTAS (50%→L1)
+   SE_HLine(pfx+"L1",L1,C'0,190,255',STYLE_SOLID,2,"RANGO "+tfz+" L1");
+   SE_HLine(pfx+"L2",L2,C'0,190,255',STYLE_SOLID,2,"RANGO "+tfz+" L2");
+   SE_HLine(pfx+"EQ",EQ,clrGold,STYLE_DOT,1,"50% RANGO "+tfz);
    Strat2ObjRect(pfx+"ZB",EQ,L2,TimeCurrent()-PeriodSeconds(PERIOD_CURRENT)*300,
                  TimeCurrent()+PeriodSeconds(PERIOD_CURRENT)*50,C'0,80,40');
    Strat2ObjRect(pfx+"ZS",L1,EQ,TimeCurrent()-PeriodSeconds(PERIOD_CURRENT)*300,
                  TimeCurrent()+PeriodSeconds(PERIOD_CURRENT)*50,C'100,25,25');
-   SE_ZoneLabel(pfx+"ZBL",(EQ+L2)*0.5,"ZONA 4H COMPRAS",clrLightGreen);
-   SE_ZoneLabel(pfx+"ZSL",(L1+EQ)*0.5,"ZONA 4H VENTAS",clrLightSalmon);
+   SE_ZoneLabel(pfx+"ZBL",(EQ+L2)*0.5,"RANGO "+tfz+": ZONA COMPRAS",clrLightGreen);
+   SE_ZoneLabel(pfx+"ZSL",(L1+EQ)*0.5,"RANGO "+tfz+": ZONA VENTAS",clrLightSalmon);
 
-   //--- dibujar o borrar order blocks según InpStrat2ShowOBs
+   //--- borrar o dibujar las zonas OB según el input
    if(!InpStrat2ShowOBs)
    {
-      for(int k=0;k<STRAT2_MAX_OBS*2;k++)
+      for(int k=0;k<STRAT2_STORED_OBS;k++)
       { ObjectDelete(0,pfx+"OB"+IntegerToString(k));
         ObjectDelete(0,pfx+"OB"+IntegerToString(k)+"_T"); }
       return;
    }
 
-   int periodH=PeriodSeconds(InpStrat2OBTF);
-   for(int k=0;k<g_SysState[si].ob2Count;k++)
-   {
-      Strat2OrderBlock ob=g_SysState[si].ob2[k];
-      if(!ob.Active) continue;
-      string nm=pfx+"OB"+IntegerToString(k);
-      color cc=ob.IsBullish?C'0,190,95':C'230,85,55';
-      Strat2ObjRect(nm,ob.High,ob.Low,ob.TimeStart,
-                    ob.TimeStart+periodH,cc);
-      SE_ZoneLabel(nm+"_T",(ob.High+ob.Low)*0.5,
-                   ob.IsBullish?"OB COMPRA":"OB VENTA",cc);
-   }
+   int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
+   int cb=0,cs=0;
+   for(int pass=0;pass<2 && (cb<maxL || cs<maxL);pass++)
+      for(int k=0;k<g_SysState[si].ob2Count;k++)
+      {
+         Strat2OrderBlock ob=g_SysState[si].ob2[k];
+         if(!ob.Active) continue;
+         if(pass==0 && !ob.InRange) continue;
+         if(pass==1 && ob.InRange)  continue;
+         if(!Strat2IsVisible(si,ob)) continue;
+         if(ob.IsBullish){ if(cb>=maxL) continue; cb++; }
+         else            { if(cs>=maxL) continue; cs++; }
+
+         string nm=pfx+"OB"+IntegerToString(k);
+         color cc=ob.IsBullish?C'0,190,95':C'230,85,55';
+         Strat2ObjRect(nm,ob.ZoneTop,ob.ZoneBottom,
+                       ob.GroupStart,ob.GroupEnd,cc);
+         SE_ZoneLabel(nm+"_T",(ob.ZoneTop+ob.ZoneBottom)*0.5,
+                      ob.IsBullish?"REBOTE COMPRA (OB+FVG)":"REBOTE VENTA (OB+FVG)",cc);
+      }
 }
 
 //--- Visuales de la ESTRATEGIA ÚNICA: estructura H1 + entrada M3 -----
@@ -2963,7 +3096,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.44  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.45  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3299,21 +3432,26 @@ void BuildTabOperar()
    ObjLbl(PFX_OP+"ENTER_M",cx+4,y+17,"CORRELACION: "+missSt,C'200,220,80',7,"Arial Bold");
    y+=40;
 
-   //--- ESTRATEGIA 2: zona 4H (L1-L2 + 50%) + order blocks 1H -----------------
+   //--- ESTRATEGIA 2: rango 4H + order blocks históricos (OB+imbalance) --------
    if(InpUseStrat2)
    {
       string s2="";
       if(g_SysState[si].SE_H4.Valid)
-         s2=StringFormat("S2 · ZONA 4H: L1=%s  L2=%s  50%%=%s",
+         s2=StringFormat("S2 · RANGO 4H: L1=%s  L2=%s  50%%=%s",
                          DoubleToString(g_SysState[si].SE_H4.L1,dg),
                          DoubleToString(g_SysState[si].SE_H4.L2,dg),
                          DoubleToString(g_SysState[si].SE_H4.EQ,dg));
-      else s2="S2 · SIN ZONA 4H";
+      else s2="S2 · SIN RANGO 4H";
+      string s2m=StringFormat("OBs: %d COMPRA (en rango %d) · %d VENTA (en rango %d)",
+                              g_SysState[si].ob2Buys,g_SysState[si].ob2BuyRange,
+                              g_SysState[si].ob2Sells,g_SysState[si].ob2SellRange);
+      if(g_SysState[si].ob2Outside)
+         s2m+=" · PRECIO FUERA RANGO → OB histórico activos";
+      else
+         s2m+=" · PRECIO EN RANGO";
       ObjRect(PFX_OP+"S2_BG",cx,y,cw,30,C'14,22,30',C'30,60,90',1);
       ObjLbl(PFX_OP+"S2_H",cx+4,y+3,s2,C'90,200,255',7,"Arial Bold");
-      ObjLbl(PFX_OP+"S2_M",cx+4,y+17,
-             StringFormat("OBs 1H en zona: %d COMPRA · %d VENTA",
-                          g_SysState[si].ob2Buys,g_SysState[si].ob2Sells),
+      ObjLbl(PFX_OP+"S2_M",cx+4,y+17,s2m,
              (g_SysState[si].ob2Buys>0)?clrLimeGreen:
              (g_SysState[si].ob2Sells>0)?clrTomato:C'140,140,160',7,"Arial Bold");
       y+=34;
@@ -4687,7 +4825,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.44           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.45           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4728,7 +4866,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.44 === X=",InpXActivacion,
+   Print("=== DIAG v8.45 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4853,7 +4991,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.44 | Símbolos:",g_SymCount,
+   Print("EA v8.45 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4870,7 +5008,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.44 cerrado | Razón:",reason);
+   Print("EA v8.45 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
