@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.45"
+#property version   "8.46"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -349,6 +349,9 @@ struct StructureEngine
 //    COMPRA: última vela BAJISTA antes del impulso al alza, confirmada por
 //    un FVG/imbalance (misma vela o grupo de 3). Zona = inicio del imbalance
 //    → final del order block. VENTA: simétrico con la última vela ALCISTA.
+//    El rectángulo se extiende a la derecha hasta que la zona se MITIGA
+//    (el precio vuelve a tocar el order block); si no se ha mitigado,
+//    se extiende hasta el momento actual.
 struct Strat2OrderBlock
 {
    bool     Active;
@@ -359,6 +362,8 @@ struct Strat2OrderBlock
    datetime GroupStart, GroupEnd; // rango temporal (vela inicial → final del grupo)
    bool     InRange;            // la zona está DENTRO del rango L1-L2 de 4H
    datetime FoundTime;          // para ordenar por cercanía (más reciente primero)
+   bool     Mitigated;          // el precio ya volvió a tocar el order block
+   datetime MitigateTime;       // momento exacto de la mitigación
 };
 
 struct SymbolSystemState
@@ -384,6 +389,7 @@ struct SymbolSystemState
    int                  ob2BuyRange;    // de las visibles, cuántas están DENTRO del rango 4H
    int                  ob2SellRange;   // de las visibles, cuántas están DENTRO del rango 4H
    bool                 ob2Outside;     // el precio está FUERA del rango (L1-L2) → OB externos activos
+   int                  ob2Mitigated;   // zonas OB ya mitigadas (el precio ya las tocó)
 
    //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
    int      m3ChochDir;      // CHoCH de M3 pendiente de procesar (+1/-1)
@@ -1003,6 +1009,7 @@ void InitSystemState(int si)
    g_SysState[si].ob2BuyRange=0;
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
+   g_SysState[si].ob2Mitigated=0;
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
    g_SysState[si].m3ChochDir=0;        g_SysState[si].m3ChochTime=0;
@@ -2288,6 +2295,7 @@ void Strat2ResetState(int si)
    g_SysState[si].ob2BuyRange=0;
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
+   g_SysState[si].ob2Mitigated=0;
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
    Strat2DeleteObjects(si);
 }
@@ -2371,6 +2379,58 @@ void Strat2ScanOBs(int si)
             Strat2AddZone(si,false,H2,L2v,tA+periodTF,H2,L1,tA,tB,SE.L1,SE.L2);
       }
    }
+
+   //--- calcular hasta dónde se extiende cada zona (mitigación)
+   Strat2ComputeMitigation(si,true);
+}
+
+//--- Mitigación: el precio vuelve a tocar el order block de la zona.--
+//    COMPRA: se mitiga cuando una vela baja hasta el OB (low <= OBHigh).
+//    VENTA : se mitiga cuando una vela sube hasta el OB (high >= OBLow).
+//    full=true  → revisar todo el historial tras el grupo.
+//    full=false → revisar solo la vela actual (intrabar, cada tick).
+void Strat2ComputeMitigation(int si,bool full)
+{
+   if(!g_SysState[si].SE_H4.Valid) return;
+   string sym=g_Symbols[si].name;
+   ENUM_TIMEFRAMES tf=InpStrat2OBTF;
+   int periodTF=PeriodSeconds(tf);
+   int look=MathMax(30,InpStrat2Lookback);
+
+   double hac=iHigh(sym,tf,0);   // vela actual (índice 0, abierta)
+   double lac=iLow(sym,tf,0);
+
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+   {
+      Strat2OrderBlock &ob=g_SysState[si].ob2[k];
+      if(!ob.Active || ob.Mitigated) continue;
+
+      if(full)
+      {
+         for(int i=0;i<=look;i++)
+         {
+            datetime t=(datetime)iTime(sym,tf,i);
+            if(t<ob.GroupEnd) continue;      // la vela actual (0) también puede mitigar
+            double hi=iHigh(sym,tf,i), lo=iLow(sym,tf,i);
+            bool hit=false;
+            if(ob.IsBullish) hit=(lo<=ob.OBHigh);
+            else             hit=(hi>=ob.OBLow);
+            if(hit)
+            { ob.Mitigated=true; ob.MitigateTime=t; break; }
+         }
+      }
+      else
+      {
+         // velas ya cerradas posteriores al último rescatado no se revisan aquí
+         // (se revisan en full al cerrar vela); aquí solo la vela actual.
+         datetime t0=TimeCurrent();
+         bool hit=false;
+         if(ob.IsBullish) hit=(lac<=ob.OBHigh);
+         else             hit=(hac>=ob.OBLow);
+         if(hit && t0>=ob.GroupEnd)
+         { ob.Mitigated=true; ob.MitigateTime=t0; }
+      }
+   }
 }
 
 //--- cuenta las zonas HOY visibles (según precio y rango 4H) --------
@@ -2385,6 +2445,7 @@ void Strat2RefreshCounts(int si)
    g_SysState[si].ob2BuyRange=0;
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
+   g_SysState[si].ob2Mitigated=0;
    if(!g_SysState[si].SE_H4.Valid) return;
 
    string sym=g_Symbols[si].name;
@@ -2396,6 +2457,11 @@ void Strat2RefreshCounts(int si)
    bool inR=(bid>=L2-tol && bid<=L1+tol);
    g_SysState[si].ob2Outside=!inR;
 
+   //--- contar zonas ya mitigadas (independiente de las pasadas)
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+      if(g_SysState[si].ob2[k].Active && g_SysState[si].ob2[k].Mitigated)
+         g_SysState[si].ob2Mitigated++;
+
    int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
    int cb=0,cs=0;
    // prioridad: primero DENTRO del rango, luego FUERA (si aplica)
@@ -2404,6 +2470,7 @@ void Strat2RefreshCounts(int si)
       {
          Strat2OrderBlock ob=g_SysState[si].ob2[k];
          if(!ob.Active) continue;
+         if(ob.Mitigated) continue;
          bool inRange=ob.InRange;
          if(pass==0 && !inRange) continue;
          if(pass==1 && inRange)  continue;
@@ -2455,12 +2522,16 @@ void Strat2Update(int si)
 
    int ct4=0;
    SE_OnTick(g_SysState[si].SE_H4,sym,ct4);
+
+   //--- vigilar mitigación en la vela actual (intrabar)
+   Strat2ComputeMitigation(si,false);
    Strat2RefreshCounts(si);
 }
 
 //--- ¿una zona está hoy visible? (misma regla que el conteo) --------
 bool Strat2IsVisible(int si,const Strat2OrderBlock &ob)
 {
+   if(ob.Mitigated) return false;
    string sym=g_Symbols[si].name;
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
    if(bid<=0.0 || !g_SysState[si].SE_H4.Valid) return false;
@@ -2525,17 +2596,41 @@ void DrawStrat2(int si)
    {
       for(int k=0;k<STRAT2_STORED_OBS;k++)
       { ObjectDelete(0,pfx+"OB"+IntegerToString(k));
-        ObjectDelete(0,pfx+"OB"+IntegerToString(k)+"_T"); }
+        ObjectDelete(0,pfx+"OB"+IntegerToString(k)+"_T");
+        ObjectDelete(0,pfx+"OBM"+IntegerToString(k));
+        ObjectDelete(0,pfx+"OBM"+IntegerToString(k)+"_T"); }
       return;
    }
 
    int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
+   int maxM=MathMin(maxL,4);      // mitigados: hasta 4 por lado para no saturar
+   datetime now=TimeCurrent();
+
+   //--- 1) zonas ya MITIGADAS: rectángulo extendido hasta el momento de
+   //       mitigación (gris; ya no cuentan como rebote válido)
+   int mb=0,ms=0;
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+   {
+      Strat2OrderBlock ob=g_SysState[si].ob2[k];
+      if(!ob.Active || !ob.Mitigated) continue;
+      if(ob.IsBullish){ if(mb>=maxM) continue; mb++; }
+      else            { if(ms>=maxM) continue; ms++; }
+
+      string nm=pfx+"OBM"+IntegerToString(k);
+      color gcc=C'105,105,125';
+      Strat2ObjRect(nm,ob.ZoneTop,ob.ZoneBottom,
+                    ob.GroupStart,ob.MitigateTime,gcc);
+      SE_ZoneLabel(nm+"_T",(ob.ZoneTop+ob.ZoneBottom)*0.5,
+                   ob.IsBullish?"MITIGADO COMPRA":"MITIGADO VENTA",gcc);
+   }
+
+   //--- 2) zonas VIGENTES (no mitigadas): rectángulo extendido hasta AHORA
    int cb=0,cs=0;
    for(int pass=0;pass<2 && (cb<maxL || cs<maxL);pass++)
       for(int k=0;k<g_SysState[si].ob2Count;k++)
       {
          Strat2OrderBlock ob=g_SysState[si].ob2[k];
-         if(!ob.Active) continue;
+         if(!ob.Active || ob.Mitigated) continue;
          if(pass==0 && !ob.InRange) continue;
          if(pass==1 && ob.InRange)  continue;
          if(!Strat2IsVisible(si,ob)) continue;
@@ -2545,7 +2640,7 @@ void DrawStrat2(int si)
          string nm=pfx+"OB"+IntegerToString(k);
          color cc=ob.IsBullish?C'0,190,95':C'230,85,55';
          Strat2ObjRect(nm,ob.ZoneTop,ob.ZoneBottom,
-                       ob.GroupStart,ob.GroupEnd,cc);
+                       ob.GroupStart,now,cc);
          SE_ZoneLabel(nm+"_T",(ob.ZoneTop+ob.ZoneBottom)*0.5,
                       ob.IsBullish?"REBOTE COMPRA (OB+FVG)":"REBOTE VENTA (OB+FVG)",cc);
       }
@@ -3096,7 +3191,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.45  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.46  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3442,9 +3537,10 @@ void BuildTabOperar()
                          DoubleToString(g_SysState[si].SE_H4.L2,dg),
                          DoubleToString(g_SysState[si].SE_H4.EQ,dg));
       else s2="S2 · SIN RANGO 4H";
-      string s2m=StringFormat("OBs: %d COMPRA (en rango %d) · %d VENTA (en rango %d)",
+      string s2m=StringFormat("OBs: %d COMPRA (rango %d) · %d VENTA (rango %d) · mitigados %d",
                               g_SysState[si].ob2Buys,g_SysState[si].ob2BuyRange,
-                              g_SysState[si].ob2Sells,g_SysState[si].ob2SellRange);
+                              g_SysState[si].ob2Sells,g_SysState[si].ob2SellRange,
+                              g_SysState[si].ob2Mitigated);
       if(g_SysState[si].ob2Outside)
          s2m+=" · PRECIO FUERA RANGO → OB histórico activos";
       else
@@ -4825,7 +4921,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.45           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.46           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4866,7 +4962,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.45 === X=",InpXActivacion,
+   Print("=== DIAG v8.46 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4991,7 +5087,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.45 | Símbolos:",g_SymCount,
+   Print("EA v8.46 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5008,7 +5104,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.45 cerrado | Razón:",reason);
+   Print("EA v8.46 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
