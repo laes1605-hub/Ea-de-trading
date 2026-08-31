@@ -1,6 +1,10 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.43** (**una sola estrategia**: estructura de líneas L1-L4 en H1 + apertura por confluencia en M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base** + **fase virtual→LIVE con conteo idéntico a LIVE** + **estado virtual por par en el panel**).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.44**:
+
+- **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
+- **Estrategia 2 (en construcción — marcado visual)** — zona **L1-L2 en 4H** + su **50%**, y los **order blocks de 1H** que aparecen dentro de esa zona (OB de compra en la zona de compras, OB de venta en la zona de ventas).
+- Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
 ## Archivos
 
@@ -18,7 +22,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.43)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1 + **fix del bucle (limit solo del lado correcto del 50%)**. |
+| `trabajador multichart.mq5` | **Versión actual (v8.44)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3, con fix del 50%) + **Estrategia 2 en marcado visual (zona 4H L1-L2 + 50% + order blocks 1H)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -60,6 +64,21 @@ El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógic
 - **Trigger/swap al cierre** = si durante la reacción **L3>L1** o **L4<L2**, se marca la ruptura como pendiente; al cierre se consolida **L1=L3**, **L2=L4**, se ocultan L3/L4 y el bias queda en la dirección del rompimiento. Si una vela toca ambos extremos, se respeta el último lado roto por tick; si solo hay OHLC, se usa el sentido del cuerpo.
 
 > Nota: el motor del TF del gráfico (L1-L4 azules L1/L2, magenta/rojo L3/L4) se mantiene **solo como referencia visual**; la estructura que manda la operativa es la de H1.
+
+## Estrategia 2 (v8.44) — zona 4H (L1-L2 + 50%) + order blocks 1H (marcado visual)
+
+La **Estrategia 2** usa la **misma lógica de líneas L1-L4**, pero en la temporalidad **4H**, y de momento **solo marca en el gráfico** (aún no abre órdenes):
+
+1. **Zona 4H**: el motor de líneas L1-L4 corre en `InpStrat2TF` (por defecto `PERIOD_H4`) → **L1/L2** = techo/suelo del rango y **50% = EQ** (punto medio).
+2. **Mitades de la zona**: la **zona de COMPRAS** es la mitad **inferior** (de L2 al 50%) y la **zona de VENTAS** la mitad **superior** (del 50% a L1).
+3. **Order blocks en 1H dentro de la zona**: en `InpStrat2OBTF` (por defecto `PERIOD_H1`) se escanean las velas y se marcan las de **origen**:
+   - **OB de COMPRA** = vela **bajista** cuyo mínimo cae en la zona de compras → ahí el precio puede **rebotar para una compra**.
+   - **OB de VENTA** = vela **alcista** cuyo máximo cae en la zona de ventas → ahí el precio puede **rebotar para una venta**.
+4. Se guardan hasta `InpStrat2MaxOBs` (5) por lado, de las velas más recientes hacia atrás (`InpStrat2Lookback` = 150 velas 1H). Se re-escanean al cerrar vela 4H o 1H.
+
+**Dibujo:** líneas cian (`ZONA H4 L1`/`L2`), 50% dorado, rectángulos de zona (verde oscuro COMPRAS / rojo oscuro VENTAS) y rectángulos por OB (verde OB COMPRA / rojo OB VENTA) con su etiqueta. En la pestaña **OPERAR** del panel se muestra el rango 4H actual y cuántos OB de compra/venta hay en la zona.
+
+**Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5`, `InpStrat2Lookback=150`.
 
 ## Líneas visibles en el gráfico
 
