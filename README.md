@@ -10,6 +10,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `trabajador v8.38 CAPITAL 3MODOS.mq5` | **Versión 8.38 (commit `104251f`)** — DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA H1/M3), gestión de Asistente 3 por par, panel MULTI-PAR y **3 modos de capital base** (dinámica / fija / % cuenta). Aún incluía `InpUseVirtualBeforeLive`. |
 | `ea v8.38 CAPITAL 3MODOS.txt` | Copia en texto plano de `trabajador v8.38 CAPITAL 3MODOS.mq5` (tal como estaba el `ea.txt` en ese commit). |
 | `README v8.38 CAPITAL 3MODOS.md` | README original de esa versión. |
+| `versiones - fechas y horas.md` | **Todas las versiones con fecha y hora de commit** (autor + commit, zona original y hora de Colombia) — tabla completa por versión y resumen de lanzamiento. |
 | `versiones 8.37/` | **TODAS las versiones 8.37** — la cadena de desarrollo (V01–V15, commits `338c0fb`→`52dae62`, PRs #8/#9/#10) con cada `.mq5` + `.txt` byte a byte y un `INDICE.md` con fecha, commit y cambio. V15 = `trabajador INICIAL v8.37.mq5`. |
 | `trabajador v8.36 MULTI-PAR.mq5` | **Versión 8.36 (commit `2531c9b`)** — DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA H1/M3), **panel MULTI-PAR v8.36** (tester visual + gráfico real), sin la gestión de Asistente 3 por par (eso llegó en v8.37). |
 | `ea v8.36 MULTI-PAR.txt` | Copia en texto plano de `trabajador v8.36 MULTI-PAR.mq5` (tal como estaba el `ea.txt` en ese commit). |
