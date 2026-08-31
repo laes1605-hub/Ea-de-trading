@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.47"
+#property version   "8.48"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -2407,31 +2407,39 @@ void Strat2ComputeMitigation(int si,bool full)
 
    for(int k=0;k<g_SysState[si].ob2Count;k++)
    {
-      Strat2OrderBlock &ob=g_SysState[si].ob2[k];
-      if(!ob.Active || ob.Mitigated) continue;
+      //--- MQL5 no permite referencia a un elemento de array anidado;
+      //    se accede por índice directamente.
+      if(!g_SysState[si].ob2[k].Active) continue;
+      if(g_SysState[si].ob2[k].Mitigated) continue;
 
       if(full)
       {
          for(int i=0;i<=look;i++)
          {
             datetime t=(datetime)iTime(sym,tf,i);
-            if(t<ob.GroupEnd) continue;      // solo velas posteriores al grupo
+            if(t<g_SysState[si].ob2[k].GroupEnd) continue;   // solo velas posteriores al grupo
             double hi=iHigh(sym,tf,i), lo=iLow(sym,tf,i);
             bool hit=false;
-            if(ob.IsBullish) hit=(lo<=ob.ZoneTop);      // cruza el imbalance (compra)
-            else             hit=(hi>=ob.ZoneBottom);   // cruza el imbalance (venta)
+            if(g_SysState[si].ob2[k].IsBullish)
+               hit=(lo<=g_SysState[si].ob2[k].ZoneTop);      // cruza el imbalance (compra)
+            else
+               hit=(hi>=g_SysState[si].ob2[k].ZoneBottom);   // cruza el imbalance (venta)
             if(hit)
-            { ob.Mitigated=true; ob.MitigateTime=t; break; }
+            { g_SysState[si].ob2[k].Mitigated=true;
+              g_SysState[si].ob2[k].MitigateTime=t; break; }
          }
       }
       else
       {
          datetime t0=TimeCurrent();
          bool hit=false;
-         if(ob.IsBullish) hit=(lac<=ob.ZoneTop);
-         else             hit=(hac>=ob.ZoneBottom);
-         if(hit && t0>=ob.GroupEnd)
-         { ob.Mitigated=true; ob.MitigateTime=t0; }
+         if(g_SysState[si].ob2[k].IsBullish)
+            hit=(lac<=g_SysState[si].ob2[k].ZoneTop);
+         else
+            hit=(hac>=g_SysState[si].ob2[k].ZoneBottom);
+         if(hit && t0>=g_SysState[si].ob2[k].GroupEnd)
+         { g_SysState[si].ob2[k].Mitigated=true;
+           g_SysState[si].ob2[k].MitigateTime=t0; }
       }
    }
 }
@@ -3194,7 +3202,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.47  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.48  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -4924,7 +4932,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.47           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.48           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4965,7 +4973,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.47 === X=",InpXActivacion,
+   Print("=== DIAG v8.48 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5090,7 +5098,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.47 | Símbolos:",g_SymCount,
+   Print("EA v8.48 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5107,7 +5115,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.47 cerrado | Razón:",reason);
+   Print("EA v8.48 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
