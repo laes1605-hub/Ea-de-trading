@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.42"
+#property version   "8.43"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -355,6 +355,8 @@ struct SymbolSystemState
    datetime confArmSellTime;
    double   confEntryBuy;    // 50% del rango M3 CONGELADO en el CHoCH para compra (0 = ninguno)
    double   confEntrySell;   // 50% del rango M3 CONGELADO en el CHoCH para venta (0 = ninguno)
+   bool     confWaitBuy;     // 50% congelado: espera que el precio quede por ENCIMA para colocar la LIMIT
+   bool     confWaitSell;    // 50% congelado: espera que el precio quede por DEBAJO para colocar la LIMIT
    bool     confVPendBuy;    // orden limit VIRTUAL de compra activa
    double   confVPendBuyPrice;
    bool     confVPendSell;   // orden limit VIRTUAL de venta activa
@@ -506,7 +508,12 @@ bool IsAnyMagic(long magic)
 }
 
 long GetStrategyMagic(int symIdx, int sid)
-{ return InpMagicNumber+(long)(symIdx*10)+(long)sid; }
+{
+   //--- la estrategia única (confluencia) conserva el offset +1 que tenían
+   //    las versiones anteriores: así se siguen gestionando las órdenes y
+   //    posiciones LIVE ya existentes (no quedan huérfanas al actualizar).
+   return InpMagicNumber+(long)(symIdx*10)+((sid==STRAT_CONFLUENCIA)?1:0);
+}
 
 long MagicManual(int symIdx)
 { return InpMagicNumber+(long)(symIdx*10)+9; }
@@ -947,6 +954,7 @@ void InitSystemState(int si)
    g_SysState[si].confArmedBuy=false;  g_SysState[si].confArmedSell=false;
    g_SysState[si].confArmBuyTime=0;    g_SysState[si].confArmSellTime=0;
    g_SysState[si].confEntryBuy=0.0;    g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confWaitBuy=false;   g_SysState[si].confWaitSell=false;
    g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0;
 
@@ -1043,6 +1051,8 @@ void SaveStateToFile()
      FileWriteString(h,sp+"CONF_ARM_ST=" +IntegerToString((long)g_SysState[si].confArmSellTime)+"\n");
      FileWriteString(h,sp+"CONF_ENTRY_B="+DoubleToString(g_SysState[si].confEntryBuy,8)    +"\n");
      FileWriteString(h,sp+"CONF_ENTRY_S="+DoubleToString(g_SysState[si].confEntrySell,8)   +"\n");
+     FileWriteString(h,sp+"CONF_WAIT_B=" +(g_SysState[si].confWaitBuy?"1":"0")             +"\n");
+     FileWriteString(h,sp+"CONF_WAIT_S=" +(g_SysState[si].confWaitSell?"1":"0")            +"\n");
      FileWriteString(h,sp+"CONF_VPEND_B="+(g_SysState[si].confVPendBuy?"1":"0")            +"\n");
      FileWriteString(h,sp+"CONF_VPEND_BP="+DoubleToString(g_SysState[si].confVPendBuyPrice,8)+"\n");
      FileWriteString(h,sp+"CONF_VPEND_S="+(g_SysState[si].confVPendSell?"1":"0")           +"\n");
@@ -1098,6 +1108,8 @@ void LoadStateFromFile()
          else if(rest=="CONF_ARM_ST")  g_SysState[si].confArmSellTime=(datetime)StringToInteger(val);
          else if(rest=="CONF_ENTRY_B") g_SysState[si].confEntryBuy=StringToDouble(val);
          else if(rest=="CONF_ENTRY_S") g_SysState[si].confEntrySell=StringToDouble(val);
+         else if(rest=="CONF_WAIT_B")  g_SysState[si].confWaitBuy=(StringToInteger(val)>0);
+         else if(rest=="CONF_WAIT_S")  g_SysState[si].confWaitSell=(StringToInteger(val)>0);
          else if(rest=="CONF_VPEND_B") g_SysState[si].confVPendBuy=(StringToInteger(val)>0);
          else if(rest=="CONF_VPEND_BP")g_SysState[si].confVPendBuyPrice=StringToDouble(val);
          else if(rest=="CONF_VPEND_S") g_SysState[si].confVPendSell=(StringToInteger(val)>0);
@@ -1755,6 +1767,7 @@ void ConfluenciaResetState(int si)
    g_SysState[si].confArmedBuy=false;   g_SysState[si].confArmedSell=false;
    g_SysState[si].confArmBuyTime=0;     g_SysState[si].confArmSellTime=0;
    g_SysState[si].confEntryBuy=0.0;     g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confWaitBuy=false;    g_SysState[si].confWaitSell=false;
    g_SysState[si].confVPendBuy=false;   g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false;  g_SysState[si].confVPendSellPrice=0.0;
    ConfluenciaDeleteRealPendings(si);
@@ -1827,23 +1840,60 @@ void ConfluenciaProcessChoch(int si)
    bool sellSide=(g_SysState[si].SE_H1.Valid &&
                   g_SysState[si].SE_H1.Bias==BIAS_BEARISH);   // H1 bajista → solo ventas
 
-   //--- COMPRA: CHoCH bajista→alcista a favor de la estructura H1
+   //--- COMPRA: CHoCH bajista→alcista a favor de la estructura H1.
+   //    SOLO se congela el 50% aquí; la LIMIT se coloca cuando el precio
+   //    quede por ENCIMA del nivel (ver ConfluenciaTryPlace): así la orden
+   //    es siempre llenable y no se generan virtuales que pierden al instante.
    if(dir>0 && buySide && g_SysState[si].confArmedBuy &&
       t>=g_SysState[si].confArmBuyTime)
    {
       g_SysState[si].confEntryBuy=mid;             // nivel CONGELADO en el CHoCH
-      if(ConfluenciaPlacePending(si,+1,mid))
-         Print("CONFL [",sym,"] CHoCH M3 bajista→alcista → 50% de L1-L2 M3 congelado en ",
-               DoubleToString(mid,dg)," → LIMIT COMPRA");
+      g_SysState[si].confWaitBuy=true;             // espera del lado correcto
+      g_SysState[si].confWaitSell=false;
+      Print("CONFL [",sym,"] CHoCH M3 bajista→alcista → 50% de L1-L2 M3 CONGELADO en ",
+            DoubleToString(mid,dg)," → esperando lado COMPRA (precio encima del 50%)");
    }
    //--- VENTA: CHoCH alcista→bajista a favor de la estructura H1
    else if(dir<0 && sellSide && g_SysState[si].confArmedSell &&
            t>=g_SysState[si].confArmSellTime)
    {
       g_SysState[si].confEntrySell=mid;            // nivel CONGELADO en el CHoCH
-      if(ConfluenciaPlacePending(si,-1,mid))
-         Print("CONFL [",sym,"] CHoCH M3 alcista→bajista → 50% de L1-L2 M3 congelado en ",
-               DoubleToString(mid,dg)," → LIMIT VENTA");
+      g_SysState[si].confWaitSell=true;            // espera del lado correcto
+      g_SysState[si].confWaitBuy=false;
+      Print("CONFL [",sym,"] CHoCH M3 alcista→bajista → 50% de L1-L2 M3 CONGELADO en ",
+            DoubleToString(mid,dg)," → esperando lado VENTA (precio debajo del 50%)");
+   }
+}
+
+//--- Coloca la LIMIT cuando el precio está del lado correcto del 50% congelado.
+//    COMPRA: precio por ENCIMA del nivel (limit abajo → se llena en el retroceso).
+//    VENTA : precio por DEBAJO del nivel (limit arriba → se llena en el rebote).
+void ConfluenciaTryPlace(int si)
+{
+   if(!InpUseConfluencia)                                   return;
+   if(!InpAllowConfluOrders)                                return;
+   if(g_SysState[si].strategies[STRAT_CONFLUENCIA].cbPaused) return;
+   if(HasAnyPositionSymbol(si))
+   { g_SysState[si].confWaitBuy=false; g_SysState[si].confWaitSell=false; return; }
+   if(ConfluenciaHasPending(si)) return;   // ya hay una limit o virtual en curso
+
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0) return;
+
+   //--- COMPRA: solo si el precio ya está POR ENCIMA del 50% congelado
+   if(g_SysState[si].confWaitBuy && bid>g_SysState[si].confEntryBuy)
+   {
+      if(ConfluenciaPlacePending(si,+1,g_SysState[si].confEntryBuy))
+      { g_SysState[si].confWaitBuy=false;
+        Print("CONFL [",sym,"] precio encima del 50% congelado → LIMIT COMPRA colocada"); }
+   }
+   //--- VENTA: solo si el precio ya está POR DEBAJO del 50% congelado
+   else if(g_SysState[si].confWaitSell && bid<g_SysState[si].confEntrySell)
+   {
+      if(ConfluenciaPlacePending(si,-1,g_SysState[si].confEntrySell))
+      { g_SysState[si].confWaitSell=false;
+        Print("CONFL [",sym,"] precio debajo del 50% congelado → LIMIT VENTA colocada"); }
    }
 }
 
@@ -2020,6 +2070,8 @@ void ConfluenciaOnTradeClosed(int si)
 {
    g_SysState[si].confEntryBuy=0.0;
    g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confWaitBuy=false;
+   g_SysState[si].confWaitSell=false;
 
    if(!g_SysState[si].SE_H1.Valid) return;
    string sym=g_Symbols[si].name;
@@ -2046,10 +2098,13 @@ void UpdateConfluencia(int si)
    if(HasAnyPositionSymbol(si))
    {
       g_SysState[si].m3ChochDir=0;
+      g_SysState[si].confWaitBuy=false;
+      g_SysState[si].confWaitSell=false;
       return;
    }
 
    ConfluenciaProcessChoch(si);
+   ConfluenciaTryPlace(si);
    ConfluenciaCheckVirtualFills(si);
 }
 
@@ -2677,7 +2732,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.42  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.43  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3000,6 +3055,8 @@ void BuildTabOperar()
    string missSt = "";
    if(g_SysState[si].hasLive) missSt = "TIENE-ORDEN";
    else if(limB||limS)        missSt = "LIMIT PUESTA";
+   else if(g_SysState[si].confWaitBuy)  missSt = "50% CONGELADO · ESPERA PRECIO (compra)";
+   else if(g_SysState[si].confWaitSell) missSt = "50% CONGELADO · ESPERA PRECIO (venta)";
    else if(zB && h1Str=="ALC") missSt = "ESPERA CHoCH M3 (compra)";
    else if(zS && h1Str=="BAJ") missSt = "ESPERA CHoCH M3 (venta)";
    else if(zB && h1Str!="ALC") missSt = "FALTA: H1 alcista";
@@ -3720,6 +3777,14 @@ void MPFillSnapshot(int si,MPSnapshot &s)
    { s.state=StringFormat("LIMIT VIRTUAL S %s",
                           DoubleToString(g_SysState[si].confVPendSellPrice,s.dg));
      s.stateClr=clrOrangeRed; s.prio=2; }
+   else if(g_SysState[si].confWaitBuy)
+   { s.state=StringFormat("50%% CONGELADO %s · ESPERA PRECIO",
+                          DoubleToString(g_SysState[si].confEntryBuy,s.dg));
+     s.stateClr=clrYellow; s.prio=1; }
+   else if(g_SysState[si].confWaitSell)
+   { s.state=StringFormat("50%% CONGELADO %s · ESPERA PRECIO",
+                          DoubleToString(g_SysState[si].confEntrySell,s.dg));
+     s.stateClr=clrYellow; s.prio=1; }
    else if(s.zBuy)
    { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ZONA C ✓ CHoCH M3"
                                                        :"ZONA C ✓ H1 NO ALCISTA";
@@ -4081,6 +4146,8 @@ void MPVirtStratLine(int x,int y,int w,int si,int st,int thr)
      txt=StringFormat("pérd %d/%d · falta %d",
                       losses,MathMax(1,InpXActivacion),falta);
      if(S.virtualActive) txt+=" · vOPEN";
+     if(g_SysState[si].confWaitBuy || g_SysState[si].confWaitSell)
+        txt+=" · ESPERA PRECIO (50%)";
      tc=(falta<=1)?clrOrange:(falta<=2)?clrDodgerBlue:C'150,170,210'; }
    MPText(x+42+bw+6,y+4,txt,tc,false,7);
 }
@@ -4369,7 +4436,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.42           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.43           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4410,7 +4477,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.42 === X=",InpXActivacion,
+   Print("=== DIAG v8.43 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -4535,7 +4602,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.42 | Símbolos:",g_SymCount,
+   Print("EA v8.43 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4552,7 +4619,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.42 cerrado | Razón:",reason);
+   Print("EA v8.43 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+

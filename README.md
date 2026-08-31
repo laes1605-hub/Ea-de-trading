@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.42** (**una sola estrategia**: estructura de líneas L1-L4 en H1 + apertura por confluencia en M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base** + **fase virtual→LIVE con conteo idéntico a LIVE** + **estado virtual por par en el panel**).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.43** (**una sola estrategia**: estructura de líneas L1-L4 en H1 + apertura por confluencia en M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **3 modos de capital base** + **fase virtual→LIVE con conteo idéntico a LIVE** + **estado virtual por par en el panel**).
 
 ## Archivos
 
@@ -9,13 +9,13 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `trabajador INICIAL v8.37.mq5` | **Código inicial del proyecto (v8.37, commit `b9df22f`)** — tal como estaba antes de empezar este chat: DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), base dinámica de capital, panel MULTI-PAR, gestión de riesgo de Asistente 3 por par. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.42)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.43)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1 + **fix del bucle (limit solo del lado correcto del 50%)**. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
 
-## Estrategia única (v8.42): estructura de líneas H1 + confluencia M3
+## Estrategia única (v8.43): estructura de líneas H1 + confluencia M3
 
 El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógica de líneas **L1-L4** (la misma de siempre) y la **apertura** se hace con la lógica de confluencia. No hay una segunda estrategia de entrada.
 
@@ -28,12 +28,13 @@ El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógic
 2. **Toque de zona**: con solo tocar la zona se activa la búsqueda (aunque el precio luego salga de ella; un cambio de estructura H1 reinicia zonas y exige un nuevo toque).
 3. **Estructura de entrada (M3)** — el motor de líneas L1-L4 de M3 también corre **siempre**:
    - Se espera un **cambio de estructura (CHoCH) en M3 a favor de la estructura de H1** (bajista→alcista si H1 es alcista; alcista→bajista si H1 es bajista).
-4. **Entrada**: al generarse el CHoCH de M3, el rango para medir el **50% es el rango L1-L2 del M3 en ese momento** (el nivel queda **CONGELADO**) y allí se coloca la **orden LIMIT** (BUY/SELL) con el SL/TP del EA.
+4. **Entrada**: al generarse el CHoCH de M3, el rango para medir el **50% es el rango L1-L2 del M3 en ese momento** (el nivel queda **CONGELADO**). La **orden LIMIT** (BUY/SELL) con el SL/TP del EA **solo se coloca cuando el precio está del lado correcto del 50%** (por encima para compras, por debajo para ventas); si aún no está, el EA espera el cruce. Así la order siempre es llenable y no se generan virtuales que pierden al instante.
 5. **Gestión**: la misma de siempre — tabla de riesgo, nivel 1-20 por par, trailing 1:2 automático, virtual→LIVE, circuit breaker.
 
 **Reglas de órdenes:**
 
 - **Solo puede haber una posición abierta por par** y **una limit pendiente por par**. Con posición abierta no se coloca nada y los CHoCH que llegan caducan.
+- **La LIMIT solo se coloca con el precio del lado correcto del 50% congelado** (v8.43): el CHoCH congela el 50% y marca una espera; cuando el precio cruza al lado correcto (por encima para COMPRA / por debajo para VENTA) se coloca la limit en ese nivel. Esto evita que la limit quede "fuera de mercado" (que en virtual se llenara al instante y perdiera, disparando el LIVE y el "bucle"; y que el broker la rechazara en LIVE por estar pegada al precio).
 - **Al abrirse una posición se eliminan el resto de órdenes limit** pendientes del par.
 - Si la orden se ejecutó y la posición **se perdió estando el precio aún en la zona**, puede buscar otra entrada (con un CHoCH nuevo). Si **ya no está en la zona**, no busca hasta que **vuelva a tocarla**.
 - Un **cambio de estructura H1** reinicia las zonas y exige un nuevo toque.
@@ -86,7 +87,7 @@ Panel **organizado y legible con una fila por par**, dibujado sobre un único bi
    | EURUSD | ALC | BAJ | C | B 1.08452 | ▲ 0.02 1.0845 | 3 | 0.03 | +1.25 | POSICIÓN ABIERTA |
 
    - Fila **verde** = posición abierta · **azul** = limit pendiente · **roja** = pausa por circuit breaker.
-   - **ESTADO** dice qué falta en lenguaje claro: `ESPERA CRUCE 50% (C)`, `ZONA C ✓ CHoCH M3`, `ZONA C ✓ H1 NO ALCISTA`, `FUERA DE ZONA`, `LIMIT B 1.08452`, `POSICIÓN ABIERTA`.
+   - **ESTADO** dice qué falta en lenguaje claro: `50% CONGELADO 1.08452 · ESPERA PRECIO`, `ZONA C ✓ CHoCH M3`, `ZONA C ✓ H1 NO ALCISTA`, `FUERA DE ZONA`, `LIMIT B 1.08452`, `POSICIÓN ABIERTA`.
 4. **Mini-gráficos por par** (hasta 6): precio del TF de entrada (M3) con **sus propias líneas** — L1/L2/L3/L4 del motor, rango H1 y 50% H1, entrada limit congelada y ENTRADA/SL/TP de la posición. Cada par tiene su propia escala, así que **todos los pares abiertos se ven con sus líneas aunque el tester solo muestre un gráfico**.
 5. **Leyenda** de colores al pie.
 
