@@ -1,6 +1,6 @@
 # Índice — todas las versiones 8.37 del EA
 
-La cadena de desarrollo de la **v8.37** dejó **15 versiones distintas del EA** (además de 3 merges que no cambian el código). Cada una está extraída **byte a byte** del commit indicado (la hora es la del commit, convertida a Bogotá): el `.mq5` (LF, listo para MetaEditor) y el `.txt` (tal cual estaba el `ea.txt` histórico en ese commit, con CRLF).
+La cadena de desarrollo de la **v8.37** dejó **15 versiones distintas del EA** + el **merge final `b9df22f`** (V16 = la v8.37 FINAL, estado del repo al iniciar este chat). Cada una está extraída **byte a byte** del commit indicado (la hora es la del commit, convertida a Bogotá): el `.mq5` (LF, listo para MetaEditor) y el `.txt` (tal cual estaba el `ea.txt` histórico en ese commit, con CRLF).
 
 | # | Commit | Fecha | **Hora de commit (Bogotá UTC−5)** | PR | Commit / cambio |
 |---|---|---|---|---|---|
@@ -19,10 +19,11 @@ La cadena de desarrollo de la **v8.37** dejó **15 versiones distintas del EA** 
 | V13 | `8983980` | 2026-08-30 | **2026-08-30 13:00:52** | PR #10 | Reforzar conteo de cierres y ampliar panel |
 | V14 | `4ed7f16` | 2026-08-30 | **2026-08-30 13:31:27** | PR #10 | Reforzar trailing y hacer visible contador NTV |
 | V15 | `52dae62` | 2026-08-30 | **2026-08-30 13:33:11** | PR #10 | Procesar TP real tambien en modo directo |
+| V16 | `b9df22f` | 2026-08-30 | **2026-08-30 14:07:24** | PR #10 (merge final) | Merge pull request #10 — **v8.37 FINAL** (estado del repo al iniciar este chat) |
 
 ## Orden de uso recomendado
 
-- **V15** (`52dae62`, merge PR #10 `b9df22f`) = **la v8.37 final**, y es exactamente la que ya estaba guardada en raíz como `trabajador INICIAL v8.37.mq5` / `ea INICIAL v8.37.txt` (el estado del repo al iniciar este chat). Usa esta si quieres **la 8.37 definitiva**.
+- **V16** (`b9df22f`, merge PR #10) = **la v8.37 FINAL**: estado exacto del repo al iniciar este chat. Su `.mq5` es **idéntico byte a byte** al V15 (`52dae62`) y a los archivos de raíz `trabajador INICIAL v8.37.mq5` / `ea INICIAL v8.37.txt`; se añade con el nombre del commit para que se identifique sin dudas. Incluye también el **README** de ese estado (`V16_*.README.md`). Usa esta si quieres **la 8.37 definitiva**.
 - **V01** (`338c0fb`) = la primera v8.37 en `main` (gestión de Asistente 3 con nivel POR PAR).
 - V02–V04 = mejoras aplicadas sobre V01 (PR #9): fix de compilación, nivel por par con solo operaciones reales y cierre semanal.
 - V05–V15 = mejoras de PR #10: conteo solo con operaciones reales, omisión de cierres virtuales en contadores, una posición por par, fase virtual configurable, clasificación de SL protegido, trailing reforzado y TP real en modo directo.
