@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.47**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.49**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
 - **Estrategia 2 (marcado visual)** — rango **L1-L2 en 4H** + su **50%**, y **order blocks históricos con confirmación de imbalance**: última vela bajista antes de un impulso al alza (compras) o última vela alcista antes de un impulso a la baja (ventas), confirmados por un FVG/imbalance. Se marcan **por debajo del precio** (rebote a compra) y **por encima del precio** (rebote a venta); los del rango tienen prioridad y los externos se activan cuando el precio sobrepasa L1/L2.
@@ -22,7 +22,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.47)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3, con fix del 50%) + **Estrategia 2 en marcado visual (rango 4H L1-L2 + 50% + order blocks históricos OB+imbalance)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.49)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3, con fix del 50%) + **Estrategia 2 en marcado visual (rango 4H L1-L2 + 50% + order blocks históricos OB+imbalance)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -65,7 +65,7 @@ El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógic
 
 > Nota: el motor del TF del gráfico (L1-L4 azules L1/L2, magenta/rojo L3/L4) se mantiene **solo como referencia visual**; la estructura que manda la operativa es la de H1.
 
-## Estrategia 2 (v8.47) — rango 4H + order blocks históricos (OB + imbalance) + extensión hasta mitigación — marcado visual
+## Estrategia 2 (v8.49) — rango 4H + OB+imbalance + confirmación CHoCH M3 · 50% M3 congelado
 
 La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de líneas), pero los order blocks **ya no se buscan dentro del rango**: se buscan **históricos, donde el precio pueda rebotar**, estén donde estén.
 
@@ -94,6 +94,16 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 - Si la zona **ya se mitigó**: el rectángulo termina en el momento en que se cruzó el imbalance y se dibuja en **gris** (`MITIGADO COMPRA` / `MITIGADO VENTA`); ya no cuenta como rebote válido.
 - Si **aún no se mitiga**: el rectángulo se extiende **hasta el presente** (color vivo) y sigue siendo candidato de rebote.
 - En el panel (pestaña OPERAR): rango 4H, `OBs: N COMPRA (rango M) · N VENTA (rango M) · mitigados M` y si el precio está EN o FUERA del rango.
+
+**Flujo de entrada (v8.49):** la Estrategia 2 usa la **misma confirmación que la Estrategia 1** (líneas L1-L4):
+
+1. **Toque de la zona**: cuando el precio entra en el rectángulo de un OB válido (no mitigado), la zona queda **ARMADA** y comienza la búsqueda de un **cambio de estructura en M3**.
+2. **CHoCH a favor del rebote**:
+   - **OB de VENTA** → debe haber un CHoCH **alcista → bajista** (dir −) en M3.
+   - **OB de COMPRA** → debe haber un CHoCH **bajista → alcista** (dir +) en M3.
+3. **Entrada congelada**: al confirmarse el CHoCH, el precio de entrada se pone en el **50% del rango L1-L2 de M3** en ese momento (igual que la Estrategia 1) y se **CONGELA**; se dibuja la línea `ENTRADA S2 COMPRA/VENTA (50% M3)`.
+4. Se elige **una zona por lado** (prioridad: dentro del rango 4H y la más reciente); si la zona se **mitiga** antes (cruza el imbalance), la búsqueda y la entrada congelada se cancelan.
+5. El estado se ve en el gráfico (`TOCADA → CHoCH M3` / `50% M3 CONGELADO`) y en el panel: `armados N · 50% M3 N · mitigados M`. Aún **no coloca órdenes** (siguiente paso: virtual/LIVE como la Estrategia 1).
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas).
 

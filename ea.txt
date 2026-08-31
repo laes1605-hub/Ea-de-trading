@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.48"
+#property version   "8.49"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -353,6 +353,8 @@ struct StructureEngine
 //    la mitigación ocurre cuando el precio CRUZA el imbalance (no lo
 //    respeta), no cuando toca el OB. Si no se ha mitigado, se extiende
 //    hasta el momento actual.
+//    FLUJO DE ENTRADA: 1) tocar la zona → Armed; 2) CHoCH M3 a favor del
+//    rebote → 50% de L1-L2 M3 CONGELADO (EntryPrice) como la Estrategia 1.
 struct Strat2OrderBlock
 {
    bool     Active;
@@ -365,6 +367,12 @@ struct Strat2OrderBlock
    datetime FoundTime;          // para ordenar por cercanía (más reciente primero)
    bool     Mitigated;          // el precio CRUZÓ el imbalance (ya no lo respeta)
    datetime MitigateTime;       // momento exacto en que se cruzó el imbalance
+   //--- flujo de entrada (confirmación CHoCH M3)
+   bool     Armed;              // zona tocada → búsqueda de CHoCH M3 activa
+   datetime ArmedTime;          // momento del toque
+   bool     EntryFrozen;        // CHoCH a favor → 50% L1-L2 M3 congelado
+   double   EntryPrice;         // nivel de entrada (50% M3) CONGELADO
+   datetime EntryTime;          // momento en que se congeló
 };
 
 struct SymbolSystemState
@@ -391,6 +399,12 @@ struct SymbolSystemState
    int                  ob2SellRange;   // de las visibles, cuántas están DENTRO del rango 4H
    bool                 ob2Outside;     // el precio está FUERA del rango (L1-L2) → OB externos activos
    int                  ob2Mitigated;   // zonas OB ya mitigadas (el precio ya las tocó)
+   int                  ob2Armed;       // zonas tocadas → esperando CHoCH M3
+   int                  ob2Frozen;      // zonas con 50% M3 congelado (entrada lista)
+
+   //--- CHoCH de M3 para la ESTRATEGIA 2 (independiente del de la Estrategia 1)
+   int      m3ChochDir2;    // CHoCH de M3 pendiente de procesar para Estrategia 2 (+1/-1)
+   datetime m3ChochTime2;   // momento del CHoCH de M3 para Estrategia 2
 
    //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
    int      m3ChochDir;      // CHoCH de M3 pendiente de procesar (+1/-1)
@@ -1011,6 +1025,10 @@ void InitSystemState(int si)
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
    g_SysState[si].ob2Mitigated=0;
+   g_SysState[si].ob2Armed=0;
+   g_SysState[si].ob2Frozen=0;
+   g_SysState[si].m3ChochDir2=0;
+   g_SysState[si].m3ChochTime2=0;
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
    g_SysState[si].m3ChochDir=0;        g_SysState[si].m3ChochTime=0;
@@ -1716,12 +1734,14 @@ void UpdateStructureState(int si)
 
    if(!g_SysState[si].SE.Valid) SE_Init(g_SysState[si].SE,sym,PERIOD_CURRENT);
 
+   //--- SE_M3 se comparte entre Estrategia 1 y Estrategia 2: hay que
+   //    actualizarlo si cualquiera de las dos está activa.
    bool confOn=InpUseConfluencia;
+   bool s2On  =InpUseStrat2;
    if(confOn)
-   {
       if(!g_SysState[si].SE_H1.Valid) SE_Init(g_SysState[si].SE_H1,sym,InpConfTFSuperior);
+   if(confOn || s2On)
       if(!g_SysState[si].SE_M3.Valid) SE_Init(g_SysState[si].SE_M3,sym,InpConfTFEntrada);
-   }
 
    //--- vela del TF del gráfico nueva → actualizar solo el dibujo
    datetime bt=(datetime)SeriesInfoInteger(sym,PERIOD_CURRENT,SERIES_LASTBAR_DATE);
@@ -1748,7 +1768,7 @@ void UpdateStructureState(int si)
          }
       }
 
-      //--- vela del TF de entrada nueva → confirmación (Estrategia 1)
+      //--- vela del TF de entrada nueva → confirmación (Estrategias 1 y 2)
       datetime te=(datetime)SeriesInfoInteger(sym,InpConfTFEntrada,SERIES_LASTBAR_DATE);
       if(te!=g_SysState[si].m3LastBar)
       {
@@ -1759,8 +1779,11 @@ void UpdateStructureState(int si)
             SE_OnClose(g_SysState[si].SE_M3,sym,c3,t3);
             if(c3!=0)
             {
-               g_SysState[si].m3ChochDir=c3;
+               //--- el mismo CHoCH se reparte a ambas estrategias
+               g_SysState[si].m3ChochDir =c3;
                g_SysState[si].m3ChochTime=TimeCurrent();
+               g_SysState[si].m3ChochDir2=c3;
+               g_SysState[si].m3ChochTime2=TimeCurrent();
             }
          }
       }
@@ -1774,11 +1797,12 @@ void UpdateStructureState(int si)
    {
       int ch=0;
       SE_OnTick(g_SysState[si].SE_H1,sym,ch);
+      ConfluenciaUpdateArming(si);
+   }
+   if(confOn || s2On)
+   {
       int cm=0;
       SE_OnTick(g_SysState[si].SE_M3,sym,cm);
-
-      //--- activación de la búsqueda por toque de zona 50% H1
-      ConfluenciaUpdateArming(si);
    }
 
    //--- Estrategia 2: zona 4H (L1-L2 + 50%) y order blocks 1H
@@ -2297,6 +2321,10 @@ void Strat2ResetState(int si)
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
    g_SysState[si].ob2Mitigated=0;
+   g_SysState[si].ob2Armed=0;
+   g_SysState[si].ob2Frozen=0;
+   g_SysState[si].m3ChochDir2=0;
+   g_SysState[si].m3ChochTime2=0;
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
    Strat2DeleteObjects(si);
 }
@@ -2386,12 +2414,13 @@ void Strat2ScanOBs(int si)
 }
 
 //--- Mitigación: el precio CRUZA el imbalance (deja de respetarlo).--
-//    COMPRA: la zona se invalida cuando el precio vuelve a bajar y
-//    perfora el INICIO del imbalance (borde superior del gap = ZoneTop).
-//    VENTA : la zona se invalida cuando el precio vuelve a subir y
-//    perfora el INICIO del imbalance (borde inferior del gap = ZoneBottom).
-//    NO es mitigación tocar el order block: el rebote sigue siendo
-//    válido mientras el imbalance se respete.
+//    COMPRA: la zona se invalida cuando el precio baja y atraviesa TODA
+//    la zona (imbalance + OB), saliendo por el lado contrario (ZoneBottom).
+//    VENTA : la zona se invalida cuando el precio sube y atraviesa TODA
+//    la zona, saliendo por el lado contrario (ZoneTop).
+//    Tocar el rectángulo NO es mitigación: activa la búsqueda (Armed);
+//    solo si el precio rompe la zona por completo se cancela la búsqueda
+//    y cualquier entrada congelada de esa zona.
 //    full=true  → revisar todo el historial tras el grupo.
 //    full=false → revisar solo la vela actual (intrabar, cada tick).
 void Strat2ComputeMitigation(int si,bool full)
@@ -2421,12 +2450,18 @@ void Strat2ComputeMitigation(int si,bool full)
             double hi=iHigh(sym,tf,i), lo=iLow(sym,tf,i);
             bool hit=false;
             if(g_SysState[si].ob2[k].IsBullish)
-               hit=(lo<=g_SysState[si].ob2[k].ZoneTop);      // cruza el imbalance (compra)
+               hit=(lo<=g_SysState[si].ob2[k].ZoneBottom);   // atraviesa TODA la zona (compra)
             else
-               hit=(hi>=g_SysState[si].ob2[k].ZoneBottom);   // cruza el imbalance (venta)
+               hit=(hi>=g_SysState[si].ob2[k].ZoneTop);      // atraviesa TODA la zona (venta)
             if(hit)
-            { g_SysState[si].ob2[k].Mitigated=true;
-              g_SysState[si].ob2[k].MitigateTime=t; break; }
+            {
+               g_SysState[si].ob2[k].Mitigated=true;
+               g_SysState[si].ob2[k].MitigateTime=t;
+               g_SysState[si].ob2[k].Armed=false;            // zona rota → fin de la búsqueda
+               g_SysState[si].ob2[k].EntryFrozen=false;
+               g_SysState[si].ob2[k].EntryPrice=0.0;
+               break;
+            }
          }
       }
       else
@@ -2434,12 +2469,17 @@ void Strat2ComputeMitigation(int si,bool full)
          datetime t0=TimeCurrent();
          bool hit=false;
          if(g_SysState[si].ob2[k].IsBullish)
-            hit=(lac<=g_SysState[si].ob2[k].ZoneTop);
+            hit=(lac<=g_SysState[si].ob2[k].ZoneBottom);
          else
-            hit=(hac>=g_SysState[si].ob2[k].ZoneBottom);
+            hit=(hac>=g_SysState[si].ob2[k].ZoneTop);
          if(hit && t0>=g_SysState[si].ob2[k].GroupEnd)
-         { g_SysState[si].ob2[k].Mitigated=true;
-           g_SysState[si].ob2[k].MitigateTime=t0; }
+         {
+            g_SysState[si].ob2[k].Mitigated=true;
+            g_SysState[si].ob2[k].MitigateTime=t0;
+            g_SysState[si].ob2[k].Armed=false;
+            g_SysState[si].ob2[k].EntryFrozen=false;
+            g_SysState[si].ob2[k].EntryPrice=0.0;
+         }
       }
    }
 }
@@ -2457,6 +2497,8 @@ void Strat2RefreshCounts(int si)
    g_SysState[si].ob2SellRange=0;
    g_SysState[si].ob2Outside=false;
    g_SysState[si].ob2Mitigated=0;
+   g_SysState[si].ob2Armed=0;
+   g_SysState[si].ob2Frozen=0;
    if(!g_SysState[si].SE_H4.Valid) return;
 
    string sym=g_Symbols[si].name;
@@ -2468,10 +2510,12 @@ void Strat2RefreshCounts(int si)
    bool inR=(bid>=L2-tol && bid<=L1+tol);
    g_SysState[si].ob2Outside=!inR;
 
-   //--- contar zonas ya mitigadas (independiente de las pasadas)
+   //--- contar zonas ya mitigadas / armadas / con entrada congelada
    for(int k=0;k<g_SysState[si].ob2Count;k++)
-      if(g_SysState[si].ob2[k].Active && g_SysState[si].ob2[k].Mitigated)
-         g_SysState[si].ob2Mitigated++;
+   { if(!g_SysState[si].ob2[k].Active) continue;
+     if(g_SysState[si].ob2[k].Mitigated)   g_SysState[si].ob2Mitigated++;
+     else if(g_SysState[si].ob2[k].EntryFrozen) g_SysState[si].ob2Frozen++;
+     else if(g_SysState[si].ob2[k].Armed)      g_SysState[si].ob2Armed++; }
 
    int maxL=MathMax(1,MathMin(STRAT2_MAX_OBS,InpStrat2MaxOBs));
    int cb=0,cs=0;
@@ -2505,6 +2549,102 @@ void Strat2RefreshCounts(int si)
    g_SysState[si].ob2Sells=cs;
 }
 
+//--- TOQUE de la zona: activa la búsqueda de CHoCH M3 --------------
+//    COMPRA: el precio entra al rectángulo desde arriba (bid ≤ ZoneTop).
+//    VENTA : el precio entra al rectángulo desde abajo (bid ≥ ZoneBottom).
+//    Solo zonas vigentes y visibles según las reglas de prioridad.
+void Strat2CheckTouches(int si)
+{
+   if(!g_SysState[si].SE_H4.Valid) return;
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0) return;
+   datetime now=TimeCurrent();
+
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+   {
+      if(!g_SysState[si].ob2[k].Active)          continue;
+      if(g_SysState[si].ob2[k].Mitigated)        continue;
+      if(g_SysState[si].ob2[k].Armed)            continue;
+      if(g_SysState[si].ob2[k].EntryFrozen)      continue;
+      if(!Strat2IsVisible(si,g_SysState[si].ob2[k])) continue;
+
+      bool touch=false;
+      if(g_SysState[si].ob2[k].IsBullish)
+         touch=(bid<=g_SysState[si].ob2[k].ZoneTop &&
+                bid>=g_SysState[si].ob2[k].ZoneBottom);
+      else
+         touch=(bid>=g_SysState[si].ob2[k].ZoneBottom &&
+                bid<=g_SysState[si].ob2[k].ZoneTop);
+      if(touch)
+      {
+         g_SysState[si].ob2[k].Armed=true;
+         g_SysState[si].ob2[k].ArmedTime=now;
+         Print("S2 [",sym,"] zona ",(g_SysState[si].ob2[k].IsBullish?"COMPRA":"VENTA"),
+               " TOCADA (",DoubleToString(g_SysState[si].ob2[k].ZoneTop,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS)),
+               "/",DoubleToString(g_SysState[si].ob2[k].ZoneBottom,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS)),
+               ") → buscando CHoCH M3 a favor del rebote");
+      }
+   }
+}
+
+//--- CHoCH de M3 a favor del rebote → 50% de L1-L2 M3 CONGELADO -----
+//    OB de VENTA: debe haber CHoCH alcista→bajista (dir<0).
+//    OB de COMPRA: debe haber CHoCH bajista→alcista (dir>0).
+//    Se elige UNA zona por lado (prioridad: dentro del rango 4H y la
+//    más reciente); el resto de zonas del mismo lado quedan de espera.
+void Strat2ProcessChoch(int si)
+{
+   if(!InpUseStrat2) return;
+   int dir=g_SysState[si].m3ChochDir2;
+   if(dir==0) return;
+   g_SysState[si].m3ChochDir2=0;                 // consumir el evento
+   if(!g_SysState[si].SE_M3.Valid) return;
+   if(dir>0 && !g_SysState[si].SE_H4.Valid) return;
+   if(dir<0 && !g_SysState[si].SE_H4.Valid) return;
+
+   string sym=g_Symbols[si].name;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double entry=NormalizeDouble(g_SysState[si].SE_M3.EQ,dg);   // 50% L1-L2 M3
+   if(entry<=0.0) return;
+   datetime now=TimeCurrent();
+
+   int best=-1; bool bestBuy=false;
+   for(int pass=0;pass<2 && best<0;pass++)
+      for(int k=0;k<g_SysState[si].ob2Count;k++)
+      {
+         if(!g_SysState[si].ob2[k].Active)        continue;
+         if(g_SysState[si].ob2[k].Mitigated)      continue;
+         if(!g_SysState[si].ob2[k].Armed)         continue;
+         if(g_SysState[si].ob2[k].EntryFrozen)    continue;
+         if(pass==0 && !g_SysState[si].ob2[k].InRange) continue;
+         if(pass==1 &&  g_SysState[si].ob2[k].InRange) continue;
+         if(g_SysState[si].ob2[k].IsBullish && dir<=0) continue;  // compra necesita CHoCH +
+         if(!g_SysState[si].ob2[k].IsBullish && dir>=0) continue; // venta necesita CHoCH −
+         best=k; bestBuy=g_SysState[si].ob2[k].IsBullish;
+         break;
+      }
+
+   if(best<0) return;   // no hay zona armada del lado del CHoCH
+
+   //--- congelar SOLO la elegida; las demás del mismo lado quedan libres
+   int cnt=0;
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+   {
+      if(!g_SysState[si].ob2[k].Active || g_SysState[si].ob2[k].Mitigated) continue;
+      if(!g_SysState[si].ob2[k].Armed || g_SysState[si].ob2[k].EntryFrozen) continue;
+      if(g_SysState[si].ob2[k].IsBullish!=bestBuy) continue;
+      g_SysState[si].ob2[k].Armed=false;   // dejan de buscar; la elegida actúa
+   }
+   g_SysState[si].ob2[best].EntryFrozen=true;
+   g_SysState[si].ob2[best].EntryPrice=entry;
+   g_SysState[si].ob2[best].EntryTime=now;
+   Print("S2 [",sym,"] CHoCH M3 ",
+         (dir>0?"bajista→alcista (COMPRA)":"alcista→bajista (VENTA)"),
+         " a favor del rebote → 50% L1-L2 M3 CONGELADO en ",
+         DoubleToString(entry,dg));
+}
+
 //--- actualización por tick del motor 4H + resscaneo al cerrar vela -
 void Strat2Update(int si)
 {
@@ -2536,6 +2676,11 @@ void Strat2Update(int si)
 
    //--- vigilar mitigación en la vela actual (intrabar)
    Strat2ComputeMitigation(si,false);
+
+   //--- flujo de entrada: toque → armado → CHoCH M3 → congelar 50% M3
+   Strat2CheckTouches(si);
+   Strat2ProcessChoch(si);
+
    Strat2RefreshCounts(si);
 }
 
@@ -2609,7 +2754,9 @@ void DrawStrat2(int si)
       { ObjectDelete(0,pfx+"OB"+IntegerToString(k));
         ObjectDelete(0,pfx+"OB"+IntegerToString(k)+"_T");
         ObjectDelete(0,pfx+"OBM"+IntegerToString(k));
-        ObjectDelete(0,pfx+"OBM"+IntegerToString(k)+"_T"); }
+        ObjectDelete(0,pfx+"OBM"+IntegerToString(k)+"_T");
+        ObjectDelete(0,pfx+"ENT"+IntegerToString(k));
+        ObjectDelete(0,pfx+"ENT"+IntegerToString(k)+"_T"); }
       return;
    }
 
@@ -2652,8 +2799,22 @@ void DrawStrat2(int si)
          color cc=ob.IsBullish?C'0,190,95':C'230,85,55';
          Strat2ObjRect(nm,ob.ZoneTop,ob.ZoneBottom,
                        ob.GroupStart,now,cc);
-         SE_ZoneLabel(nm+"_T",(ob.ZoneTop+ob.ZoneBottom)*0.5,
-                      ob.IsBullish?"REBOTE COMPRA (OB+FVG)":"REBOTE VENTA (OB+FVG)",cc);
+         //--- etiqueta según el estado del flujo de entrada
+         string lbl=ob.IsBullish?"REBOTE COMPRA (OB+FVG)":"REBOTE VENTA (OB+FVG)";
+         if(ob.EntryFrozen)
+         { lbl=ob.IsBullish?"COMPRA · 50% M3 CONGELADO":"VENTA · 50% M3 CONGELADO";
+           cc=ob.IsBullish?C'0,255,140':C'255,120,90'; }
+         else if(ob.Armed)
+           lbl+=" · TOCADA → CHoCH M3";
+         SE_ZoneLabel(nm+"_T",(ob.ZoneTop+ob.ZoneBottom)*0.5,lbl,cc);
+
+         //--- línea de entrada: 50% L1-L2 M3 CONGELADO en el CHoCH
+         if(ob.EntryFrozen && ob.EntryPrice>0.0)
+            SE_HLine(pfx+"ENT"+IntegerToString(k),ob.EntryPrice,
+                     ob.IsBullish?C'0,255,140':C'255,120,90',
+                     STYLE_DASH,2,ob.IsBullish?"ENTRADA S2 COMPRA (50% M3)":"ENTRADA S2 VENTA (50% M3)");
+         else { ObjectDelete(0,pfx+"ENT"+IntegerToString(k));
+                ObjectDelete(0,pfx+"ENT"+IntegerToString(k)+"_T"); }
       }
 }
 
@@ -3202,7 +3363,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.48  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.49  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3548,9 +3709,10 @@ void BuildTabOperar()
                          DoubleToString(g_SysState[si].SE_H4.L2,dg),
                          DoubleToString(g_SysState[si].SE_H4.EQ,dg));
       else s2="S2 · SIN RANGO 4H";
-      string s2m=StringFormat("OBs: %d COMPRA (rango %d) · %d VENTA (rango %d) · mitigados %d",
+      string s2m=StringFormat("OBs: %d C (%d en rango) · %d V (%d en rango) · armados %d · 50%% M3 %d · mitigados %d",
                               g_SysState[si].ob2Buys,g_SysState[si].ob2BuyRange,
                               g_SysState[si].ob2Sells,g_SysState[si].ob2SellRange,
+                              g_SysState[si].ob2Armed,g_SysState[si].ob2Frozen,
                               g_SysState[si].ob2Mitigated);
       if(g_SysState[si].ob2Outside)
          s2m+=" · PRECIO FUERA RANGO → OB histórico activos";
@@ -4932,7 +5094,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.48           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.49           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -4973,7 +5135,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.48 === X=",InpXActivacion,
+   Print("=== DIAG v8.49 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5098,7 +5260,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.48 | Símbolos:",g_SymCount,
+   Print("EA v8.49 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5115,7 +5277,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.48 cerrado | Razón:",reason);
+   Print("EA v8.49 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
