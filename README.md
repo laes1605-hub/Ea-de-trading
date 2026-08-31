@@ -7,6 +7,9 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | Archivo | Descripción |
 |---|---|
 | `trabajador INICIAL v8.37.mq5` | **Código inicial del proyecto (v8.37, commit `b9df22f`)** — tal como estaba antes de empezar este chat: DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), base dinámica de capital, panel MULTI-PAR, gestión de riesgo de Asistente 3 por par. |
+| `trabajador v8.36 MULTI-PAR.mq5` | **Versión 8.36 (commit `2531c9b`)** — DOS estrategias (PERSONAL `LINEAS` + CONFLUENCIA H1/M3), **panel MULTI-PAR v8.36** (tester visual + gráfico real), sin la gestión de Asistente 3 por par (eso llegó en v8.37). |
+| `ea v8.36 MULTI-PAR.txt` | Copia en texto plano de `trabajador v8.36 MULTI-PAR.mq5` (tal como estaba el `ea.txt` en ese commit). |
+| `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
 | `trabajador multichart.mq5` | **Versión actual (v8.43)**: estrategia única (estructura L1-L4 H1 + confluencia M3) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1 + **fix del bucle (limit solo del lado correcto del 50%)**. |
