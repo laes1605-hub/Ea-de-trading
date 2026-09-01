@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.51"
+#property version   "8.52"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -552,6 +552,11 @@ void Strat2ManagePendings(int si);
 void Strat2OnTradeClosed(int si);
 void Strat2ProcessChoch(int si);
 bool Strat2HasPending(int si);
+void ConfluenciaCancelFlow(int si);
+void Strat2CancelFlow(int si);
+bool PairOtherVirtualActive(int si,int st);
+void PairOnActivation(int si,int activeSt);
+void PairOnPosition(int si);
 void ActivateLiveStrategy(int si, int st);
 void OnLiveSL_Original(int si, int st);
 void OnLiveSL_Protected(int si, int st, int openLevel);
@@ -1966,6 +1971,7 @@ void ConfluenciaProcessChoch(int si)
    if(dir==0)  return;
    g_SysState[si].m3ChochDir=0;          // consumir el evento
    if(g_SysState[si].strategies[STRAT_CONFLUENCIA].cbPaused) return;
+   if(PairOtherVirtualActive(si,STRAT_CONFLUENCIA)) return;   // S2 ya tiene operación activa
    datetime t=g_SysState[si].m3ChochTime;
    string   sym=g_Symbols[si].name;
    int      dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
@@ -2020,6 +2026,7 @@ void ConfluenciaTryPlace(int si)
    if(HasAnyPositionSymbol(si))
    { g_SysState[si].confWaitBuy=false; g_SysState[si].confWaitSell=false; return; }
    if(ConfluenciaHasPending(si)) return;   // ya hay una limit o virtual en curso
+   if(PairOtherVirtualActive(si,STRAT_CONFLUENCIA)) return;   // S2 ya tiene operación activa
 
    string sym=g_Symbols[si].name;
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
@@ -2126,6 +2133,8 @@ void ConfluenciaStartVirtual(int si, int dir, double price)
    g_SysState[si].strategies[st].virtualTP_price  =CalcTP(sym,si,price,posType);
    g_SysState[si].strategies[st].virtualSLMoved   =false;
    g_SysState[si].strategies[st].virtualActive    =true;
+   //--- activó UNA estrategia: la otra queda cancelada (una operación por par)
+   PairOnActivation(si,st);
    Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
          (dir>0?"BUY":"SELL")," (fill 50% M3) @",DoubleToString(price,dg),
          " CV=",g_SysState[si].strategies[st].CV,
@@ -2141,6 +2150,7 @@ void ConfluenciaCheckVirtualFills(int si)
    if(!InpAllowConfluOrders)                                    return;
    if(g_SysState[si].strategies[STRAT_CONFLUENCIA].isLive)      return;
    if(g_SysState[si].strategies[STRAT_CONFLUENCIA].virtualActive) return;
+   if(PairOtherVirtualActive(si,STRAT_CONFLUENCIA)) return;     // S2 ya tiene operación activa
    if(HasAnyPositionSymbol(si))                                 return;
 
    string sym=g_Symbols[si].name;
@@ -2195,6 +2205,10 @@ void ConfluenciaManagePendings(int si)
                 (InpUseTimeFilter && !IsTradeTimeAllowed());
 
    if(!hasPos && !riskOff) return;
+
+   //--- posición abierta → SOLO ella manda: se cancelan los flujos y
+   //    límites de la(s) estrategia(s) que no están LIVE en el par.
+   if(hasPos) PairOnPosition(si);
 
    //--- posición abierta (o riesgo pausado) → fuera las límites restantes
    if(g_SysState[si].confVPendBuy || g_SysState[si].confVPendSell)
@@ -2338,6 +2352,7 @@ void Strat2TryPlace(int si)
    if(HasAnyPositionSymbol(si))
    { g_SysState[si].s2WaitBuy=false; g_SysState[si].s2WaitSell=false; return; }
    if(Strat2HasPending(si)) return;   // ya hay una limit o virtual en curso
+   if(PairOtherVirtualActive(si,STRAT_S2)) return;             // CONFL ya tiene operación activa
 
    string sym=g_Symbols[si].name;
    double bid=SymbolInfoDouble(sym,SYMBOL_BID);
@@ -2371,6 +2386,8 @@ void Strat2StartVirtual(int si, int dir, double price)
    g_SysState[si].strategies[st].virtualTP_price  =CalcTP(sym,si,price,posType);
    g_SysState[si].strategies[st].virtualSLMoved   =false;
    g_SysState[si].strategies[st].virtualActive    =true;
+   //--- activó UNA estrategia: la otra queda cancelada (una operación por par)
+   PairOnActivation(si,st);
    Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
          (dir>0?"BUY":"SELL")," (fill 50% M3) @",DoubleToString(price,dg),
          " CV=",g_SysState[si].strategies[st].CV,
@@ -2386,6 +2403,7 @@ void Strat2CheckVirtualFills(int si)
    if(!InpAllowStrat2Orders)                                return;
    if(g_SysState[si].strategies[STRAT_S2].isLive)           return;
    if(g_SysState[si].strategies[STRAT_S2].virtualActive)    return;
+   if(PairOtherVirtualActive(si,STRAT_S2)) return;          // CONFL ya tiene operación activa
    if(HasAnyPositionSymbol(si))                             return;
 
    string sym=g_Symbols[si].name;
@@ -2427,6 +2445,82 @@ void Strat2DeleteRealPendings(int si)
    }
 }
 
+//+------------------------------------------------------------------+
+//| UNA SOLA OPERACIÓN ACTIVA POR PAR (E1 y S2 comparten nivel)      |
+//|                                                                  |
+//|  · El NIVEL de la tabla es POR PAR: lo usan las dos estrategias. |
+//|  · La primera estrategia que ACTIVA la operación (fill vOPEN o    |
+//|    posición real) se queda con ella; se CANCELA el flujo de la    |
+//|    otra (límites virtuales y reales + esperas/entradas congeladas)|
+//|    y el par espera el resultado.                                 |
+//|  · Lógica de niveles (Asistente 3): TP → nivel 1; SL → +1;       |
+//|    SL con trailing/protección → retroceso de 3 (CV<10) o 4       |
+//|    (CV>=10) posiciones en la tabla.                              |
+//+------------------------------------------------------------------+
+//--- en OTRA estrategia hay una operación virtual ACTIVA (vOPEN)
+bool PairOtherVirtualActive(int si,int st)
+{
+   for(int s=0;s<STRAT_COUNT;s++)
+   { if(s==st) continue;
+     if(g_SysState[si].strategies[s].virtualActive) return true; }
+   return false;
+}
+
+//--- cancela el flujo de entrada de la Estrategia 1 (CONFL)
+void ConfluenciaCancelFlow(int si)
+{
+   g_SysState[si].confWaitBuy=false;  g_SysState[si].confWaitSell=false;
+   g_SysState[si].confEntryBuy=0.0;   g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confVPendBuy=false; g_SysState[si].confVPendBuyPrice=0.0;
+   g_SysState[si].confVPendSell=false;g_SysState[si].confVPendSellPrice=0.0;
+   g_SysState[si].m3ChochDir=0;       // el CHoCH no queda pendiente de reprocesar
+   ConfluenciaDeleteRealPendings(si);
+}
+
+//--- cancela el flujo de entrada de la Estrategia 2 (S2-OB)
+void Strat2CancelFlow(int si)
+{
+   g_SysState[si].s2WaitBuy=false;  g_SysState[si].s2WaitSell=false;
+   g_SysState[si].s2EntryBuy=0.0;   g_SysState[si].s2EntrySell=0.0;
+   g_SysState[si].s2VPendBuy=false; g_SysState[si].s2VPendBuyPrice=0.0;
+   g_SysState[si].s2VPendSell=false;g_SysState[si].s2VPendSellPrice=0.0;
+   g_SysState[si].m3ChochDir2=0;
+   Strat2DeleteRealPendings(si);
+   //--- las zonas con entrada ya congelada dejan de contar:
+   //    para volver a actuar necesitan un NUEVO toque.
+   for(int k=0;k<g_SysState[si].ob2Count;k++)
+   { if(!g_SysState[si].ob2[k].Active) continue;
+     if(!g_SysState[si].ob2[k].EntryFrozen) continue;
+     g_SysState[si].ob2[k].EntryFrozen=false;
+     g_SysState[si].ob2[k].EntryPrice=0.0;
+     g_SysState[si].ob2[k].Armed=false; }
+}
+
+//--- una estrategia se ACTIVÓ (fill virtual → vOPEN): la otra queda
+//    fuera y se cancela TODO su flujo (sin tocar nivel ni CV: es una
+//    cancelación, no una pérdida).
+void PairOnActivation(int si,int activeSt)
+{
+   for(int st=0;st<STRAT_COUNT;st++)
+   { if(st==activeSt) continue;
+     //--- la LIVE conserva su liveLogicLevel (manda el 1:2); solo se le
+     //    cancelan las órdenes pendientes, no su estado virtual/lógico.
+     if(!g_SysState[si].strategies[st].isLive) ClearVirtualState(si,st);
+     if(st==STRAT_CONFLUENCIA) ConfluenciaCancelFlow(si);
+     else                     Strat2CancelFlow(si); }
+}
+
+//--- hay posición REAL en el par: los flujos de las estrategias que NO
+//    están LIVE se cancelan (la LIVE conserva su lógica de trailing).
+void PairOnPosition(int si)
+{
+   for(int st=0;st<STRAT_COUNT;st++)
+   { if(g_SysState[si].strategies[st].isLive) continue;
+     ClearVirtualState(si,st);
+     if(st==STRAT_CONFLUENCIA) ConfluenciaCancelFlow(si);
+     else                     Strat2CancelFlow(si); }
+}
+
 //--- Gestión de pendientes (corre SIEMPRE, incluso sin horario/CB) --
 void Strat2ManagePendings(int si)
 {
@@ -2438,6 +2532,10 @@ void Strat2ManagePendings(int si)
                 (InpUseTimeFilter && !IsTradeTimeAllowed());
 
    if(!hasPos && !riskOff) return;
+
+   //--- posición abierta → SOLO ella manda: se cancelan los flujos y
+   //    límites de la(s) estrategia(s) que no están LIVE en el par.
+   if(hasPos) PairOnPosition(si);
 
    if(g_SysState[si].s2VPendBuy || g_SysState[si].s2VPendSell)
    {
@@ -2957,6 +3055,7 @@ void Strat2ProcessChoch(int si)
    g_SysState[si].m3ChochDir2=0;                 // consumir el evento
    if(g_SysState[si].strategies[STRAT_S2].cbPaused) return;
    if(g_SysState[si].strategies[STRAT_S2].virtualActive) return;
+   if(PairOtherVirtualActive(si,STRAT_S2)) return;             // CONFL ya tiene operación activa
    if(HasAnyPositionSymbol(si)) return;
    if(Strat2HasPending(si)) return;
    if(!g_SysState[si].SE_M3.Valid) return;
@@ -3750,7 +3849,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.51  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.52  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -5488,7 +5587,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.51           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.52           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5529,7 +5628,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.51 === X=",InpXActivacion,
+   Print("=== DIAG v8.52 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5654,7 +5753,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.51 | Símbolos:",g_SymCount,
+   Print("EA v8.52 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5671,7 +5770,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.51 cerrado | Razón:",reason);
+   Print("EA v8.52 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+

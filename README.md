@@ -1,9 +1,10 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.51**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.52**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
+- **Una sola operación activa por par (v8.52)**: E1 y S2 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
@@ -23,7 +24,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.51)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.52)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -66,9 +67,9 @@ El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógic
 
 > Nota: el motor del TF del gráfico (L1-L4 azules L1/L2, magenta/rojo L3/L4) se mantiene **solo como referencia visual**; la estructura que manda la operativa es la de H1.
 
-## Estrategia 2 (v8.51) — rango 4H + OB+imbalance + órdenes virtual→LIVE
+## Estrategia 2 (v8.52) — rango 4H + OB+imbalance + órdenes virtual→LIVE
 
-La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de líneas), pero los order blocks **ya no se buscan dentro del rango**: se buscan **históricos, donde el precio pueda rebotar**, estén donde estén. Desde **v8.51** la Estrategia 2 **abre órdenes** con el **mismo ciclo completo que la Estrategia 1** (virtual → LIVE), ya no es solo marcado visual.
+La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de líneas), pero los order blocks **ya no se buscan dentro del rango**: se buscan **históricos, donde el precio pueda rebotar**, estén donde estén. Desde **v8.52** la Estrategia 2 **abre órdenes** con el **mismo ciclo completo que la Estrategia 1** (virtual → LIVE), ya no es solo marcado visual.
 
 **Cómo se marca un order block (con confirmación):**
 
@@ -96,7 +97,7 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 - Si **aún no se mitiga**: el rectángulo se extiende **hasta el presente** (color vivo) y sigue siendo candidato de rebote.
 - En el panel (pestaña OPERAR): rango 4H, `OBs: N COMPRA (rango M) · N VENTA (rango M) · mitigados M` y si el precio está EN o FUERA del rango.
 
-**Flujo de entrada (v8.49, órdenes en v8.51):** la Estrategia 2 usa la **misma confirmación que la Estrategia 1** (líneas L1-L4):
+**Flujo de entrada (v8.49, órdenes en v8.52):** la Estrategia 2 usa la **misma confirmación que la Estrategia 1** (líneas L1-L4):
 
 1. **Toque de la zona**: cuando el precio entra en el rectángulo de un OB válido (no mitigado), la zona queda **ARMADA** y comienza la búsqueda de un **cambio de estructura en M3**.
 2. **CHoCH a favor del rebote**:
@@ -104,12 +105,12 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
    - **OB de COMPRA** → debe haber un CHoCH **bajista → alcista** (dir +) en M3.
 3. **Entrada congelada**: al confirmarse el CHoCH, el precio de entrada se pone en el **50% del rango L1-L2 de M3** en ese momento (igual que la Estrategia 1) y se **CONGELA**; se dibuja la línea `ENTRADA S2 COMPRA/VENTA (50% M3)`.
 4. Se elige **una zona por lado** (prioridad: dentro del rango 4H y la más reciente); si la zona se **mitiga** antes (cruza el imbalance), la búsqueda y la entrada congelada se cancelan.
-5. **Órdenes (v8.51)**: la entrada congelada pasa al **motor de órdenes de la S2** (`UpdateStrat2Orders`, llamado desde `UpdateAllStrategies` igual que E1): coloca una **LIMIT** cuando el precio está del lado correcto del 50% (por encima para compras, por debajo para ventas). En fase **virtual** la limit se simula y al llenarse abre **vOPEN** con CV/niveles de par; con `InpXActivacion` pérdidas virtuales pasa a **LIVE** y coloca **LIMIT reales con magia `+2`** (`S2-OB`), SL/TP del EA y 1:2. **`InpAllowStrat2Orders`** (por defecto `true`) apaga/enciende las órdenes S2.
+5. **Órdenes (v8.52)**: la entrada congelada pasa al **motor de órdenes de la S2** (`UpdateStrat2Orders`, llamado desde `UpdateAllStrategies` igual que E1): coloca una **LIMIT** cuando el precio está del lado correcto del 50% (por encima para compras, por debajo para ventas). En fase **virtual** la limit se simula y al llenarse abre **vOPEN** con CV/niveles de par; con `InpXActivacion` pérdidas virtuales pasa a **LIVE** y coloca **LIMIT reales con magia `+2`** (`S2-OB`), SL/TP del EA y 1:2. **`InpAllowStrat2Orders`** (por defecto `true`) apaga/enciende las órdenes S2.
 6. El estado se ve en el gráfico (`TOCADA → CHoCH M3` / `50% M3 CONGELADO`), en el panel (`armados N · 50% M3 N · mitigados M`) y en la fila **virtual → LIVE** (línea `S2-OB` con vOPEN / ESPERA PRECIO / pérdidas).
 
-**Zona válida (v8.51):** solo se marcan/consideran zonas cuyo grupo generador tenga **mínimo `InpStrat2MinAge=10` velas H1 cerradas** desde su final hasta la vela actual (el escaneo salta las zonas más nuevas; las ya armadas conservan su estado entre re-escaneos).
+**Zona válida (v8.52):** solo se marcan/consideran zonas cuyo grupo generador tenga **mínimo `InpStrat2MinAge=10` velas H1 cerradas** desde su final hasta la vela actual (el escaneo salta las zonas más nuevas; las ya armadas conservan su estado entre re-escaneos).
 
-> **Fix v8.51 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
+> **Fix v8.52 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas), `InpStrat2MinAge=10` (antigüedad mínima de la zona), `InpAllowStrat2Orders=true` (permitir órdenes S2).
 
@@ -158,6 +159,21 @@ Extras de esta versión:
 
 - El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
 - Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
+
+## Nivel compartido entre E1 y S2 (v8.52) — una sola operación activa por par
+
+Las dos estrategias activas (Estrategia 1 `CONFL` y Estrategia 2 `S2-OB`) operan **sobre la misma tabla de niveles del par**:
+
+1. **Nivel compartido**: el nivel (`PairLevel`, 1–20) es **por par**, no por estrategia. Cualquiera de las dos que coloque la LIMIT usa el nivel actual de la tabla; el lote y el SL/TP se calculan con ese nivel.
+2. **Primera que activa, se queda**: pueden existir señal/espera o límites pendientes de ambas al mismo tiempo, pero **en cuanto una activa** (fill de la LIMIT virtual → `vOPEN`, o posición real) **se cancelan los límites restantes del par** (virtuales y reales), se limpian las esperas/entradas congeladas de la otra y el par espera el resultado. La otra estrategia no puede congelar ni colocar mientras la primera tiene la operación activa.
+3. **Al cerrar la operación** (sea de E1 o de S2):
+   - **TP** (ganancia limpia) → **nivel = 1** y CV = 1.
+   - **SL sin trailing** (pérdida) → **nivel +1** y CV +1.
+   - **SL con trailing/protección** (ganancia protegida) → **retroceso −3** posiciones si CV < 10, **−4** si CV ≥ 10 (regla de Asistente 3).
+4. La cancelación de la otra estrategia **no cuenta como pérdida** (no toca nivel ni CV): es solo la limpieza de su flujo; si estaba en espera o con zona armada, necesitará una nueva señal/CHoCH después del resultado.
+5. Con posición real abierta solo queda la estrategia que la abrió (LIVE); la otra se cancela y conserva su CV para la siguiente ronda. El `liveLogicLevel` de la LIVE no se toca (rige el 1:2).
+
+**En vivo se ve así:** `vOPEN [EURUSD/CONFL] ...` → `S2 [EURUSD] ... eliminada` (o al revés); cuando la primera cierra, el journal muestra `TP → nivel 1` / `SL → nivel +1` / `retroceso −3/−4` y el panel (pestaña ESTRAT) actualiza el nivel compartido.
 
 ## Gestión de riesgo (v8.42 — lógica de "Asistente 3", nivel POR PAR)
 
