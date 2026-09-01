@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.50"
+#property version   "8.51"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -2887,7 +2887,7 @@ void Strat2RefreshCounts(int si)
          if(ob.IsBullish)
          {
             if(cb>=maxL) continue;
-            if(ob.ZoneTop>=bid) continue;               // no está debajo del precio
+            if(bid<ob.ZoneBottom-tol) continue;         // quedó DEBAJO de toda la zona
             if(!pass && !inRange) continue;
             if(!inRange && !(bid<L2-tol && ob.ZoneTop<=L2+tol)) continue;
             cb++; if(inRange) g_SysState[si].ob2BuyRange++;
@@ -2895,7 +2895,7 @@ void Strat2RefreshCounts(int si)
          else
          {
             if(cs>=maxL) continue;
-            if(ob.ZoneBottom<=bid) continue;            // no está encima del precio
+            if(bid>ob.ZoneTop+tol) continue;            // quedó ENCIMA de toda la zona
             if(!inRange && !(bid>L1+tol && ob.ZoneBottom>=L1-tol)) continue;
             cs++; if(inRange) g_SysState[si].ob2SellRange++;
          }
@@ -2981,6 +2981,8 @@ void Strat2ProcessChoch(int si)
          if(pass==1 &&  g_SysState[si].ob2[k].InRange) continue;
          if(g_SysState[si].ob2[k].IsBullish && dir<=0) continue;  // compra necesita CHoCH +
          if(!g_SysState[si].ob2[k].IsBullish && dir>=0) continue; // venta necesita CHoCH −
+         //--- el CHoCH debe ser POSTERIOR al toque (espejo de la E1)
+         if(g_SysState[si].ob2[k].ArmedTime>g_SysState[si].m3ChochTime2) continue;
          best=k; bestBuy=g_SysState[si].ob2[k].IsBullish;
          break;
       }
@@ -3072,11 +3074,15 @@ bool Strat2IsVisible(int si,const Strat2OrderBlock &ob)
    bool inR=(bid>=L2-tol && bid<=L1+tol);
    if(ob.IsBullish)
    {
-      if(ob.ZoneTop>=bid) return false;
+      //--- invisible solo si el precio YA ESTÁ POR DEBAJO de toda la zona
+      //    (la zona quedaría encima del precio). Dentro del rectángulo
+      //    sigue siendo visible: es el toque que arma la búsqueda.
+      if(bid<ob.ZoneBottom-tol) return false;
       if(!ob.InRange) return (bid<L2-tol && ob.ZoneTop<=L2+tol);
       return true;
    }
-   if(ob.ZoneBottom<=bid) return false;
+   //--- invisible solo si el precio YA ESTÁ POR ENCIMA de toda la zona
+   if(bid>ob.ZoneTop+tol) return false;
    if(!ob.InRange) return (bid>L1+tol && ob.ZoneBottom>=L1-tol);
    return true;
 }
@@ -3744,7 +3750,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.50  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.51  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -5482,7 +5488,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.50           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.51           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5523,7 +5529,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.50 === X=",InpXActivacion,
+   Print("=== DIAG v8.51 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5648,7 +5654,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.50 | Símbolos:",g_SymCount,
+   Print("EA v8.51 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5665,7 +5671,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.50 cerrado | Razón:",reason);
+   Print("EA v8.51 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
