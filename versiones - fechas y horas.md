@@ -63,6 +63,7 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.48 | `bf3a0d5` | 2026-08-31T23:02:31+00:00 | 2026-08-31 18:02:31 | 2026-08-31T23:02:31+00:00 | 2026-08-31 18:02:31 | ✅ | fix(strat2): compilacion MQL5 — eliminar referencia a elemento de array anidado (v8.48) |
 | v8.49 | `8a437ac` | 2026-08-31T23:20:39+00:00 | 2026-08-31 18:20:39 | 2026-08-31T23:20:39+00:00 | 2026-08-31 18:20:39 | ✅ | feat(strat2): confirmacion CHoCH M3 + 50% L1-L2 M3 congelado (v8.49) |
 | v8.50 | `a69c9b4` | 2026-09-01T00:08:34+00:00 | 2026-08-31 19:08:34 | 2026-09-01T00:08:34+00:00 | 2026-08-31 19:08:34 | ✅ | feat(strat2): Estrategia 2 abre ordenes virtual→LIVE + zona valida min 10 velas (v8.50) |
+| v8.51 | `3510a4f` | 2026-09-01T01:00:57+00:00 | 2026-08-31 20:00:57 | 2026-09-01T01:00:57+00:00 | 2026-08-31 20:00:57 | ✅ | fix(strat2): armar la zona al TOCARLA — visibilidad, orden CHoCH y cuentas (v8.51) |
 
 ## Resumen por versión (lanzamiento y últimas modificaciones)
 
@@ -91,5 +92,6 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.48 | `bf3a0d5` — 2026-08-31T23:02:31+00:00 (Bogotá 2026-08-31 18:02:31) | `bf3a0d5` — 2026-08-31T23:02:31+00:00 (Bogotá 2026-08-31 18:02:31) |
 | v8.49 | `8a437ac` — 2026-08-31T23:20:39+00:00 (Bogotá 2026-08-31 18:20:39) | `8a437ac` — 2026-08-31T23:20:39+00:00 (Bogotá 2026-08-31 18:20:39) |
 | v8.50 | `a69c9b4` — 2026-09-01T00:08:34+00:00 (Bogotá 2026-08-31 19:08:34) | `a69c9b4` — 2026-09-01T00:08:34+00:00 (Bogotá 2026-08-31 19:08:34) |
+| v8.51 | `3510a4f` — 2026-09-01T01:00:57+00:00 (Bogotá 2026-08-31 20:00:57) | `3510a4f` — 2026-09-01T01:00:57+00:00 (Bogotá 2026-08-31 20:00:57) |
 
 > **Nota sobre la serie v8.37**: hay 15 commits que llevan `#property version "8.37"` (V01–V15 en `versiones 8.37/INDICE.md`); se listan todos aquí. La v8.37 "final" (merge PR #10, `b9df22f`) es idéntica al V15 (`52dae62`).
