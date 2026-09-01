@@ -64,6 +64,7 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.49 | `8a437ac` | 2026-08-31T23:20:39+00:00 | 2026-08-31 18:20:39 | 2026-08-31T23:20:39+00:00 | 2026-08-31 18:20:39 | ✅ | feat(strat2): confirmacion CHoCH M3 + 50% L1-L2 M3 congelado (v8.49) |
 | v8.50 | `a69c9b4` | 2026-09-01T00:08:34+00:00 | 2026-08-31 19:08:34 | 2026-09-01T00:08:34+00:00 | 2026-08-31 19:08:34 | ✅ | feat(strat2): Estrategia 2 abre ordenes virtual→LIVE + zona valida min 10 velas (v8.50) |
 | v8.51 | `3510a4f` | 2026-09-01T01:00:57+00:00 | 2026-08-31 20:00:57 | 2026-09-01T01:00:57+00:00 | 2026-08-31 20:00:57 | ✅ | fix(strat2): armar la zona al TOCARLA — visibilidad, orden CHoCH y cuentas (v8.51) |
+| v8.52 | `3d654bc` | 2026-09-01T02:12:16+00:00 | 2026-08-31 21:12:16 | 2026-09-01T02:12:16+00:00 | 2026-08-31 21:12:16 | ✅ | feat(strat2): E1 y S2 comparten nivel — UNA operacion activa por par (v8.52) |
 
 ## Resumen por versión (lanzamiento y últimas modificaciones)
 
@@ -93,5 +94,6 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.49 | `8a437ac` — 2026-08-31T23:20:39+00:00 (Bogotá 2026-08-31 18:20:39) | `8a437ac` — 2026-08-31T23:20:39+00:00 (Bogotá 2026-08-31 18:20:39) |
 | v8.50 | `a69c9b4` — 2026-09-01T00:08:34+00:00 (Bogotá 2026-08-31 19:08:34) | `a69c9b4` — 2026-09-01T00:08:34+00:00 (Bogotá 2026-08-31 19:08:34) |
 | v8.51 | `3510a4f` — 2026-09-01T01:00:57+00:00 (Bogotá 2026-08-31 20:00:57) | `3510a4f` — 2026-09-01T01:00:57+00:00 (Bogotá 2026-08-31 20:00:57) |
+| v8.52 | `3d654bc` — 2026-09-01T02:12:16+00:00 (Bogotá 2026-08-31 21:12:16) | `3d654bc` — 2026-09-01T02:12:16+00:00 (Bogotá 2026-08-31 21:12:16) |
 
 > **Nota sobre la serie v8.37**: hay 15 commits que llevan `#property version "8.37"` (V01–V15 en `versiones 8.37/INDICE.md`); se listan todos aquí. La v8.37 "final" (merge PR #10, `b9df22f`) es idéntica al V15 (`52dae62`).
