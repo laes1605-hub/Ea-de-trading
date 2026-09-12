@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.52"
+#property version   "8.53"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -91,6 +91,10 @@ input int    InpSplitDelayMs     = 200;
 
 input group "=== CIRCUIT BREAKER DIARIO ==="
 input double InpMaxDailyLossPct  = 4.5;
+
+input group "=== OBJETIVO POR PASOS (STEP) ==="
+input bool   InpUseProfitStep    = true;   // Objetivo por pasos: al lograrlo cierra TODO y niveles→1
+input double InpProfitStepUsd    = 1.0;    // Step del objetivo en USD (profit de equity desde la última referencia)
 
 input group "=== SÍMBOLOS (vacío = no usar) ==="
 input string InpSymbol1          = "";
@@ -498,6 +502,11 @@ datetime g_DayStartTime            = 0;
 bool     g_CircuitBreakerOn        = false;
 datetime g_CircuitBreakerUntil     = 0;
 
+//--- OBJETIVO POR PASOS (STEP): equity − referencia ≥ InpProfitStepUsd
+double   g_StepRefEquity           = 0.0;   // equity de referencia (se re-ancla tras cada logro)
+int      g_StepHits                = 0;     // cuántas veces se alcanzó el objetivo
+ulong    g_StepClosedTickets[];              // tickets cerrados POR el objetivo (no aplican TP/SL)
+
 TradeRecord  g_Trades[];
 int          g_TradeCount          = 0;
 int          g_ScrollOffset        = 0;
@@ -542,6 +551,8 @@ void BuildTabEstrategias();
 void RefreshTabBar();
 void SaveState();
 void SaveStateToFile();
+void ConfluenciaDeleteRealPendings(int si);
+void Strat2DeleteRealPendings(int si);
 void SelectNextLiveStrategy(int si);
 void Strat2Update(int si);
 void Strat2DeleteObjects(int si);
@@ -873,6 +884,113 @@ void CheckCircuitBreaker()
 }
 
 //+------------------------------------------------------------------+
+//| OBJETIVO POR PASOS (STEP)                                        |
+//|                                                                  |
+//|  Cuando la EQUITY gana InpProfitStepUsd respecto a la referencia |
+//|  (equity del último logro / del arranque):                       |
+//|    · se cierran TODAS las operaciones del EA (todas las magias), |
+//|    · se borran TODAS las órdenes limit reales pendientes,        |
+//|    · TODOS los niveles de tabla vuelven a 1 (todos los pares),   |
+//|    · la referencia se re-ancla al equity resultante y se vuelve  |
+//|      a empezar (cada +step USD = un reinicio completo).          |
+//|  El CV y el estado LIVE de cada estrategia NO se tocan (solo los |
+//|  niveles). Los cierres producidos por el objetivo NO aplican la  |
+//|  lógica TP/SL de niveles (se marcan por ticket).                 |
+//+------------------------------------------------------------------+
+double StepProgress()          // profit de equity desde la referencia
+{ return AccountInfoDouble(ACCOUNT_EQUITY)-g_StepRefEquity; }
+
+bool StepTargetReached()
+{ return (InpProfitStepUsd>0.0 && StepProgress()>=InpProfitStepUsd); }
+
+void MarkStepClosed(ulong t)
+{
+   for(int i=0;i<ArraySize(g_StepClosedTickets);i++)
+      if(g_StepClosedTickets[i]==t) return;         // ya marcado
+   int n=ArraySize(g_StepClosedTickets);
+   ArrayResize(g_StepClosedTickets,n+1);
+   g_StepClosedTickets[n]=t;
+}
+
+bool IsStepClosedTicket(ulong t)
+{
+   for(int i=0;i<ArraySize(g_StepClosedTickets);i++)
+      if(g_StepClosedTickets[i]==t) return true;
+   return false;
+}
+
+void UnmarkStepClosed(ulong t)
+{
+   for(int i=0;i<ArraySize(g_StepClosedTickets);i++)
+      if(g_StepClosedTickets[i]==t)
+      { for(int j=i;j<ArraySize(g_StepClosedTickets)-1;j++)
+           g_StepClosedTickets[j]=g_StepClosedTickets[j+1];
+        ArrayResize(g_StepClosedTickets,ArraySize(g_StepClosedTickets)-1);
+        return; }
+}
+
+//--- LOGRO del objetivo: cierra todo, borra límites y niveles → 1
+void ProfitStepFire()
+{
+   double eq0 =AccountInfoDouble(ACCOUNT_EQUITY);
+   double gain=eq0-g_StepRefEquity;
+   g_StepHits++;
+   Print("★★ OBJETIVO ALCANZADO ★★ equity +",DoubleToString(gain,2),
+         " USD ≥ step ",DoubleToString(InpProfitStepUsd,2),
+         " (logro #",g_StepHits,") → cierra TODO y niveles → 1");
+
+   //--- 1) cerrar TODAS las posiciones del EA (marcadas: no aplican TP/SL)
+   int cerradas=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(!IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+     MarkStepClosed(t);
+     ClosePosition(t);
+     cerradas++; }
+
+   //--- 2) fuera TODAS las órdenes limit reales pendientes (E1 y S2)
+   for(int si=0;si<g_SymCount;si++)
+   { ConfluenciaDeleteRealPendings(si);
+     Strat2DeleteRealPendings(si); }
+
+   //--- 3) TODOS los niveles de tabla → 1 (todos los pares)
+   for(int si=0;si<g_SymCount;si++)
+   { if(g_PairLevel[si]!=1)
+       Print("OBJETIVO: nivel [",g_Symbols[si].name,"] ",
+             g_PairLevel[si]," → 1");
+     g_PairLevel[si]=1; }
+
+   Print("OBJETIVO: ",cerradas," operación(es) cerrada(s) — se vuelve a empezar desde nivel 1");
+
+   //--- 4) nueva referencia: el equity del momento del logro (balance+flotante
+   //    ya realizado). Inmediato y determinista: el objetivo vuelve a estar
+   //    activo en el mismo tick, sin ventanas muertas.
+   g_StepRefEquity=eq0;
+   Print("OBJETIVO: nueva referencia de equity = ",
+         DoubleToString(g_StepRefEquity,2)," USD (logros acumulados: ",g_StepHits,")");
+
+   SaveState();
+   if(!IsTester()) RebuildPanel();
+}
+
+void CheckProfitStep()
+{
+   if(!InpUseProfitStep || InpProfitStepUsd<=0.0) return;
+
+   //--- referencia inicial (primer tick o sin estado guardado)
+   if(g_StepRefEquity<=0.0)
+   { g_StepRefEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+     Print("OBJETIVO: referencia de equity = ",DoubleToString(g_StepRefEquity,2)," USD");
+     return; }
+
+   //--- la ventana de cierre semanal tiene prioridad (su lógica propia)
+   if(IsWeeklyCloseWindow(TimeCurrent())) return;
+
+   if(StepTargetReached()) ProfitStepFire();
+}
+
+//+------------------------------------------------------------------+
 //| SL / TP                                                          |
 //+------------------------------------------------------------------+
 double CalcSL(string symbol, int si, double openPrice, int posType)
@@ -1132,6 +1250,12 @@ void SaveStateToFile()
    FileWriteString(h,"DAY_START_EQ="  +DoubleToString(g_DayStartEquity,8)+"\n");
    FileWriteString(h,"DAY_START_TIME="+IntegerToString(g_DayStartTime)   +"\n");
    FileWriteString(h,"CB_ON="         +(g_CircuitBreakerOn?"1":"0")      +"\n");
+   FileWriteString(h,"STEP_REF_EQ="   +DoubleToString(g_StepRefEquity,8) +"\n");
+   FileWriteString(h,"STEP_HITS="     +IntegerToString(g_StepHits)       +"\n");
+   { string tk="";
+     for(int i=0;i<ArraySize(g_StepClosedTickets);i++)
+        tk+=((i>0)?",":"")+IntegerToString((long)g_StepClosedTickets[i]);
+     FileWriteString(h,"STEP_TICKETS="+tk+"\n"); }
    for(int si=0;si<g_SymCount;si++)
    { string sp="SYM"+IntegerToString(si)+"_";
      FileWriteString(h,sp+"NAME="    +g_Symbols[si].name                                +"\n");
@@ -1212,6 +1336,19 @@ void LoadStateFromFile()
      else if(key=="DAY_START_EQ")   g_DayStartEquity=StringToDouble(val);
      else if(key=="DAY_START_TIME") g_DayStartTime=(datetime)StringToInteger(val);
      else if(key=="CB_ON")          g_CircuitBreakerOn=(StringToInteger(val)>0);
+     else if(key=="STEP_REF_EQ")    g_StepRefEquity=StringToDouble(val);
+     else if(key=="STEP_HITS")      g_StepHits=(int)StringToInteger(val);
+     else if(key=="STEP_TICKETS")
+     { ArrayResize(g_StepClosedTickets,0);
+       if(StringLen(val)>0)
+       { string parts[];
+         int n=StringSplit(val,',',parts);
+         for(int i=0;i<n;i++)
+         { string p=parts[i]; StringTrimLeft(p); StringTrimRight(p);
+           if(StringLen(p)==0) continue;
+           int m=ArraySize(g_StepClosedTickets);
+           ArrayResize(g_StepClosedTickets,m+1);
+           g_StepClosedTickets[m]=(ulong)StringToInteger(p); } } }
      else
      { for(int si=0;si<g_SymCount;si++)
        { string sp="SYM"+IntegerToString(si)+"_";
@@ -3688,9 +3825,20 @@ void ProcessClosedQueue()
      string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
      string sym=(si>=0)?g_Symbols[si].name:"?";
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
+     //--- cierre producido por el OBJETIVO POR PASOS: no aplica la lógica
+     //    TP/SL de niveles (los niveles ya se reiniciaron a 1 al lograrlo).
+     bool byStep=IsStepClosedTicket(snap.ticket);
+     if(byStep) UnmarkStepClosed(snap.ticket);
      Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
-           wc?" [SEMANAL]":"");
-     if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
+           wc?" [SEMANAL]":"",byStep?" [OBJETIVO]":"");
+     if(byStep)
+     { Print("CIERRE POR OBJETIVO [",sym,"/",sn,"] #",snap.ticket,
+             " PL=",DoubleToString(cPL,2)," → no modifica niveles (ya están en 1)");
+       if(si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&!counted[si][st])
+       { counted[si][st]=true;
+         if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
+         if(st==STRAT_S2)          Strat2OnTradeClosed(si); } }
+     else if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
         !counted[si][st])
      {
         counted[si][st]=true;
@@ -3849,7 +3997,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.52  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.53  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -5118,22 +5266,29 @@ void MPDrawAccount(int x,int y,int w)
    double lp =GetDailyLossPct();
 
    MPRect(x,y,w,24,C'15,17,27');
-   int cw=w/4;
-   string cap[4]={"BALANCE","EQUIDAD","P&L FLOTANTE","CB DÍA"};
-   string val[4];
+   int cw=w/5;
+   string cap[5]={"BALANCE","EQUIDAD","P&L FLOTANTE","CB DÍA","OBJ STEP"};
+   string val[5];
    val[0]=DoubleToString(bal,2);
    val[1]=DoubleToString(eq,2);
    val[2]=StringFormat("%s%.2f",(fPL>=0)?"+":"",fPL);
    val[3]=(g_CircuitBreakerOn)?"BLOQUEADO":
           StringFormat("%.2f%% / %.1f%%",lp,InpMaxDailyLossPct);
-   color vc[4];
+   bool   stepOn=(InpUseProfitStep&&InpProfitStepUsd>0.0);
+   double sp=StepProgress();
+   val[4]=stepOn?StringFormat("%s%.2f/%.2f  ×%d",(sp>=0)?"+":"",sp,InpProfitStepUsd,g_StepHits)
+                :"OFF";
+   color vc[5];
    vc[0]=clrWhite;
    vc[1]=(eq>=bal)?clrLimeGreen:clrTomato;
    vc[2]=(fPL>=0)?clrLimeGreen:clrTomato;
    vc[3]=g_CircuitBreakerOn?clrTomato:
           (lp>=InpMaxDailyLossPct*0.8)?clrOrange:
           (lp>=InpMaxDailyLossPct*0.5)?clrYellow:C'120,180,120';
-   for(int i=0;i<4;i++)
+   vc[4]=!stepOn?C'120,120,140':
+          (sp>=InpProfitStepUsd*0.75)?clrLimeGreen:
+          (sp>=0)?clrYellow:clrTomato;
+   for(int i=0;i<5;i++)
    { MPText(x+i*cw+8,y+3,cap[i],C'130,130,150',false,7);
      MPText(x+i*cw+8,y+11,val[i],vc[i],true,9);
      if(i>0) g_MP.Line(x+i*cw,y+3,x+i*cw,y+20,MPC(C'45,50,75')); }
@@ -5587,7 +5742,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.52           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.53           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5628,7 +5783,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.52 === X=",InpXActivacion,
+   Print("=== DIAG v8.53 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5708,6 +5863,13 @@ int OnInit()
 
    if(!IsTester()) LoadState();
 
+   //--- OBJETIVO POR PASOS: referencia de equity (persistida o inicial)
+   if(g_StepRefEquity<=0.0) g_StepRefEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+   Print("OBJETIVO por pasos: ",(InpUseProfitStep?"ACTIVO":"INACTIVO"),
+         " | step=",DoubleToString(InpProfitStepUsd,2)," USD",
+         " | referencia=",DoubleToString(g_StepRefEquity,2)," USD",
+         " | logros=",g_StepHits);
+
    //--- Inicializar motores de líneas para poder dibujar de inmediato
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
 
@@ -5753,7 +5915,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.52 | Símbolos:",g_SymCount,
+   Print("EA v8.53 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5770,7 +5932,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.52 cerrado | Razón:",reason);
+   Print("EA v8.53 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -5786,6 +5948,7 @@ void OnTick()
    SyncAllTrades();
    ProcessClosedQueue();
    CheckCircuitBreaker();
+   CheckProfitStep();          // OBJETIVO por pasos: cierra todo y niveles → 1
 
    //--- Motores de líneas (estructura) por símbolo
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);

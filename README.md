@@ -1,10 +1,11 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.52**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.53**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
 - **Una sola operación activa por par (v8.52)**: E1 y S2 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
+- **Objetivo por pasos / profit step (v8.53)**: cuando la **equity** gana el step configurado (`InpProfitStepUsd`, por defecto **1 USD**) respecto a la referencia, el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **vuelve a empezar** con la referencia re-anclada al equity del logro.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
@@ -24,7 +25,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.52)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.53)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -110,7 +111,7 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 
 **Zona válida (v8.52):** solo se marcan/consideran zonas cuyo grupo generador tenga **mínimo `InpStrat2MinAge=10` velas H1 cerradas** desde su final hasta la vela actual (el escaneo salta las zonas más nuevas; las ya armadas conservan su estado entre re-escaneos).
 
-> **Fix v8.52 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
+> **Fix v8.51 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas), `InpStrat2MinAge=10` (antigüedad mínima de la zona), `InpAllowStrat2Orders=true` (permitir órdenes S2).
 
@@ -175,6 +176,42 @@ Las dos estrategias activas (Estrategia 1 `CONFL` y Estrategia 2 `S2-OB`) operan
 
 **En vivo se ve así:** `vOPEN [EURUSD/CONFL] ...` → `S2 [EURUSD] ... eliminada` (o al revés); cuando la primera cierra, el journal muestra `TP → nivel 1` / `SL → nivel +1` / `retroceso −3/−4` y el panel (pestaña ESTRAT) actualiza el nivel compartido.
 
+## Objetivo por pasos / profit step (v8.53) — cierra todo y reinicia niveles
+
+Gestión de riesgo adicional, **global de la cuenta** (no por par): se define un **step de profit en USD** y cada vez que la equity lo alcanza, el EA **cobra todo y vuelve a empezar desde nivel 1**.
+
+| Input | Default | Significado |
+|---|---|---|
+| `InpUseProfitStep` | `true` | Activa/desactiva el objetivo por pasos. |
+| `InpProfitStepUsd` | `1.0` | Step del objetivo en **USD**: profit de equity necesario desde la última referencia. |
+
+**Cómo funciona:**
+
+1. **Medición**: `profit = EQUITY − referencia`. La referencia es la equity del **último logro** (o la del arranque del EA / la persistida en el archivo de estado). Mezcla profit flotante y profit ya realizado.
+2. **Disparo**: cuando `profit ≥ InpProfitStepUsd` (ej. +1.00 USD), en ese mismo tick:
+   - se **cierran TODAS las operaciones del EA** (todas las magias: E1, S2 y manual),
+   - se **borran TODAS las órdenes limit reales pendientes** de ambas estrategias,
+   - **TODOS los niveles de tabla vuelven a 1** en **todos los pares** (`g_PairLevel[si]=1`),
+   - la **referencia se re-ancla** al equity del momento del logro → se vuelve a empezar.
+3. **Qué NO se toca**: el **CV** (contador virtual) y el estado **LIVE** de cada estrategia se conservan, y tampoco se modifica el `liveLogicLevel` (sigue rigiendo el 1:2). Solo se reinician los **niveles**.
+4. **Los cierres del objetivo no aplican la lógica TP/SL de niveles**: cada ticket cerrado por el step se marca (`g_StepClosedTickets`) y en `ProcessClosedQueue` se procesa como `[OBJETIVO]` — limpia el flujo de entrada de su estrategia (esperas/entradas congeladas/zona) pero **no** suma nivel ni CV. Sin esta marca, un cierre en pérdida habría subido el nivel justo después de reiniciarlo.
+5. **Prioridades**: el **cierre semanal** (viernes) tiene prioridad — durante esa ventana el step no se evalúa, para no pisar su lógica propia. El **circuit breaker diario** sigue funcionando igual e independiente (su referencia es `g_DayStartEquity`).
+6. **Persistencia**: `STEP_REF_EQ`, `STEP_HITS` (cuántas veces se logró) y `STEP_TICKETS` se guardan en el archivo de estado, así que un reinicio del EA no pierde la referencia ni re-aplica niveles a los cierres pendientes.
+7. **Panel**: la fila de cuenta muestra la columna **`OBJ STEP`** con `+0.35/1.00 ×3` (profit actual / step / número de logros), en verde cuando va por ≥75% del step, amarillo en positivo y rojo en negativo.
+
+**En el journal se ve así:**
+
+```
+★★ OBJETIVO ALCANZADO ★★ equity +1.02 USD ≥ step 1.00 (logro #3) → cierra TODO y niveles → 1
+OBJETIVO: nivel [EURUSD] 4 → 1
+OBJETIVO: 2 operación(es) cerrada(s) — se vuelve a empezar desde nivel 1
+OBJETIVO: nueva referencia de equity = 10513.40 USD (logros acumulados: 3)
+Cierre [EURUSD/CONFL] #123 PL=0.61 TP=false SL=false [OBJETIVO]
+CIERRE POR OBJETIVO [EURUSD/CONFL] #123 PL=0.61 → no modifica niveles (ya están en 1)
+```
+
+> **Nota**: el step se mide sobre la **equity de la cuenta**, así que solo cuenta el dinero real — la **fase virtual** (simulación) no lo dispara ni lo alimenta.
+
 ## Gestión de riesgo (v8.42 — lógica de "Asistente 3", nivel POR PAR)
 
 La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 1-20 por par** (compartido por la estrategia única del par), y el lote sigue saliendo de la **tabla de riesgo de 20 niveles** (% de la base de capital) que se mantiene igual:
@@ -188,6 +225,7 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 - **1:2 automático desde nivel 5** (`InpAutoFromLevel5=true`, como Asistente 3): las posiciones abiertas con nivel del par ≥5 activan el SL protegido al avanzar `InpActivationPoints` (210) → SL a `InpProtectedSL` (205). Esa ganancia "protegida" baja el nivel −3/−4 en vez de resetear a 1.
 - **MODO AVANZADO** (panel CONFIG): fuerza el 1:2 en todas las posiciones nuevas, además del automático por nivel.
 - **Se mantiene igual**: la **tabla de riesgo** (`InpRiskStep1..20`, % de la base), los **3 modos de capital base**, el **circuit breaker diario** (`InpMaxDailyLossPct=4.5%`), **SL/TP** (95/305, RR ≈ 1:3.2), **split de lotes**, **filtro de horario** y hasta 20 símbolos con SL/TP propios.
+- **Objetivo por pasos (v8.53)**: por **encima** de todo lo anterior, `InpUseProfitStep=true` + `InpProfitStepUsd=1.0` hacen que al ganar la equity ese step se **cierren todas las operaciones**, se **borren todas las límites** y **todos los niveles de todos los pares vuelvan a 1**, re-anclando la referencia (ver sección *Objetivo por pasos*). Es la única regla que reinicia niveles **globalmente**; las reglas TP/SL anteriores siguen operando par a par entre logro y logro.
 - **Fase virtual → LIVE (v8.42)**: la estrategia **siempre** simula primero. Con `InpXActivacion=X` el EA pasa a LIVE cuando se **completan X pérdidas virtuales**, de modo que la **operación X+1 ya es LIVE** (ej. `X=4` → operaciones 1-4 virtuales, operación 5 en LIVE). El conteo de las operaciones virtuales usa **exactamente el mismo régimen que las operaciones LIVE** (reglas de Asistente 3):
   - **Pérdida** → CV +1 y nivel del par +1 (sube por la tabla).
   - **Ganancia limpia (TP)** → CV = 1 y nivel del par = 1 (reset).
