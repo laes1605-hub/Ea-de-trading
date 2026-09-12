@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.37"
+#property version   "8.38"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -72,6 +72,23 @@ input int    InpSplitDelayMs     = 200;
 
 input group "=== CIRCUIT BREAKER DIARIO ==="
 input double InpMaxDailyLossPct  = 4.5;
+
+input group "=== OBJETIVO GLOBAL POR PASOS (STEP PROFIT) ==="
+// Al alcanzar el objetivo de EQUITY GLOBAL (suma de todos los pares) se
+// cierran TODAS las posiciones del EA, se borran las órdenes límite
+// pendientes (reales y virtuales) y TODOS los niveles de par vuelven a 1.
+// La referencia es un TRINQUETE que solo sube: si cierra en 1001, la nueva
+// base es 1001 y la siguiente meta es 1002, luego 1003... nunca baja.
+input bool   InpUseStepProfit     = true;   // Activar cierre global por objetivo
+enum ENUM_STEP_TARGET_MODE
+{
+   STEP_TARGET_USD = 0,   // objetivo fijo en dólares por paso
+   STEP_TARGET_PCT = 1    // objetivo en % de la referencia (base trinquete)
+};
+input ENUM_STEP_TARGET_MODE InpStepTargetMode = STEP_TARGET_USD;
+input double InpStepProfitUSD    = 1.0;    // Objetivo por paso en USD (modo USD)
+input double InpStepProfitPct    = 0.1;    // Objetivo por paso en % (modo %)
+input double InpStepBaseOverride = 0.0;    // Base/referencia manual (0 = equity al arrancar; p.ej. 1000 fija la base en 1000)
 
 input group "=== SÍMBOLOS (vacío = no usar) ==="
 input string InpSymbol1          = "";
@@ -416,6 +433,16 @@ datetime g_DayStartTime            = 0;
 bool     g_CircuitBreakerOn        = false;
 datetime g_CircuitBreakerUntil     = 0;
 
+//+------------------------------------------------------------------+
+//| OBJETIVO GLOBAL POR PASOS (STEP PROFIT)                          |
+//|   g_StepBaseEquity = referencia trinquete (solo sube). Cuando el  |
+//|   equity global llega a base + paso → cierre total, niveles a 1  |
+//|   y nueva base = equity resultante.                              |
+//+------------------------------------------------------------------+
+double   g_StepBaseEquity          = 0.0;
+bool     g_StepClosing             = false;  // cierre global en curso (los cierres no mueven niveles)
+int      g_StepsClosed             = 0;      // nº de pasos cobrados (informativo)
+
 TradeRecord  g_Trades[];
 int          g_TradeCount          = 0;
 int          g_ScrollOffset        = 0;
@@ -467,6 +494,8 @@ void OnLiveSL_Protected(int si, int st, int openLevel);
 void OnLiveTP(int si, int st);
 void CloseAllSymbolsPositions();
 void ClosePosition(ulong ticket);
+void ClearVirtualState(int si,int st);
+void CheckStepProfit();
 void UpdateLimitLine();
 void RemoveLimitLine();
 bool SendMarketOrderEx(int si, int st, ENUM_ORDER_TYPE ot, double lots, long magic);
@@ -729,6 +758,127 @@ void CheckCircuitBreaker()
 }
 
 //+------------------------------------------------------------------+
+//| OBJETIVO GLOBAL POR PASOS (STEP PROFIT)                          |
+//|   · El EQUITY FLOTANTE global (todos los pares sumados) debe      |
+//|     subir el importe del paso por encima de la referencia.       |
+//|   · Alcanzado: cierra TODAS las posiciones del EA, borra límites  |
+//|     reales/virtuales y pone TODOS los niveles de par a 1.         |
+//|   · Después fija la referencia en el balance resultante: es un    |
+//|     TRINQUETE, nunca baja (1001 → 1002 → 1003...).                |
+//|   · Los cierres de la canasta NO mueven niveles ni CV ni sacan a  |
+//|     ninguna estrategia de LIVE (el reinicio a 1 manda).           |
+//+------------------------------------------------------------------+
+double StepProfitAmount()
+{
+   if(InpStepTargetMode==STEP_TARGET_PCT)
+      return g_StepBaseEquity*MathMax(0.0,InpStepProfitPct)/100.0;
+   return MathMax(0.0,InpStepProfitUSD);
+}
+
+double StepProfitTarget()
+{ return g_StepBaseEquity+StepProfitAmount(); }
+
+//--- ¿Hay alguna posición abierta que pertenezca al EA? -------------
+bool HasAnyEAPosition()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i);
+     if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) return true; }
+   return false;
+}
+
+//--- Borra TODAS las órdenes pendientes (límites) del EA -----------
+void DeleteAllEAPendingOrders()
+{
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   { ulong t=OrderGetTicket(i);
+     if(t==0)                                     continue;
+     if(!IsAnyMagic((long)OrderGetInteger(ORDER_MAGIC))) continue;
+     string sym=OrderGetString(ORDER_SYMBOL);
+     MqlTradeRequest req={}; MqlTradeResult res={};
+     req.action=TRADE_ACTION_REMOVE; req.order=t;
+     if(OrderSend(req,res))
+        Print("STEP: orden pendiente #",t," [",sym,"] eliminada");
+     else
+        Print("STEP: no se pudo eliminar la orden #",t," [",sym,"] ret=",res.retcode);
+   }
+}
+
+//--- Lanza el cierre global por objetivo ----------------------------
+void StepProfitTrigger()
+{
+   double eq =AccountInfoDouble(ACCOUNT_EQUITY);
+   double tgt=StepProfitTarget();
+   Print("🎯 STEP PROFIT ALCANZADO — Equity ",DoubleToString(eq,2),
+         " ≥ meta ",DoubleToString(tgt,2),
+         " (base ",DoubleToString(g_StepBaseEquity,2)," + paso ",
+         DoubleToString(StepProfitAmount(),2),
+         InpStepTargetMode==STEP_TARGET_PCT?" USD (%)":" USD",
+         ") → cierre GLOBAL de todos los pares");
+   g_StepClosing=true;
+   DeleteAllEAPendingOrders();
+   CloseAllSymbolsPositions();
+   for(int si=0;si<g_SymCount;si++)
+   { for(int st=0;st<STRAT_COUNT;st++)
+        ClearVirtualState(si,st);
+     //--- esperas/límites congelados de confluencia fuera
+     g_SysState[si].confWaitBuy=false;    g_SysState[si].confWaitSell=false;
+     g_SysState[si].confEntryBuy=0.0;     g_SysState[si].confEntrySell=0.0;
+     g_SysState[si].m3ChochDir=0;         g_SysState[si].m3ChochTime=0; }
+}
+
+//--- Remata el reinicio cuando los cierres ya están liquidados ------
+void StepProfitFinalize()
+{
+   for(int si=0;si<g_SymCount;si++)
+      g_PairLevel[si]=1;                 // tabla de riesgo de todos los pares a nivel 1
+
+   //--- Nueva base trinquete: balance/equity resultante, nunca por
+   //    debajo de la base anterior.
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq =AccountInfoDouble(ACCOUNT_EQUITY);
+   double ref=MathMax(bal,eq);
+   if(ref<g_StepBaseEquity) ref=g_StepBaseEquity;
+   g_StepBaseEquity=ref;
+   g_StepsClosed++;
+   g_StepClosing=false;
+
+   Print("✅ STEP PROFIT #",g_StepsClosed," cobrado — TODOS los NIVELES a 1.",
+         " Nueva base=",DoubleToString(g_StepBaseEquity,2),
+         " | próxima meta=",DoubleToString(StepProfitTarget(),2),
+         " (paso ",DoubleToString(StepProfitAmount(),2)," USD)");
+   SaveState();
+   if(!IsTester()) RebuildPanel();
+}
+
+//--- Llamada cada tick desde OnTick (tras procesar cierres) ---------
+void CheckStepProfit()
+{
+   if(!InpUseStepProfit) return;
+   if(g_StepBaseEquity<=0.0)
+      g_StepBaseEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(g_StepClosing)
+   { //--- si algún cierre falló (recotización), reintentar cada tick
+     if(HasAnyEAPosition())
+     { DeleteAllEAPendingOrders();
+       CloseAllSymbolsPositions();
+       return; }
+     //--- esperar a que todos los cierres se liquiden y se procesen
+     if(g_ClosedCount==0)
+        StepProfitFinalize();
+     return; }
+
+   //--- sin posiciones del EA no hay nada que cerrar ni cobrar
+   if(!HasAnyEAPosition()) return;
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(eq>=StepProfitTarget())
+      StepProfitTrigger();
+}
+
+//+------------------------------------------------------------------+
 //| SL / TP                                                          |
 //+------------------------------------------------------------------+
 double CalcSL(string symbol, int si, double openPrice, int posType)
@@ -967,6 +1117,8 @@ void SaveStateToFile()
    FileWriteString(h,"DAY_START_EQ="  +DoubleToString(g_DayStartEquity,8)+"\n");
    FileWriteString(h,"DAY_START_TIME="+IntegerToString(g_DayStartTime)   +"\n");
    FileWriteString(h,"CB_ON="         +(g_CircuitBreakerOn?"1":"0")      +"\n");
+   FileWriteString(h,"STEP_BASE_EQ="  +DoubleToString(g_StepBaseEquity,8)+"\n");
+   FileWriteString(h,"STEP_CLOSED="   +IntegerToString(g_StepsClosed)    +"\n");
    for(int si=0;si<g_SymCount;si++)
    { string sp="SYM"+IntegerToString(si)+"_";
      FileWriteString(h,sp+"NAME="    +g_Symbols[si].name                                +"\n");
@@ -1038,6 +1190,8 @@ void LoadStateFromFile()
      else if(key=="DAY_START_EQ")   g_DayStartEquity=StringToDouble(val);
      else if(key=="DAY_START_TIME") g_DayStartTime=(datetime)StringToInteger(val);
      else if(key=="CB_ON")          g_CircuitBreakerOn=(StringToInteger(val)>0);
+     else if(key=="STEP_BASE_EQ"){ double sb=StringToDouble(val); if(sb>0.0) g_StepBaseEquity=sb; }
+     else if(key=="STEP_CLOSED")    g_StepsClosed=(int)MathMax(0,StringToInteger(val));
      else
      { for(int si=0;si<g_SymCount;si++)
        { string sp="SYM"+IntegerToString(si)+"_";
@@ -1121,10 +1275,18 @@ void OnVirtualSL_Original(int si, int st)
 {
    g_SysState[si].strategies[st].CV++;
    UpdateCVMax(si,st);
-   Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
-         "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
-         "→",g_SysState[si].strategies[st].CV,
-         " NIVEL sin cambio (operación virtual; el nivel solo cuenta LIVE real)");
+   if(g_SysState[si].hasLive)
+      Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+            "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+            "→",g_SysState[si].strategies[st].CV,
+            " NIVEL sin cambio (hay LIVE en el par → solo operaciones reales)");
+   else
+   { int lv=PairLevel(si); PairLevelUp(si);
+     Print("[",g_Symbols[si].name,"/",g_SysState[si].strategies[st].name,
+           "] vSL orig CV:",g_SysState[si].strategies[st].CV-1,
+           "→",g_SysState[si].strategies[st].CV,
+           " NIVEL:",lv,"→",PairLevel(si),
+           " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(!g_SysState[si].hasLive&&
       g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
@@ -2293,6 +2455,7 @@ void OpenByStrategy(int si, int st, int signal)
    if(st==STRAT_PERSONAL && !InpAllowPersonalOrders) return;
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(signal==0) return;
+   if(g_StepClosing) return;          // cierre global por objetivo en curso
    if(IsWeeklyCloseWindow()) return;   // no abrir durante la ventana de cierre semanal
    // Límite de exposición: como máximo una posición abierta por símbolo,
    // independientemente de la estrategia o del origen de la posición.
@@ -2503,7 +2666,11 @@ void ProcessClosedQueue()
      string sym=(si>=0)?g_Symbols[si].name:"?";
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
      Print("Cierre [",sym,"/",sn,"] #",snap.ticket," PL=",cPL," TP=",hTP," SL=",hSL,
-           wc?" [SEMANAL]":"");
+           g_StepClosing?" [STEP → neutral, niveles a 1]":(wc?" [SEMANAL]":""));
+     //--- Cierre por objetivo global: NO se aplica SL/TP ni se mueve CV;
+     //    la canasta es neutral y StepProfitFinalize pone todos los
+     //    niveles a 1 (las estrategias se mantienen LIVE).
+     if(g_StepClosing) continue;
      if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
         !counted[si][st])
      {
@@ -2662,7 +2829,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.37  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.38  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -3895,6 +4062,47 @@ void MPDrawAccount(int x,int y,int w)
      if(i>0) g_MP.Line(x+i*cw,y+3,x+i*cw,y+20,MPC(C'45,50,75')); }
 }
 
+//+------------------------------------------------------------------+
+//| Tira del objetivo global por pasos (base trinquete → meta)       |
+//+------------------------------------------------------------------+
+#define MP_STEP_H 20
+void MPDrawStep(int x,int y,int w)
+{
+   double eq  =AccountInfoDouble(ACCOUNT_EQUITY);
+   double amt =StepProfitAmount();
+   double tgt =StepProfitTarget();
+   double prog=eq-g_StepBaseEquity;
+   double frac=(amt>0.0)?MathMax(0.0,MathMin(1.0,prog/amt)):0.0;
+
+   MPRect(x,y,w,MP_STEP_H,C'12,22,16');
+   g_MP.Line(x,y,x+w-1,y,MPC(C'40,70,50'));
+
+   string txt;
+   color  clr;
+   if(g_StepClosing)
+   { txt=StringFormat("STEP #%d  CERRANDO CANASTA…",g_StepsClosed+1);
+     clr=clrGold; }
+   else
+   { string modo=(InpStepTargetMode==STEP_TARGET_PCT)
+                 ?StringFormat("%.2f%% = %.2f USD",InpStepProfitPct,amt)
+                 :StringFormat("%.2f USD",amt);
+     txt=StringFormat("STEP #%d  base %.2f → %.2f   (%s%.2f / %s)",
+                      g_StepsClosed+1,g_StepBaseEquity,tgt,
+                      (prog>=0.0?"+":""),prog,modo);
+     clr=(frac>=1.0)?clrLimeGreen:(prog>=0.0)?clrAqua:clrTomato; }
+   MPText(x+8,y+6,txt,clr,true,8);
+
+   //--- barra de progreso (mitad derecha)
+   int bx=x+w/2, bw=w/2-16, by=y+12;
+   MPRect(bx,by,bw,5,C'30,34,44');
+   if(frac>0.0)
+   { color fc=(frac>=1.0)?clrLimeGreen:(frac>=0.75)?clrYellow:clrSpringGreen;
+     MPRect(bx,by,(int)MathMax(2,MathFloor(bw*frac)),5,fc); }
+   MPTextR(x+w-8,y+2,
+           g_StepClosing?"…":StringFormat("%.0f%%",frac*100.0),
+           C'150,180,150',true,7);
+}
+
 //--- columnas de la tabla (offsets X dentro del panel, ancho 620)
 #define MPC_X_PAR   8
 #define MPC_X_H1   92
@@ -4016,7 +4224,8 @@ void MultiPanelUpdate(bool force=false)
       chartSlots=MathMin(chartSlots,MP_MAX_CHARTS); }
    int chartRows=(chartSlots+1)/2;
    int W=620;
-   int H=22+24+14+rows*MP_ROW_H;
+   int stepH=InpUseStepProfit?MP_STEP_H:0;
+   int H=22+24+stepH+14+rows*MP_ROW_H;
    if(nAct>rows) H+=13;
    if(chartRows>0) H+=8+chartRows*MP_BOX_H+(chartRows-1)*6;
    H+=20;
@@ -4051,6 +4260,7 @@ void MultiPanelUpdate(bool force=false)
    int y=0;
    MPDrawHeader(0,y,W,nOpen,nLim);  y+=22;
    MPDrawAccount(0,y,W);            y+=24;
+   if(InpUseStepProfit){ MPDrawStep(0,y,W); y+=MP_STEP_H; }
    MPDrawTable(0,y,W,snaps,ord,rows);
    y+=14+rows*MP_ROW_H;
    if(nAct>rows) y+=13;
@@ -4210,13 +4420,22 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.37           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.38           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %.2f   Bal.máx: %.2f\n",
                      g_BaseCapital,g_BaseMaxBalance);
    msg+=StringFormat("║  CB Diario    : %.2f%% / %.1f%%   [%s]\n",
                      lossPct,InpMaxDailyLossPct,
                      g_CircuitBreakerOn?"⛔BLOQ":"OK");
+   if(InpUseStepProfit)
+   {
+      double eqS =AccountInfoDouble(ACCOUNT_EQUITY);
+      double prog=eqS-g_StepBaseEquity;
+      string stTxt=g_StepClosing?"CERRANDO CANASTA…":
+         StringFormat("%s%.2f / %.2f",(prog>=0?"+":""),prog,StepProfitAmount());
+      msg+=StringFormat("║  STEP objetivo: %.2f -> %.2f  %s\n",
+                        g_StepBaseEquity,StepProfitTarget(),stTxt);
+   }
    msg+="╠══════════════════════════════════════════╣\n";
    for(int si=0;si<g_SymCount;si++)
    {
@@ -4251,9 +4470,15 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.37 === X=",InpXActivacion,
+   Print("=== DIAG v8.38 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
-         " Base=",DoubleToString(g_BaseCapital,2));
+         " Base=",DoubleToString(g_BaseCapital,2),
+         InpUseStepProfit?
+            StringFormat(" | STEP base=%.2f meta=%.2f eq=%.2f%s (#%d)",
+               g_StepBaseEquity,StepProfitTarget(),
+               AccountInfoDouble(ACCOUNT_EQUITY),
+               g_StepClosing?" CERRANDO":"",g_StepsClosed)
+            :" | STEP OFF");
    for(int si=0;si<g_SymCount;si++)
    {
       int alive=g_SysState[si].activeLiveStrategy;
@@ -4331,6 +4556,20 @@ int OnInit()
 
    if(!IsTester()) LoadState();
 
+   //--- Objetivo global por pasos: referencia trinquete guardada,
+   //    override manual o equity actual si no hay referencia previa.
+   if(InpStepBaseOverride>0.0)
+      g_StepBaseEquity=InpStepBaseOverride;
+   if(g_StepBaseEquity<=0.0)
+      g_StepBaseEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+   g_StepClosing=false;
+   if(InpUseStepProfit)
+      Print("STEP PROFIT activo — Base ref=",DoubleToString(g_StepBaseEquity,2),
+            " | modo=",(InpStepTargetMode==STEP_TARGET_PCT?"PORCENTAJE":"USD"),
+            " | paso=",DoubleToString(StepProfitAmount(),2)," USD",
+            " | primera meta=",DoubleToString(StepProfitTarget(),2),
+            " | pasos cobrados=",g_StepsClosed);
+
    //--- Inicializar motores de líneas para poder dibujar de inmediato
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
 
@@ -4378,7 +4617,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.37 | Símbolos:",g_SymCount,
+   Print("EA v8.38 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",DoubleToString(g_BaseCapital,2),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -4395,7 +4634,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.37 cerrado | Razón:",reason);
+   Print("EA v8.38 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -4411,6 +4650,7 @@ void OnTick()
    SyncAllTrades();
    ProcessClosedQueue();
    CheckCircuitBreaker();
+   CheckStepProfit();         // objetivo global por pasos: cierre total + niveles a 1
 
    //--- Motores de líneas (estructura) por símbolo
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
@@ -4419,19 +4659,20 @@ void OnTick()
    //    órdenes limit del par (siempre, aunque haya CB/filtro horario)
    for(int si=0;si<g_SymCount;si++) ConfluenciaManagePendings(si);
 
-   if(!g_CircuitBreakerOn)
+   if(!g_CircuitBreakerOn && !g_StepClosing)
    { EnforceSLTP();
      ManageOpenPositions(); }
 
-   // Virtuales siempre (salvo cbPaused individual)
+   // Virtuales siempre (salvo cbPaused individual o cierre global en curso)
    for(int si=0;si<g_SymCount;si++)
       for(int st=0;st<STRAT_COUNT;st++)
       { if(!g_SysState[si].strategies[st].enabled)  continue;
         if(g_SysState[si].strategies[st].cbPaused)  continue;
         if(g_SysState[si].strategies[st].isLive)    continue;
+        if(g_StepClosing)                           continue;
         UpdateStrategyVirtual(si,st); }
 
-   if(!g_CircuitBreakerOn&&IsTradeTimeAllowed())
+   if(!g_CircuitBreakerOn&&!g_StepClosing&&IsTradeTimeAllowed())
       UpdateAllStrategies();
 
    if(IsTester())
@@ -4637,6 +4878,12 @@ void OnChartEvent(const int id,const long &lparam,
       g_BaseCapital     =InpBaseCapital;
       g_BaseMaxBalance  =AccountInfoDouble(ACCOUNT_BALANCE);
       g_CircuitBreakerOn=false;
+      g_StepClosing     =false;
+      g_StepsClosed     =0;
+      g_StepBaseEquity  =(InpStepBaseOverride>0.0)?InpStepBaseOverride:
+                         AccountInfoDouble(ACCOUNT_EQUITY);
+      Print("STEP: estado reiniciado — nueva base ref=",
+            DoubleToString(g_StepBaseEquity,2));
       RebuildPanel(); return;
    }
 

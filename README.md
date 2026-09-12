@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.37** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par**).
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.38** (estrategia PERSONAL de líneas + ESTRATEGIA 1 de confluencia H1+M3 + **panel MULTI-PAR** + **gestión de riesgo de Asistente 3 por par** + **objetivo global por pasos (step profit)**).
 
 ## Archivos
 
@@ -120,6 +120,34 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 - El nivel y su lote se ven en el panel (pestaña OPERAR "NIVEL → Lotaje", CUENTA "Nivel par / Lot", ESTRAT "NIV→Lot") y en la columna **NIV** del PANEL MULTI-PAR. En el log: `NIVEL:3→4`.
 - El estado se guarda por par (`PLEVEL`) en el archivo de estado; los comentarios de órdenes llevan el nivel (`QA_EA_EURUSD_CONFL_N3`).
 
+## Objetivo global por pasos — STEP PROFIT (v8.38)
+
+Gestión **global de cuenta** (no por par) que funciona **encima** de la progresión de niveles por par:
+
+- Se define una **referencia/base** (trinquete) y un **paso** (`InpStepProfitUSD=1.0` USD en el ejemplo). En cuanto el **equity flotante global** —balance + P&L en vivo de TODOS los pares sumados— llega a **base + paso** (ej. 1000 → **1001**), aunque algún par vaya en pérdida:
+  1. se **cierran todas las posiciones** del EA de todos los pares;
+  2. se **eliminan todas las órdenes límite** pendientes, reales y virtuales;
+  3. **todos los niveles de la tabla de riesgo de todos los pares vuelven a 1** (lote de nivel 1);
+  4. la **nueva base pasa a ser el balance resultante** (ej. 1001) y la siguiente meta es **1002**, luego **1003**, y así sucesivamente.
+- La base es un **TRINQUETE: solo sube, nunca baja** (aunque después haya pérdidas, la meta no retrocede). Solo cambia manualmente: con el input `InpStepBaseOverride` (ej. `1000` fija la base en 1000 al arrancar) o con el botón **LIMPIAR ESTADO** de la pestaña CONFIG.
+- Los cierres de la canasta **no** se contabilizan como SL/TP: no mueven el nivel de ningún par, no tocan el CV y **no sacan a ninguna estrategia de LIVE** (el reinicio a 1 manda). El estado de activación virtual→LIVE se conserva.
+- Solo se dispara con **posiciones reales del EA abiertas** (las simulaciones virtuales no cuentan porque no mueven el equity); si un cierre falla por recotización se reintenta en cada tick hasta vaciar la cuenta del EA.
+- La referencia se **persiste** en el archivo de estado (`STEP_BASE_EQ`, `STEP_CLOSED`), así que sobrevive reinicios del EA/cierre del terminal.
+- Dos modos de importe (selector `InpStepTargetMode`): **USD fijos** (`InpStepProfitUSD`, por defecto 1.0) o **% de la referencia** (`InpStepProfitPct`, ej. 0.1 = 0.1% de la base → el dólar objetivo escala con la cuenta). Se activa/desactiva con `InpUseStepProfit`.
+- El **PANEL MULTI-PAR** muestra una tira verde con la base, la meta actual, el progreso `+$/$paso`, una barra de progreso y el nº de paso; el `Comment()` de respaldo del tester y el log (`STEP PROFIT ALCANZADO`, `STEP PROFIT #n cobrado`) también lo reflejan.
+
+Inputs (grupo `OBJETIVO GLOBAL POR PASOS (STEP PROFIT)`):
+
+| Input | Defecto | Significado |
+|---|---|---|
+| `InpUseStepProfit` | `true` | Activar/desactivar la gestión por pasos |
+| `InpStepTargetMode` | `STEP_TARGET_USD` | `STEP_TARGET_USD` = USD fijos por paso; `STEP_TARGET_PCT` = % de la base |
+| `InpStepProfitUSD` | `1.0` | Beneficio por paso en USD (modo USD) |
+| `InpStepProfitPct` | `0.1` | Beneficio por paso en % de la referencia (modo %) |
+| `InpStepBaseOverride` | `0.0` | Referencia manual al arrancar (`0` = equity actual; ej. `1000` fija la base en 1000) |
+
+> Nota: el objetivo se mide sobre el **equity de toda la cuenta** (cierre por `magic` del EA); si hay operaciones manuales o de otros EAs en la misma cuenta, su flotante también entra en el equity. En el Strategy Tester la base arranca en el equity inicial de la prueba.
+
 ## Cómo probar
 
 1. Estrategia Tester: elige símbolo + timeframe (las señales se calculan en el TF del gráfico), cuenta demo. **Marca "Modo visual"** para ver las líneas y el panel.
@@ -165,6 +193,10 @@ git show --stat HEAD
   ```bash
   grep -cE "MultiPanelUpdate|MPDrawMini|DrawPositionLines|InpShowMultiPanel" "trabajador multichart.mq5"
   ```
+- Objetivo global por pasos presente (debe dar `> 0`):
+  ```bash
+  grep -cE "CheckStepProfit|StepProfitTrigger|StepProfitFinalize|InpUseStepProfit|MPDrawStep" "trabajador multichart.mq5"
+  ```
 - Etiquetas sueltas antiguas eliminadas (debe dar `0`):
   ```bash
   grep -cE "void DrawPerPairInfo" "trabajador multichart.mq5"
@@ -178,7 +210,7 @@ git show --stat HEAD
 
 1. Abre **MetaEditor** → `Archivo > Abrir datos > MQL5 > Experts` → pega `trabajador multichart.mq5`.
 2. Pulsa **F7 (Compilar)**: debe compilar sin errores (usa `Canvas.mqh` de la librería estándar de MT5, ya incluida en la instalación).
-3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)`, `ESTRATEGIA 1: CONFLUENCIA (H1 MADRE + M3 ENTRADA)`, `PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL)` y `PARAMETROS MOTOR DE LINEAS`.
+3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA PERSONAL (LÍNEAS L1-L4, RR 1:3)`, `ESTRATEGIA 1: CONFLUENCIA (H1 MADRE + M3 ENTRADA)`, `OBJETIVO GLOBAL POR PASOS (STEP PROFIT)`, `PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL)` y `PARAMETROS MOTOR DE LINEAS`. Para probarlo rápido en el tester, sube `InpStepProfitUSD` a un valor pequeño (ej. 1.0) y baja momentáneamente SL/TP si quieres ver varios ciclos; en el panel la tira **STEP** pasa a 100% y en el log aparecen `🎯 STEP PROFIT ALCANZADO` y `✅ STEP PROFIT #n cobrado`.
 4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y la entrada 50% M3 cuando se congele. Arriba a la derecha, el **PANEL MULTI-PAR** con la tabla de todos los pares y sus mini-gráficos. En el tester, activa el **modo visual** para verlas.
 
 ## ⚠️ Advertencia
