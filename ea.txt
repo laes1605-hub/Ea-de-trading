@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.53"
+#property version   "8.54"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -15,6 +15,15 @@ enum ENUM_CAPITAL_MODE
    CAP_MODE_DYNAMIC = 0,   // Dinámica: la base crece con los nuevos máximos del balance
    CAP_MODE_FIXED   = 1,   // Fija: la base de decisión no crece ni disminuye
    CAP_MODE_ACCOUNT = 2    // % cuenta: la base = % del balance actual de la cuenta
+};
+
+//+------------------------------------------------------------------+
+//| MEDIDA DEL OBJETIVO POR PASOS (STEP)                             |
+//+------------------------------------------------------------------+
+enum ENUM_STEP_MEASURE
+{
+   STEP_MEASURE_EQUITY = 0,   // Equity: flotante + realizado (dispara en cuanto toca el escalón)
+   STEP_MEASURE_CLOSED = 1    // Posiciones cerradas: solo balance realizado (suma de cierres)
 };
 
 //+------------------------------------------------------------------+
@@ -93,8 +102,10 @@ input group "=== CIRCUIT BREAKER DIARIO ==="
 input double InpMaxDailyLossPct  = 4.5;
 
 input group "=== OBJETIVO POR PASOS (STEP) ==="
-input bool   InpUseProfitStep    = true;   // Objetivo por pasos: al lograrlo cierra TODO y niveles→1
-input double InpProfitStepUsd    = 1.0;    // Step del objetivo en USD (profit de equity desde la última referencia)
+input bool              InpUseProfitStep   = true;                // Objetivo por pasos: al lograrlo cierra TODO y niveles→1
+input double            InpProfitStepUsd   = 1.0;                 // USD de cada paso (base → base+paso → base+2·paso…)
+input ENUM_STEP_MEASURE InpStepMeasure     = STEP_MEASURE_EQUITY; // Medida del paso: Equity (flotante+real) / posiciones cerradas (balance)
+input double            InpStepBaseValue   = 0.0;                 // Base manual del objetivo (0 = automática al iniciar; >0 la fijas tú)
 
 input group "=== SÍMBOLOS (vacío = no usar) ==="
 input string InpSymbol1          = "";
@@ -502,9 +513,12 @@ datetime g_DayStartTime            = 0;
 bool     g_CircuitBreakerOn        = false;
 datetime g_CircuitBreakerUntil     = 0;
 
-//--- OBJETIVO POR PASOS (STEP): equity − referencia ≥ InpProfitStepUsd
-double   g_StepRefEquity           = 0.0;   // equity de referencia (se re-ancla tras cada logro)
-int      g_StepHits                = 0;     // cuántas veces se alcanzó el objetivo
+//--- OBJETIVO POR PASOS (STEP): escalera base → base+paso → base+2·paso…
+//    La base es el último escalón LOGRADO y NUNCA baja (solo cambia si se
+//    fija manualmente con InpStepBaseValue).
+double   g_StepBase                = 0.0;   // base actual (último escalón logrado)
+double   g_StepManualBase          = 0.0;   // último valor manual aplicado (para detectar cambios)
+int      g_StepHits                = 0;     // cuántos escalones se han logrado
 ulong    g_StepClosedTickets[];              // tickets cerrados POR el objetivo (no aplican TP/SL)
 
 TradeRecord  g_Trades[];
@@ -884,24 +898,48 @@ void CheckCircuitBreaker()
 }
 
 //+------------------------------------------------------------------+
-//| OBJETIVO POR PASOS (STEP)                                        |
+//| OBJETIVO POR PASOS (STEP) — ESCALERA QUE NUNCA BAJA              |
 //|                                                                  |
-//|  Cuando la EQUITY gana InpProfitStepUsd respecto a la referencia |
-//|  (equity del último logro / del arranque):                       |
+//|  La BASE es el último escalón logrado. El próximo objetivo es    |
+//|  siempre base + InpProfitStepUsd:                                |
+//|     base 1000 → dispara en 1001 → nueva base 1001 →             |
+//|     dispara en 1002 → nueva base 1002 → dispara en 1003 → …      |
+//|  La base NUNCA baja por sí sola (aunque la cuenta pierda, el     |
+//|  escalón sigue ahí y hay que recuperarlo); solo cambia si se     |
+//|  fija MANUALMENTE con InpStepBaseValue.                          |
+//|                                                                  |
+//|  Medida (InpStepMeasure):                                        |
+//|    · EQUITY            → flotante + realizado (dispara al tacto) |
+//|    · POSICIONES CERRADAS → solo balance realizado (suma cierres) |
+//|                                                                  |
+//|  Al lograr el escalón:                                           |
 //|    · se cierran TODAS las operaciones del EA (todas las magias), |
 //|    · se borran TODAS las órdenes limit reales pendientes,        |
 //|    · TODOS los niveles de tabla vuelven a 1 (todos los pares),   |
-//|    · la referencia se re-ancla al equity resultante y se vuelve  |
-//|      a empezar (cada +step USD = un reinicio completo).          |
-//|  El CV y el estado LIVE de cada estrategia NO se tocan (solo los |
-//|  niveles). Los cierres producidos por el objetivo NO aplican la  |
-//|  lógica TP/SL de niveles (se marcan por ticket).                 |
+//|    · la base pasa al escalón logrado.                            |
+//|  Lo que NO se toca: el CV de las órdenes virtuales y el estado   |
+//|  LIVE de cada estrategia (las LIVE siguen LIVE; las virtuales    |
+//|  conservan su CV y su vOPEN). Los cierres producidos por el      |
+//|  objetivo NO aplican la lógica TP/SL de niveles (marca ticket).  |
 //+------------------------------------------------------------------+
-double StepProgress()          // profit de equity desde la referencia
-{ return AccountInfoDouble(ACCOUNT_EQUITY)-g_StepRefEquity; }
+double StepMeasure()           // valor medido según InpStepMeasure
+{
+   if(InpStepMeasure==STEP_MEASURE_CLOSED)
+      return AccountInfoDouble(ACCOUNT_BALANCE);   // solo posiciones cerradas
+   return AccountInfoDouble(ACCOUNT_EQUITY);        // equity (flotante+real)
+}
+
+string StepMeasureName()
+{ return (InpStepMeasure==STEP_MEASURE_CLOSED)?"CERRADAS":"EQUITY"; }
+
+double StepTarget()            // próximo escalón de la escalera
+{ return g_StepBase+InpProfitStepUsd; }
+
+double StepProgress()          // profit acumulado dentro del paso actual
+{ return StepMeasure()-g_StepBase; }
 
 bool StepTargetReached()
-{ return (InpProfitStepUsd>0.0 && StepProgress()>=InpProfitStepUsd); }
+{ return (InpProfitStepUsd>0.0 && StepMeasure()>=StepTarget()); }
 
 void MarkStepClosed(ulong t)
 {
@@ -929,15 +967,16 @@ void UnmarkStepClosed(ulong t)
         return; }
 }
 
-//--- LOGRO del objetivo: cierra todo, borra límites y niveles → 1
+//--- LOGRO del escalón: cierra todo, borra límites, niveles → 1 y sube la base
 void ProfitStepFire()
 {
-   double eq0 =AccountInfoDouble(ACCOUNT_EQUITY);
-   double gain=eq0-g_StepRefEquity;
+   double tgt=StepTarget();               // escalón que se acaba de lograr
+   double m  =StepMeasure();
+   double old=g_StepBase;
    g_StepHits++;
-   Print("★★ OBJETIVO ALCANZADO ★★ equity +",DoubleToString(gain,2),
-         " USD ≥ step ",DoubleToString(InpProfitStepUsd,2),
-         " (logro #",g_StepHits,") → cierra TODO y niveles → 1");
+   Print("★★ OBJETIVO ALCANZADO ★★ ",StepMeasureName()," ",DoubleToString(m,2),
+         " ≥ escalón ",DoubleToString(tgt,2)," USD (logro #",g_StepHits,
+         ") → cierra TODO y niveles → 1");
 
    //--- 1) cerrar TODAS las posiciones del EA (marcadas: no aplican TP/SL)
    int cerradas=0;
@@ -954,21 +993,23 @@ void ProfitStepFire()
    { ConfluenciaDeleteRealPendings(si);
      Strat2DeleteRealPendings(si); }
 
-   //--- 3) TODOS los niveles de tabla → 1 (todos los pares)
+   //--- 3) TODOS los niveles de tabla → 1 (todos los pares).
+   //    El CV de las virtuales y el estado LIVE NO se tocan.
    for(int si=0;si<g_SymCount;si++)
    { if(g_PairLevel[si]!=1)
        Print("OBJETIVO: nivel [",g_Symbols[si].name,"] ",
              g_PairLevel[si]," → 1");
      g_PairLevel[si]=1; }
 
-   Print("OBJETIVO: ",cerradas," operación(es) cerrada(s) — se vuelve a empezar desde nivel 1");
+   Print("OBJETIVO: ",cerradas," operación(es) cerrada(s) — niveles a 1; ",
+         "las LIVE siguen LIVE y el CV virtual se mantiene");
 
-   //--- 4) nueva referencia: el equity del momento del logro (balance+flotante
-   //    ya realizado). Inmediato y determinista: el objetivo vuelve a estar
-   //    activo en el mismo tick, sin ventanas muertas.
-   g_StepRefEquity=eq0;
-   Print("OBJETIVO: nueva referencia de equity = ",
-         DoubleToString(g_StepRefEquity,2)," USD (logros acumulados: ",g_StepHits,")");
+   //--- 4) la BASE sube al escalón logrado (nunca baja): el próximo
+   //    objetivo es tgt + InpProfitStepUsd.
+   g_StepBase=tgt;
+   Print("OBJETIVO: nueva base = ",DoubleToString(g_StepBase,2),
+         " USD → próximo escalón en ",DoubleToString(StepTarget(),2),
+         " USD (escalones logrados: ",g_StepHits,")");
 
    SaveState();
    if(!IsTester()) RebuildPanel();
@@ -978,10 +1019,23 @@ void CheckProfitStep()
 {
    if(!InpUseProfitStep || InpProfitStepUsd<=0.0) return;
 
-   //--- referencia inicial (primer tick o sin estado guardado)
-   if(g_StepRefEquity<=0.0)
-   { g_StepRefEquity=AccountInfoDouble(ACCOUNT_EQUITY);
-     Print("OBJETIVO: referencia de equity = ",DoubleToString(g_StepRefEquity,2)," USD");
+   //--- BASE MANUAL: solo se aplica si el input CAMBIÓ respecto al último
+   //    valor manual aplicado (así un reinicio del EA no devuelve la escalera
+   //    a la base antigua, pero tú puedes subirla o bajarla cuando quieras).
+   if(InpStepBaseValue>0.0 && InpStepBaseValue!=g_StepManualBase)
+   { g_StepManualBase=InpStepBaseValue;
+     g_StepBase=InpStepBaseValue;
+     Print("OBJETIVO: base fijada MANUALMENTE en ",
+           DoubleToString(g_StepBase,2)," USD → próximo escalón en ",
+           DoubleToString(StepTarget(),2)," USD");
+     SaveState(); }
+
+   //--- base automática la primera vez (sin estado guardado)
+   if(g_StepBase<=0.0)
+   { g_StepBase=StepMeasure();
+     Print("OBJETIVO: base inicial (",StepMeasureName(),") = ",
+           DoubleToString(g_StepBase,2)," USD → próximo escalón en ",
+           DoubleToString(StepTarget(),2)," USD");
      return; }
 
    //--- la ventana de cierre semanal tiene prioridad (su lógica propia)
@@ -1250,7 +1304,8 @@ void SaveStateToFile()
    FileWriteString(h,"DAY_START_EQ="  +DoubleToString(g_DayStartEquity,8)+"\n");
    FileWriteString(h,"DAY_START_TIME="+IntegerToString(g_DayStartTime)   +"\n");
    FileWriteString(h,"CB_ON="         +(g_CircuitBreakerOn?"1":"0")      +"\n");
-   FileWriteString(h,"STEP_REF_EQ="   +DoubleToString(g_StepRefEquity,8) +"\n");
+   FileWriteString(h,"STEP_BASE="     +DoubleToString(g_StepBase,8)      +"\n");
+   FileWriteString(h,"STEP_MANUAL="   +DoubleToString(g_StepManualBase,8)+"\n");
    FileWriteString(h,"STEP_HITS="     +IntegerToString(g_StepHits)       +"\n");
    { string tk="";
      for(int i=0;i<ArraySize(g_StepClosedTickets);i++)
@@ -1336,7 +1391,9 @@ void LoadStateFromFile()
      else if(key=="DAY_START_EQ")   g_DayStartEquity=StringToDouble(val);
      else if(key=="DAY_START_TIME") g_DayStartTime=(datetime)StringToInteger(val);
      else if(key=="CB_ON")          g_CircuitBreakerOn=(StringToInteger(val)>0);
-     else if(key=="STEP_REF_EQ")    g_StepRefEquity=StringToDouble(val);
+     else if(key=="STEP_BASE")      g_StepBase=StringToDouble(val);
+     else if(key=="STEP_REF_EQ")    g_StepBase=StringToDouble(val);   // clave de v8.53
+     else if(key=="STEP_MANUAL")    g_StepManualBase=StringToDouble(val);
      else if(key=="STEP_HITS")      g_StepHits=(int)StringToInteger(val);
      else if(key=="STEP_TICKETS")
      { ArrayResize(g_StepClosedTickets,0);
@@ -3997,7 +4054,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.53  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.54  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -5276,7 +5333,8 @@ void MPDrawAccount(int x,int y,int w)
           StringFormat("%.2f%% / %.1f%%",lp,InpMaxDailyLossPct);
    bool   stepOn=(InpUseProfitStep&&InpProfitStepUsd>0.0);
    double sp=StepProgress();
-   val[4]=stepOn?StringFormat("%s%.2f/%.2f  ×%d",(sp>=0)?"+":"",sp,InpProfitStepUsd,g_StepHits)
+   cap[4]=stepOn?("OBJ STEP·"+((InpStepMeasure==STEP_MEASURE_CLOSED)?"CERR":"EQ")):"OBJ STEP";
+   val[4]=stepOn?StringFormat("%s%.2f/%.2f ×%d",(sp>=0)?"+":"",sp,InpProfitStepUsd,g_StepHits)
                 :"OFF";
    color vc[5];
    vc[0]=clrWhite;
@@ -5742,7 +5800,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.53           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.54           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5783,7 +5841,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.53 === X=",InpXActivacion,
+   Print("=== DIAG v8.54 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5863,12 +5921,17 @@ int OnInit()
 
    if(!IsTester()) LoadState();
 
-   //--- OBJETIVO POR PASOS: referencia de equity (persistida o inicial)
-   if(g_StepRefEquity<=0.0) g_StepRefEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+   //--- OBJETIVO POR PASOS: base de la escalera (manual > persistida > automática)
+   if(InpStepBaseValue>0.0 && InpStepBaseValue!=g_StepManualBase)
+   { g_StepManualBase=InpStepBaseValue;
+     g_StepBase=InpStepBaseValue; }
+   if(g_StepBase<=0.0) g_StepBase=StepMeasure();
    Print("OBJETIVO por pasos: ",(InpUseProfitStep?"ACTIVO":"INACTIVO"),
-         " | step=",DoubleToString(InpProfitStepUsd,2)," USD",
-         " | referencia=",DoubleToString(g_StepRefEquity,2)," USD",
-         " | logros=",g_StepHits);
+         " | paso=",DoubleToString(InpProfitStepUsd,2)," USD",
+         " | medida=",StepMeasureName(),
+         " | base=",DoubleToString(g_StepBase,2),
+         " | próximo escalón=",DoubleToString(StepTarget(),2),
+         " | escalones logrados=",g_StepHits);
 
    //--- Inicializar motores de líneas para poder dibujar de inmediato
    for(int si=0;si<g_SymCount;si++) UpdateStructureState(si);
@@ -5915,7 +5978,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.53 | Símbolos:",g_SymCount,
+   Print("EA v8.54 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
@@ -5932,7 +5995,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.53 cerrado | Razón:",reason);
+   Print("EA v8.54 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
