@@ -67,6 +67,7 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.52 | `3d654bc` | 2026-09-01T02:12:16+00:00 | 2026-08-31 21:12:16 | 2026-09-01T02:12:16+00:00 | 2026-08-31 21:12:16 | ✅ | feat(strat2): E1 y S2 comparten nivel — UNA operacion activa por par (v8.52) |
 | v8.53 | `29dcc12` | 2026-09-12T20:02:36+00:00 | 2026-09-12 15:02:36 | 2026-09-12T20:02:36+00:00 | 2026-09-12 15:02:36 | ✅ | feat(risk): objetivo por pasos (profit step) — cierra todo y niveles a 1 (v8.53) |
 | v8.54 | `91f1723` | 2026-09-12T20:13:10+00:00 | 2026-09-12 15:13:10 | 2026-09-12T20:13:10+00:00 | 2026-09-12 15:13:10 | ✅ | feat(risk): objetivo por pasos como ESCALERA que nunca baja + medida equity/cerradas (v8.54) |
+| v8.55 | `91bac66` | 2026-09-13T19:57:06+00:00 | 2026-09-13 14:57:06 | 2026-09-13T19:57:06+00:00 | 2026-09-13 14:57:06 | ✅ | feat(risk): 1:2 OPCIONAL — interruptor maestro InpUseTrailing12 (v8.55) |
 
 ## Resumen por versión (lanzamiento y últimas modificaciones)
 
@@ -99,5 +100,6 @@ Fechas de la **fecha de autor** (`%aI`, la que GitHub muestra como *authored*) y
 | v8.52 | `3d654bc` — 2026-09-01T02:12:16+00:00 (Bogotá 2026-08-31 21:12:16) | `3d654bc` — 2026-09-01T02:12:16+00:00 (Bogotá 2026-08-31 21:12:16) |
 | v8.53 | `29dcc12` — 2026-09-12T20:02:36+00:00 (Bogotá 2026-09-12 15:02:36) | `29dcc12` — 2026-09-12T20:02:36+00:00 (Bogotá 2026-09-12 15:02:36) |
 | v8.54 | `91f1723` — 2026-09-12T20:13:10+00:00 (Bogotá 2026-09-12 15:13:10) | `91f1723` — 2026-09-12T20:13:10+00:00 (Bogotá 2026-09-12 15:13:10) |
+| v8.55 | `91bac66` — 2026-09-13T19:57:06+00:00 (Bogotá 2026-09-13 14:57:06) | `91bac66` — 2026-09-13T19:57:06+00:00 (Bogotá 2026-09-13 14:57:06) |
 
 > **Nota sobre la serie v8.37**: hay 15 commits que llevan `#property version "8.37"` (V01–V15 en `versiones 8.37/INDICE.md`); se listan todos aquí. La v8.37 "final" (merge PR #10, `b9df22f`) es idéntica al V15 (`52dae62`).
