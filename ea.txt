@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.54"
+#property version   "8.55"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -48,11 +48,12 @@ input int             InpStrat2MinAge    = 10;         // Velas 1H mínimas de a
 input bool            InpAllowStrat2Orders=true;      // Permitir órdenes S2 (virtuales y LIVE)
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
+input bool   InpUseTrailing12    = true;   // ¿Activar el 1:2? true=mueve el SL a protección · false=solo buscar el TP
 input double InpSL_Points        = 95.0;
 input double InpSL_Offset        = 0.0;
 input double InpTP_Points        = 305.0;
-input double InpActivationPoints = 210.0;
-input double InpProtectedSL      = 205.0;
+input double InpActivationPoints = 210.0;  // Puntos de ventaja para mover el SL a 1:2
+input double InpProtectedSL      = 205.0;  // Puntos de SL protegido (1:2)
 input bool   InpAutoFromLevel5   = true;   // 1:2 automático desde nivel 5 (lógica Asistente 3)
 
 input group "=== FILTRO DE HORARIO ==="
@@ -680,6 +681,12 @@ int FindTrade(ulong ticket)
 
 bool IsTrailingActive(int si, int st)
 {
+   //--- INTERRUPTOR MAESTRO del 1:2: si está apagado, NUNCA se mueve el SL
+   //    a protección (ni en real ni en virtual): las operaciones solo buscan
+   //    el TP (o salen por su SL original). Domina sobre el MODO AVANZADO y
+   //    sobre el automático por nivel.
+   if(!InpUseTrailing12) return false;
+
    //--- lógica Asistente 3: el 1:2 (SL protegido) se activa con nivel
    //    del par >= 5 (InpAutoFromLevel5). Si la estrategia entró a LIVE
    //    desde una serie virtual que alcanzó el nivel >=5, la lógica se
@@ -1703,7 +1710,8 @@ void StartStrategyVirtual(int si, int st, int signal)
    g_SysState[si].strategies[st].virtualTP_price  =CalcTP(sym,si,openPrice,ptypeEq);
    g_SysState[si].strategies[st].virtualSLMoved   =false;
    g_SysState[si].strategies[st].virtualActive    =true;
-   bool advNow=(InpAutoFromLevel5&&g_SysState[si].strategies[st].virtualOpenLevel>=5);
+   bool advNow=(InpUseTrailing12&&InpAutoFromLevel5&&
+                g_SysState[si].strategies[st].virtualOpenLevel>=5);
    Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
          (signal>0?"BUY":"SELL"),
          " @",DoubleToString(openPrice,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS)),
@@ -1723,7 +1731,8 @@ void UpdateStrategyVirtual(int si, int st)
    int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
    double checkPrice=(dir>0)?SymbolInfoDouble(sym,SYMBOL_BID)
                             :SymbolInfoDouble(sym,SYMBOL_ASK);
-   bool vAdv=(g_AdvancedMode||(InpAutoFromLevel5&&g_SysState[si].strategies[st].virtualOpenLevel>=5));
+   bool vAdv=(InpUseTrailing12&&
+              (g_AdvancedMode||(InpAutoFromLevel5&&g_SysState[si].strategies[st].virtualOpenLevel>=5)));
    if(!g_SysState[si].strategies[st].virtualSLMoved&&vAdv)
    { double op=g_SysState[si].strategies[st].virtualOpen;
      double delta=(dir>0)?(checkPrice-op)/pt:(op-checkPrice)/pt;
@@ -3612,6 +3621,11 @@ bool ModifySL(ulong ticket, double newSL)
 
 void ManageOpenPositions()
 {
+   //--- 1:2 apagado → no se mueve NINGÚN SL a protección (tampoco el de las
+   //    posiciones ya abiertas con advActive). Los SL que YA están protegidos
+   //    se dejan como están: nunca se empeora un SL por cambiar el input.
+   if(!InpUseTrailing12) return;
+
    bool changed=false;
    for(int k=0;k<g_TradeCount;k++)
    { if(g_Trades[k].isPending||g_Trades[k].slMoved) continue;
@@ -3799,9 +3813,10 @@ void SyncAllTrades()
      { int cvN=(sid>=0)?g_SysState[symIdx].strategies[sid].CV:1;
        g_Trades[idx].CR_level =PairLevel(symIdx);   // nivel del par al abrir
        g_Trades[idx].CV_level =cvN;
-       g_Trades[idx].advActive=(g_AdvancedMode||
-                                ((sid>=0)?IsTrailingActive(symIdx,sid):
-                                          (InpAutoFromLevel5&&PairLevel(symIdx)>=5)));
+       g_Trades[idx].advActive=(InpUseTrailing12&&
+                                (g_AdvancedMode||
+                                 ((sid>=0)?IsTrailingActive(symIdx,sid):
+                                           (InpAutoFromLevel5&&PairLevel(symIdx)>=5))));
        g_Trades[idx].slMoved  =false; g_Trades[idx].splitGroupId=0;
        g_Trades[idx].sl=srvSL; g_Trades[idx].tp=srvTP; }
      g_TradeCount++; }
@@ -4054,7 +4069,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.54  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.55  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -4704,10 +4719,14 @@ void BuildTabConfig()
    rows_V[4]=StringFormat("%.0f pts",SymTP(si)); rows_C[4]=clrDodgerBlue;
 
    rows_L[5]="Activación 1:2";
-   rows_V[5]=StringFormat("%.0f pts",SymActivation(si)); rows_C[5]=clrMagenta;
+   rows_V[5]=InpUseTrailing12?StringFormat("%.0f pts",SymActivation(si))
+                             :StringFormat("%.0f pts  (1:2 OFF)",SymActivation(si));
+   rows_C[5]=InpUseTrailing12?clrMagenta:C'110,110,120';
 
    rows_L[6]="SL protegido";
-   rows_V[6]=StringFormat("%.0f pts",SymProtectedSL(si)); rows_C[6]=clrOrange;
+   rows_V[6]=InpUseTrailing12?StringFormat("%.0f pts",SymProtectedSL(si))
+                             :StringFormat("%.0f pts  (1:2 OFF · solo TP)",SymProtectedSL(si));
+   rows_C[6]=InpUseTrailing12?clrOrange:C'110,110,120';
 
    rows_L[7]="X activación";
    rows_V[7]=StringFormat("%d → LIVE tras %d pérdidas (op.%d)",
@@ -4751,9 +4770,13 @@ void BuildTabConfig()
    ObjBtn(PFX_CFG+"CLR",cx,      y,bw,28,"🗑  Borrar estado", C'70,25,25',clrWhite,8,"Arial Bold");
    ObjBtn(PFX_CFG+"SAV",cx+bw+4, y,bw,28,"💾  Guardar ahora", C'25,70,25',clrWhite,8,"Arial Bold");
    y+=32;
-   ObjBtn(PFX_CFG+"ADV",cx,y,cw,28,
-          g_AdvancedMode?"⚡ MODO AVANZADO: ACTIVO":"⚡ MODO AVANZADO: INACTIVO",
-          g_AdvancedMode?C'0,100,60':C'50,50,70',clrWhite,9,"Arial Bold");
+   //--- el interruptor maestro del 1:2 (InpUseTrailing12) domina sobre el
+   //    MODO AVANZADO: apagado, no se mueve ningún SL a protección.
+   string advTxt=(!InpUseTrailing12)?"⚡ MODO AVANZADO: ANULADO (1:2 OFF)":
+                 (g_AdvancedMode?"⚡ MODO AVANZADO: ACTIVO":"⚡ MODO AVANZADO: INACTIVO");
+   color  advClr=(!InpUseTrailing12)?C'70,50,20':
+                 (g_AdvancedMode?C'0,100,60':C'50,50,70');
+   ObjBtn(PFX_CFG+"ADV",cx,y,cw,28,advTxt,advClr,clrWhite,9,"Arial Bold");
 }
 
 //+------------------------------------------------------------------+
@@ -5800,7 +5823,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.54           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.55           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5841,7 +5864,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.54 === X=",InpXActivacion,
+   Print("=== DIAG v8.55 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5978,10 +6001,13 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.54 | Símbolos:",g_SymCount,
+   Print("EA v8.55 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
-         " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%");
+         " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
+         " | 1:2=",InpUseTrailing12?(InpAutoFromLevel5?"ON (auto nivel≥5)":"ON (siempre)")
+                                   :"OFF (solo se busca el TP)",
+         " | OBJETIVO=",InpUseProfitStep?"ON":"OFF");
    return INIT_SUCCEEDED;
 }
 
@@ -5995,7 +6021,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.54 cerrado | Razón:",reason);
+   Print("EA v8.55 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+

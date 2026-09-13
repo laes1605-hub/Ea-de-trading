@@ -1,12 +1,13 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.54**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.55**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
 - **Una sola operación activa por par (v8.52)**: E1 y S2 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
 - **Objetivo por pasos / profit step (v8.54)**: escalera de escalones **que nunca baja** (`base → base+paso → base+2·paso…`, paso en USD con `InpProfitStepUsd`). Al llegar a un escalón el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **sube la base al escalón logrado**. Se mide por **equity** o por **suma de posiciones cerradas** (`InpStepMeasure`); la base se puede fijar **manualmente** (`InpStepBaseValue`). Las LIVE siguen LIVE y el CV virtual se mantiene.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
+- **1:2 opcional (v8.55)**: `InpUseTrailing12` es el **interruptor maestro** del SL protegido. `true` = comportamiento de siempre (mueve el SL a 1:2 según nivel/MODO AVANZADO); **`false` = no se mueve ningún SL, las operaciones solo buscan el TP** (o salen por su SL original). Aplica igual en **real y en virtual**, y domina sobre el MODO AVANZADO y el automático por nivel.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
 ## Archivos
@@ -25,7 +26,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.54)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.55)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -242,8 +243,14 @@ La progresión de niveles es la del EA **Asistente 3**, aplicada con **un nivel 
 | **GANANCIA limpia** (TP) | **= 1** (reset) |
 | **GANANCIA con SL protegido** (1:2) | **−3** si la posición se abrió en nivel <10, **−4** si se abrió en nivel ≥10 |
 
+- **1:2 OPCIONAL (v8.55)** — `InpUseTrailing12` (default `true`) es el **interruptor maestro**:
+  - `true` → el SL protegido funciona como siempre (automático por nivel y/o MODO AVANZADO).
+  - `false` → **no se mueve ningún SL a protección**: cada operación **solo busca el TP** (o sale por su SL original de 95 pts). Los cierres entonces solo pueden ser **TP → nivel 1** o **SL → nivel +1**; la regla −3/−4 queda sin efecto porque nunca hay `slMoved`.
+  - Vale para **real y virtual por igual** (el conteo CV sigue siendo idéntico entre fases) y **domina** sobre el MODO AVANZADO y sobre `InpAutoFromLevel5`.
+  - Se puede cambiar **en caliente**: al apagarse, deja de mover SL incluso en posiciones ya abiertas. Los SL que **ya estaban protegidos se quedan como están** (nunca se empeora un SL por cambiar el input).
+  - En el panel: el botón CONFIG muestra `⚡ MODO AVANZADO: ANULADO (1:2 OFF)` y las filas *Activación 1:2* / *SL protegido* aparecen en gris con `(1:2 OFF · solo TP)`.
 - **1:2 automático desde nivel 5** (`InpAutoFromLevel5=true`, como Asistente 3): las posiciones abiertas con nivel del par ≥5 activan el SL protegido al avanzar `InpActivationPoints` (210) → SL a `InpProtectedSL` (205). Esa ganancia "protegida" baja el nivel −3/−4 en vez de resetear a 1.
-- **MODO AVANZADO** (panel CONFIG): fuerza el 1:2 en todas las posiciones nuevas, además del automático por nivel.
+- **MODO AVANZADO** (panel CONFIG): fuerza el 1:2 en todas las posiciones nuevas, además del automático por nivel (solo si `InpUseTrailing12=true`).
 - **Se mantiene igual**: la **tabla de riesgo** (`InpRiskStep1..20`, % de la base), los **3 modos de capital base**, el **circuit breaker diario** (`InpMaxDailyLossPct=4.5%`), **SL/TP** (95/305, RR ≈ 1:3.2), **split de lotes**, **filtro de horario** y hasta 20 símbolos con SL/TP propios.
 - **Objetivo por pasos (v8.54)**: por **encima** de todo lo anterior, `InpUseProfitStep=true` + `InpProfitStepUsd=1.0` crean una **escalera que nunca baja**: al llegar la cuenta al escalón (base+paso) se **cierran todas las operaciones**, se **borran todas las límites**, **todos los niveles de todos los pares vuelven a 1** y la **base sube al escalón logrado** (ver sección *Objetivo por pasos*). Es la única regla que reinicia niveles **globalmente**; las reglas TP/SL anteriores siguen operando par a par entre escalón y escalón.
 - **Fase virtual → LIVE (v8.42)**: la estrategia **siempre** simula primero. Con `InpXActivacion=X` el EA pasa a LIVE cuando se **completan X pérdidas virtuales**, de modo que la **operación X+1 ya es LIVE** (ej. `X=4` → operaciones 1-4 virtuales, operación 5 en LIVE). El conteo de las operaciones virtuales usa **exactamente el mismo régimen que las operaciones LIVE** (reglas de Asistente 3):
