@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.55"
+#property version   "8.60"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -27,6 +27,15 @@ enum ENUM_STEP_MEASURE
 };
 
 //+------------------------------------------------------------------+
+//| MODO DE LOTE DE LAS ESTRATEGIAS TENDENCIALES (T1..T5)            |
+//+------------------------------------------------------------------+
+enum ENUM_TREND_LOT_MODE
+{
+   TREND_LOT_FIXED_LEVEL = 0,   // Nivel fijo: lote según InpTrendLevel de la tabla de riesgo
+   TREND_LOT_PAIR_LEVEL  = 1    // Nivel del par: lote al nivel actual del par (igual que E1/S2)
+};
+
+//+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
 input group "=== ESTRATEGIA ÚNICA: ESTRUCTURA LÍNEAS H1 + CONFLUENCIA M3 ==="
@@ -46,6 +55,34 @@ input int             InpStrat2MaxOBs    = 5;          // Máx. order blocks por
 input int             InpStrat2Lookback  = 150;        // Velas 1H a revisar para encontrar order blocks
 input int             InpStrat2MinAge    = 10;         // Velas 1H mínimas de antigüedad de la zona para ser válida
 input bool            InpAllowStrat2Orders=true;      // Permitir órdenes S2 (virtuales y LIVE)
+
+input group "=== ESTRATEGIAS TENDENCIALES OPCIONALES (T1..T5) — MISMO SL/TP DE LA CONFIGURACIÓN ==="
+input bool   InpUseTrendStrat    = false;     // Interruptor MAESTRO: activar estrategias tendenciales T1..T5
+input bool   InpTrendBlockIfBusy = true;      // No abrir si el par ya tiene otra posición del EA (1 por par)
+input bool   InpTrendReverse     = false;     // Revertir: señal contraria cierra la posición de la estrategia
+input ENUM_TREND_LOT_MODE InpTrendLotMode = TREND_LOT_FIXED_LEVEL; // Lote: nivel fijo de la tabla / nivel actual del par
+input int    InpTrendLevel       = 1;         // Nivel de la tabla de riesgo para el lote (modo "Nivel fijo")
+input bool   InpT1Use  = false;               // T1 · CRUCE DE EMAS (tendencia rápida/lenta)
+input ENUM_TIMEFRAMES InpT1TF   = PERIOD_M15; // T1 · timeframe
+input int    InpT1Fast = 12;                  // T1 · período EMA rápida
+input int    InpT1Slow = 48;                  // T1 · período EMA lenta
+input bool   InpT2Use  = false;               // T2 · RUPTURA CANAL DONCHIAN (máx/mín de N velas)
+input ENUM_TIMEFRAMES InpT2TF   = PERIOD_H1;  // T2 · timeframe
+input int    InpT2Period = 20;                // T2 · período del canal (velas)
+input bool   InpT3Use  = false;               // T3 · ADX + DI (fuerza direccional)
+input ENUM_TIMEFRAMES InpT3TF   = PERIOD_M30; // T3 · timeframe
+input int    InpT3Period = 14;                // T3 · período del ADX
+input double InpT3MinADX = 22.0;              // T3 · ADX mínimo para entrar
+input bool   InpT4Use  = false;               // T4 · MACD con filtro EMA (momentum a favor de la tendencia)
+input ENUM_TIMEFRAMES InpT4TF   = PERIOD_H1;  // T4 · timeframe
+input int    InpT4Fast = 12;                  // T4 · MACD rápido
+input int    InpT4Slow = 26;                  // T4 · MACD lento
+input int    InpT4Signal = 9;                 // T4 · MACD señal
+input int    InpT4EmaFilter = 200;            // T4 · EMA de filtro (tendencia de largo plazo)
+input bool   InpT5Use  = false;               // T5 · SUPERTREND (cambio de tendencia con ATR)
+input ENUM_TIMEFRAMES InpT5TF   = PERIOD_H1;  // T5 · timeframe
+input int    InpT5ATR  = 10;                  // T5 · período del ATR
+input double InpT5Mult = 3.0;                 // T5 · multiplicador del ATR
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input bool   InpUseTrailing12    = true;   // ¿Activar el 1:2? true=mueve el SL a protección · false=solo buscar el TP
@@ -278,6 +315,7 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 #define TAB_ESTRAT       4
 #define N_TABS           5
 #define STRAT_COUNT      2
+#define TREND_COUNT      5           // estrategias tendenciales opcionales (T1..T5)
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -466,6 +504,7 @@ struct TradeRecord
    bool     isManual;
    int      strategyId;
    int      symbolIdx;
+   long     magic;
 };
 
 struct ClosedSnap
@@ -479,6 +518,7 @@ struct ClosedSnap
    bool     isManual;
    int      strategyId;
    int      symbolIdx;
+   long     magic;
 };
 
 //+------------------------------------------------------------------+
@@ -488,6 +528,14 @@ SymbolParams       g_Symbols[MAX_SYMBOLS];
 int                g_SymCount        = 0;
 int                g_PanelSymIdx     = 0;
 SymbolSystemState  g_SysState[MAX_SYMBOLS];
+
+//--- ESTRATEGIAS TENDENCIALES T1..T5 (opcionales): independientes del
+//    ciclo virtual→LIVE; abren a mercado con el MISMO SL/TP de la
+//    configuración y salen por ese SL/TP (o por las reglas generales
+//    del EA: cierre de viernes, objetivo por pasos, circuit breaker).
+datetime g_TrendLastBar[MAX_SYMBOLS][TREND_COUNT];   // última vela procesada por símbolo/estrategia
+int      g_TrendH0[MAX_SYMBOLS][TREND_COUNT];        // handle de indicador #1 (INVALID_HANDLE = sin uso)
+int      g_TrendH1[MAX_SYMBOLS][TREND_COUNT];        // handle de indicador #2 (INVALID_HANDLE = sin uso)
 
 double   g_BaseCapital             = 1000.0;
 double   g_BaseMaxBalance          = 0.0;
@@ -616,7 +664,9 @@ bool IsAnyMagic(long magic)
       for(int st=0;st<STRAT_COUNT;st++)
          if(magic==g_SysState[si].strategies[st].magicNumber) return true;
    for(int si=0;si<g_SymCount;si++)
-      if(magic==InpMagicNumber+(long)(si*10)+9) return true;
+   { if(magic==InpMagicNumber+(long)(si*10)+9) return true;   // manual
+     for(int t=0;t<TREND_COUNT;t++)                           // tendenciales T1..T5
+        if(magic==TrendMagic(si,t)) return true; }
    return false;
 }
 
@@ -631,6 +681,39 @@ long GetStrategyMagic(int symIdx, int sid)
 
 long MagicManual(int symIdx)
 { return InpMagicNumber+(long)(symIdx*10)+9; }
+
+//--- Magics de las estrategias TENDENCIALES T1..T5: offsets 3..7 ---
+//    (E1=+1, S2=+2, manual=+9; cada símbolo ocupa su bloque *10)
+long TrendMagic(int symIdx, int tid)
+{ return InpMagicNumber+(long)(symIdx*10)+3+tid; }
+
+string TrendName(int tid)
+{
+   switch(tid)
+   { case 0: return "T1-EMA";
+     case 1: return "T2-DON";
+     case 2: return "T3-ADX";
+     case 3: return "T4-MACD";
+     case 4: return "T5-ST";
+     default: return "T?"; }
+}
+
+string TrendMagicName(long magic)
+{
+   for(int si=0;si<g_SymCount;si++)
+      for(int t=0;t<TREND_COUNT;t++)
+         if(magic==TrendMagic(si,t)) return TrendName(t);
+   return "";
+}
+
+//--- Nombre legible de la estrategia de un trade (E1/S2, T1..T5 o MAN)
+string TradeStratName(int si,int st,long magic)
+{
+   if(si>=0&&st>=0&&st<STRAT_COUNT) return g_SysState[si].strategies[st].name;
+   string tn=TrendMagicName(magic);
+   if(tn!="") return tn;
+   return "MAN";
+}
 
 //+------------------------------------------------------------------+
 //| CIERRE SEMANAL (VIERNES)                                        |
@@ -3590,6 +3673,357 @@ void DrawChartStructure()
 //| entrada/gestión de órdenes vive en UpdateConfluencia() — la fase  |
 //| virtual (simulación de límites) y la fase LIVE (órdenes reales).  |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| ESTRATEGIAS TENDENCIALES T1..T5 (OPCIONALES)                     |
+//|                                                                  |
+//| Cinco estrategias de seguimiento de tendencia, todas APAGADAS    |
+//| por defecto. Cada una abre a MERCADO con el MISMO SL y TP de la  |
+//| configuración (globales InpSL_Points/InpTP_Points o los sobre-   |
+//| escritos por símbolo) y con lote de la tabla de riesgo.          |
+//| NO pasan por el ciclo virtual→LIVE ni modifican el nivel del par:|
+//| salen por su SL/TP configurado (o por las reglas generales del   |
+//| EA: cierre de viernes, objetivo por pasos, circuit breaker).     |
+//|                                                                  |
+//|  T1 · CRUCE DE EMAS       la EMA rápida cruza la lenta           |
+//|  T2 · CANAL DONCHIAN      cierre fuera del canal de N velas      |
+//|  T3 · ADX + DI            cruce de DI con fuerza direccional     |
+//|  T4 · MACD + EMA200       cruce de MACD a favor del filtro EMA   |
+//|  T5 · SUPERTREND          cambio de tendencia (bandas ATR)       |
+//|                                                                  |
+//| Señales evaluadas en velas CERRADAS (1 vs 2) del TF elegido,     |
+//| una evaluación por vela nueva. Magic: InpMagicNumber+si*10+3..7  |
+//+------------------------------------------------------------------+
+
+//--- ¿Está activa (maestro + individual) la estrategia tid? ---------
+bool TrendEnabled(int tid)
+{
+   if(!InpUseTrendStrat) return false;
+   switch(tid)
+   { case 0: return InpT1Use;
+     case 1: return InpT2Use;
+     case 2: return InpT3Use;
+     case 3: return InpT4Use;
+     case 4: return InpT5Use;
+     default: return false; }
+}
+
+ENUM_TIMEFRAMES TrendTF(int tid)
+{
+   switch(tid)
+   { case 0: return InpT1TF;
+     case 1: return InpT2TF;
+     case 2: return InpT3TF;
+     case 3: return InpT4TF;
+     case 4: return InpT5TF;
+     default: return PERIOD_CURRENT; }
+}
+
+//--- Crear los handles de indicadores de las estrategias activas ----
+void TrendInit()
+{
+   for(int si=0;si<MAX_SYMBOLS;si++)
+      for(int t=0;t<TREND_COUNT;t++)
+      { g_TrendLastBar[si][t]=0;
+        g_TrendH0[si][t]=INVALID_HANDLE;
+        g_TrendH1[si][t]=INVALID_HANDLE; }
+   if(!InpUseTrendStrat) return;
+
+   string act="";
+   if(InpT1Use) act+=(act==""?"":", ")+"T1-CRUCE EMAS";
+   if(InpT2Use) act+=(act==""?"":", ")+"T2-DONCHIAN";
+   if(InpT3Use) act+=(act==""?"":", ")+"T3-ADX";
+   if(InpT4Use) act+=(act==""?"":", ")+"T4-MACD";
+   if(InpT5Use) act+=(act==""?"":", ")+"T5-SUPERTREND";
+   if(act=="")
+   { Print("TREND: interruptor maestro ON pero ninguna estrategia activada (InpT1Use..InpT5Use).");
+     return; }
+
+   for(int si=0;si<g_SymCount;si++)
+   { string sym=g_Symbols[si].name;
+     if(InpT1Use)
+     { g_TrendH0[si][0]=iMA(sym,InpT1TF,MathMax(2,InpT1Fast),0,MODE_EMA,PRICE_CLOSE);
+       g_TrendH1[si][0]=iMA(sym,InpT1TF,MathMax(3,InpT1Slow),0,MODE_EMA,PRICE_CLOSE); }
+     if(InpT3Use)
+        g_TrendH0[si][2]=iADX(sym,InpT3TF,MathMax(2,InpT3Period));
+     if(InpT4Use)
+     { g_TrendH0[si][3]=iMACD(sym,InpT4TF,MathMax(2,InpT4Fast),MathMax(3,InpT4Slow),
+                              MathMax(2,InpT4Signal),PRICE_CLOSE);
+       g_TrendH1[si][3]=iMA(sym,InpT4TF,MathMax(10,InpT4EmaFilter),0,MODE_EMA,PRICE_CLOSE); }
+     if(InpT5Use)
+        g_TrendH0[si][4]=iATR(sym,InpT5TF,MathMax(2,InpT5ATR)); }
+
+   Print("TREND: estrategias activas → ",act,
+         " | lote=",(InpTrendLotMode==TREND_LOT_PAIR_LEVEL?
+                     "nivel actual del par":
+                     "nivel fijo "+IntegerToString(InpTrendLevel)),
+         " | SL/TP = los de la configuración (",
+         DoubleToString(InpSL_Points,0),"/",DoubleToString(InpTP_Points,0),
+         " pts globales, o los del símbolo si están definidos)");
+}
+
+void TrendDeinit()
+{
+   for(int si=0;si<MAX_SYMBOLS;si++)
+      for(int t=0;t<TREND_COUNT;t++)
+      { if(g_TrendH0[si][t]!=INVALID_HANDLE) IndicatorRelease(g_TrendH0[si][t]);
+        if(g_TrendH1[si][t]!=INVALID_HANDLE) IndicatorRelease(g_TrendH1[si][t]);
+        g_TrendH0[si][t]=INVALID_HANDLE;
+        g_TrendH1[si][t]=INVALID_HANDLE; }
+}
+
+//--- Copiar un buffer de indicador (serie: out[0]=vela 1, cerrada) --
+bool TrendBuf(int handle,int buffer,int start,int count,double &out[])
+{
+   if(handle==INVALID_HANDLE) return false;
+   ArrayResize(out,count);
+   ArraySetAsSeries(out,true);
+   return(CopyBuffer(handle,buffer,start,count,out)==count);
+}
+
+//--- T1 · CRUCE DE EMAS ---------------------------------------------
+int TrendSig_EMACross(int si)
+{
+   double f[],s[];
+   if(!TrendBuf(g_TrendH0[si][0],0,1,2,f)) return 0;   // f[0]=vela1, f[1]=vela2
+   if(!TrendBuf(g_TrendH1[si][0],0,1,2,s)) return 0;
+   if(f[1]<=s[1] && f[0]> s[0]) return  1;             // cruce alcista
+   if(f[1]>=s[1] && f[0]< s[0]) return -1;             // cruce bajista
+   return 0;
+}
+
+//--- T2 · RUPTURA CANAL DONCHIAN ------------------------------------
+int TrendSig_Donchian(int si)
+{
+   string sym=g_Symbols[si].name;
+   int per=MathMax(5,InpT2Period);
+   double c[],h[],l[];
+   ArraySetAsSeries(c,true);
+   if(CopyClose(sym,TrendTF(1),1,1,c)!=1)     return 0;
+   if(CopyHigh(sym,TrendTF(1),2,per,h)!=per)  return 0;   // velas 2..per+1
+   if(CopyLow(sym,TrendTF(1),2,per,l)!=per)   return 0;
+   double mx=h[0],mn=l[0];
+   for(int i=1;i<per;i++){ if(h[i]>mx)mx=h[i]; if(l[i]<mn)mn=l[i]; }
+   if(c[0]>mx) return  1;                                 // ruptura alcista
+   if(c[0]<mn) return -1;                                 // ruptura bajista
+   return 0;
+}
+
+//--- T3 · ADX + DI ---------------------------------------------------
+int TrendSig_ADX(int si)
+{
+   double ax[],pd[],md[];
+   if(!TrendBuf(g_TrendH0[si][2],MAIN_LINE,  1,2,ax)) return 0;
+   if(!TrendBuf(g_TrendH0[si][2],PLUSDI_LINE,1,2,pd)) return 0;
+   if(!TrendBuf(g_TrendH0[si][2],MINUSDI_LINE,1,2,md)) return 0;
+   if(ax[0]<InpT3MinADX) return 0;                       // sin fuerza direccional
+   if(pd[1]<=md[1] && pd[0]>md[0]) return  1;            // +DI cruza arriba
+   if(pd[1]>=md[1] && pd[0]<md[0]) return -1;            // -DI cruza arriba
+   return 0;
+}
+
+//--- T4 · MACD con filtro EMA ----------------------------------------
+int TrendSig_MACD(int si)
+{
+   string sym=g_Symbols[si].name;
+   double mn[],sg[],em[],c[];
+   if(!TrendBuf(g_TrendH0[si][3],MAIN_LINE,  1,2,mn)) return 0;
+   if(!TrendBuf(g_TrendH0[si][3],SIGNAL_LINE,1,2,sg)) return 0;
+   if(!TrendBuf(g_TrendH1[si][3],0,1,1,em))           return 0;
+   ArraySetAsSeries(c,true);
+   if(CopyClose(sym,TrendTF(3),1,1,c)!=1) return 0;
+   if(mn[1]<=sg[1] && mn[0]>sg[0] && c[0]>em[0]) return  1;  // momentum alcista
+   if(mn[1]>=sg[1] && mn[0]<sg[0] && c[0]<em[0]) return -1;  // momentum bajista
+   return 0;
+}
+
+//--- T5 · SUPERTREND (bandas ATR) ------------------------------------
+int TrendSig_SuperTrend(int si)
+{
+   string sym=g_Symbols[si].name;
+   ENUM_TIMEFRAMES tf=TrendTF(4);
+   int win=300;
+   double atr[],hh[],ll[],cc[];
+   if(!TrendBuf(g_TrendH0[si][4],0,1,win,atr)) return 0;
+   ArraySetAsSeries(hh,true); ArraySetAsSeries(ll,true); ArraySetAsSeries(cc,true);
+   if(CopyHigh(sym,tf,1,win,hh)!=win)  return 0;
+   if(CopyLow(sym,tf,1,win,ll)!=win)   return 0;
+   if(CopyClose(sym,tf,1,win,cc)!=win) return 0;
+   double mult=MathMax(0.5,InpT5Mult);
+
+   //--- índice 0 = última vela cerrada; se recorre de la más antigua
+   //    (win-1) a la más nueva (0) arrastrando las bandas finales.
+   int i=win-1;
+   double fu=(hh[i]+ll[i])/2.0+mult*atr[i];
+   double fl=(hh[i]+ll[i])/2.0-mult*atr[i];
+   int trend=(cc[i]>fu)?1:-1;
+   int trend2=0,trend1=0;
+   for(i=win-2;i>=0;i--)
+   {
+      double bu=(hh[i]+ll[i])/2.0+mult*atr[i];
+      double bl=(hh[i]+ll[i])/2.0-mult*atr[i];
+      fu=(bu<fu || cc[i+1]>fu)?bu:fu;
+      fl=(bl>fl || cc[i+1]<fl)?bl:fl;
+      if(cc[i]>fu)      trend=1;
+      else if(cc[i]<fl) trend=-1;
+      if(i==1) trend2=trend;      // vela 2 (shift 2)
+      if(i==0) trend1=trend;      // vela 1 (shift 1)
+   }
+   if(trend1== 1 && trend2==-1) return  1;   // giro alcista
+   if(trend1==-1 && trend2== 1) return -1;   // giro bajista
+   return 0;
+}
+
+//--- Posiciones abiertas de una estrategia tendencial en un símbolo --
+int TrendCountPositions(int si,int tid)
+{
+   string sym=g_Symbols[si].name;
+   long   magic=TrendMagic(si,tid);
+   int n=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym) continue;
+     if((long)PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     n++; }
+   return n;
+}
+
+//--- ¿La estrategia tiene posición en dirección CONTRARIA a dir? -----
+bool TrendHasOpposite(int si,int tid,int dir)
+{
+   string sym=g_Symbols[si].name;
+   long   magic=TrendMagic(si,tid);
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym) continue;
+     if((long)PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     long pt=PositionGetInteger(POSITION_TYPE);
+     if(dir>0 && pt==POSITION_TYPE_SELL) return true;
+     if(dir<0 && pt==POSITION_TYPE_BUY)  return true; }
+   return false;
+}
+
+void TrendCloseAll(int si,int tid)
+{
+   string sym=g_Symbols[si].name;
+   long   magic=TrendMagic(si,tid);
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym) continue;
+     if((long)PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     ClosePosition(t); }
+}
+
+//--- ¿El símbolo ya tiene alguna posición del EA (cualquier magic)? --
+bool TrendSymbolBusy(int si)
+{
+   string sym=g_Symbols[si].name;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym) continue;
+     if(IsAnyMagic((long)PositionGetInteger(POSITION_MAGIC))) return true; }
+   return false;
+}
+
+//--- Lote de las tendenciales (tabla de riesgo, igual que el EA) -----
+double TrendLot(int si)
+{
+   int lvl=(InpTrendLotMode==TREND_LOT_PAIR_LEVEL)?
+           PairLevel(si):
+           MathMax(1,MathMin(g_PanelTableSize,InpTrendLevel));
+   return CalcLotByRisk(si,lvl);
+}
+
+//--- Envío de una orden de mercado (mismo SL/TP de la configuración) -
+bool TrendSendSingle(string sym,ENUM_ORDER_TYPE ot,double lots,
+                     double sl,double tp,long magic,int si,int tid)
+{
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action=TRADE_ACTION_DEAL; req.symbol=sym;
+   req.volume=lots; req.type=ot;
+   req.price=(ot==ORDER_TYPE_BUY)?SymbolInfoDouble(sym,SYMBOL_ASK):SymbolInfoDouble(sym,SYMBOL_BID);
+   req.sl=sl; req.tp=tp; req.deviation=20; req.magic=magic;
+   req.type_filling=ORDER_FILLING_IOC;
+   req.comment=StringFormat("%s_%s_%s_N%d",InpComment,sym,TrendName(tid),PairLevel(si));
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
+   { Print("ERROR TrendSend [",sym,"/",TrendName(tid),"]: ",res.retcode); return false; }
+   return true;
+}
+
+bool TrendSendOrder(int si,int tid,ENUM_ORDER_TYPE ot,double totalLots)
+{
+   string sym=g_Symbols[si].name;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double mid=(ask+bid)/2.0;
+   int posType=(ot==ORDER_TYPE_BUY)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   double sl=CalcSL(sym,si,mid,posType);   // MISMO SL de la configuración
+   double tp=CalcTP(sym,si,mid,posType);   // MISMO TP de la configuración
+   long magic=TrendMagic(si,tid);
+   int parts=CalcSplitCount(totalLots); bool ok=true;
+   for(int i=0;i<parts;i++)
+   { double pl=CalcSplitLot(sym,totalLots,i,parts); if(pl<=0) continue;
+     if(i>0&&!IsTester()) Sleep(InpSplitDelayMs);
+     if(!TrendSendSingle(sym,ot,pl,sl,tp,magic,si,tid)) ok=false; }
+   return ok;
+}
+
+//--- Evaluación de las estrategias tendenciales para un símbolo ------
+void TrendUpdate(int si)
+{
+   if(!InpUseTrendStrat) return;
+   if(si<0||si>=g_SymCount) return;
+   string sym=g_Symbols[si].name;
+
+   for(int tid=0;tid<TREND_COUNT;tid++)
+   {
+      if(!TrendEnabled(tid)) continue;
+
+      ENUM_TIMEFRAMES tf=TrendTF(tid);
+      datetime bt=iTime(sym,tf,0);
+      if(bt==0) continue;
+      if(bt==g_TrendLastBar[si][tid]) continue;   // esta vela ya se evaluó
+
+      int sig=0;
+      switch(tid)
+      { case 0: sig=TrendSig_EMACross(si);   break;
+        case 1: sig=TrendSig_Donchian(si);   break;
+        case 2: sig=TrendSig_ADX(si);        break;
+        case 3: sig=TrendSig_MACD(si);       break;
+        case 4: sig=TrendSig_SuperTrend(si); break; }
+
+      if(sig==0){ g_TrendLastBar[si][tid]=bt; continue; }
+
+      //--- reversión opcional: señal contraria cierra la posición propia
+      if(InpTrendReverse && TrendHasOpposite(si,tid,sig))
+      {
+         Print("TREND ",TrendName(tid)," [",sym,"] señal contraria → se cierra la posición");
+         TrendCloseAll(si,tid);
+      }
+
+      //--- una posición abierta por estrategia/símbolo
+      if(TrendCountPositions(si,tid)>0){ g_TrendLastBar[si][tid]=bt; continue; }
+
+      //--- regla "1 operación por par": no apilar sobre otra posición del EA
+      if(InpTrendBlockIfBusy && TrendSymbolBusy(si))
+      { g_TrendLastBar[si][tid]=bt; continue; }
+
+      double lots=TrendLot(si);
+      if(lots<=0){ g_TrendLastBar[si][tid]=bt; continue; }
+
+      ENUM_ORDER_TYPE ot=(sig>0)?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+      if(TrendSendOrder(si,tid,ot,lots))
+         Print("TREND ",TrendName(tid)," [",sym,"] ",(sig>0?"BUY":"SELL"),
+               " lots=",DoubleToString(lots,2),
+               " | SL/TP de la configuración: ",
+               DoubleToString(SymSL(si),0),"/",DoubleToString(SymTP(si),0)," pts");
+      g_TrendLastBar[si][tid]=bt;
+   }
+}
+
 void UpdateAllStrategies()
 {
    if(g_CircuitBreakerOn) return;
@@ -3602,6 +4036,9 @@ void UpdateAllStrategies()
    { if(!g_SysState[si].strategies[STRAT_S2].enabled) continue;
      if(g_SysState[si].strategies[STRAT_S2].cbPaused) continue;
      UpdateStrat2Orders(si); }
+   //--- ESTRATEGIAS TENDENCIALES T1..T5 (opcionales): mismo SL/TP config
+   if(InpUseTrendStrat)
+      for(int si=0;si<g_SymCount;si++) TrendUpdate(si);
 }
 
 //+------------------------------------------------------------------+
@@ -3757,12 +4194,13 @@ void SyncAllTrades()
    int    pCR[],pCV[],pSid[],pSi[];
    ulong  pGrp[]; int pType[];
    double pOP[],pSL[],pTP[];
+   long   pMg[];
    int pN=g_TradeCount;
    ArrayResize(pTkt,pN);  ArrayResize(pAdv,pN);  ArrayResize(pMov,pN);
    ArrayResize(pCR,pN);   ArrayResize(pCV,pN);   ArrayResize(pGrp,pN);
    ArrayResize(pType,pN); ArrayResize(pOP,pN);   ArrayResize(pSL,pN);
    ArrayResize(pTP,pN);   ArrayResize(pMan,pN);  ArrayResize(pSid,pN);
-   ArrayResize(pSi,pN);
+   ArrayResize(pSi,pN);   ArrayResize(pMg,pN);
    for(int i=0;i<pN;i++)
    { pTkt[i]=g_Trades[i].ticket;    pAdv[i]=g_Trades[i].advActive;
      pMov[i]=g_Trades[i].slMoved;   pCR[i]=g_Trades[i].CR_level;
@@ -3770,7 +4208,7 @@ void SyncAllTrades()
      pType[i]=g_Trades[i].orderType;pOP[i]=g_Trades[i].openPrice;
      pSL[i]=g_Trades[i].sl;         pTP[i]=g_Trades[i].tp;
      pMan[i]=g_Trades[i].isManual;  pSid[i]=g_Trades[i].strategyId;
-     pSi[i]=g_Trades[i].symbolIdx; }
+     pSi[i]=g_Trades[i].symbolIdx;  pMg[i]=g_Trades[i].magic; }
    g_TradeCount=0; ArrayResize(g_Trades,0);
    for(int i=0;i<PositionsTotal();i++)
    { ulong t=PositionGetTicket(i);
@@ -3791,6 +4229,7 @@ void SyncAllTrades()
      g_Trades[idx].isManual  =isMan;
      g_Trades[idx].strategyId=sid;
      g_Trades[idx].symbolIdx =symIdx;
+     g_Trades[idx].magic     =magic;
      g_Trades[idx].orderType =(int)PositionGetInteger(POSITION_TYPE);
      g_Trades[idx].lots      =PositionGetDouble(POSITION_VOLUME);
      g_Trades[idx].openPrice =PositionGetDouble(POSITION_PRICE_OPEN);
@@ -3843,8 +4282,9 @@ void SyncAllTrades()
          g_ClosedQueue[qi].isManual  =pMan[s];
          g_ClosedQueue[qi].strategyId=pSid[s];
          g_ClosedQueue[qi].symbolIdx =pSi[s];
+         g_ClosedQueue[qi].magic     =pMg[s];
          g_ClosedCount++;
-         string sn=(pSid[s]>=0)?g_SysState[pSi[s]].strategies[pSid[s]].name:"MAN";
+         string sn=TradeStratName(pSi[s],pSid[s],pMg[s]);
          Print("Cierre detectado #",pTkt[s]," [",
                (pSi[s]>=0?g_Symbols[pSi[s]].name:"?"),"/",sn,"]"); } } }
    if(g_ScrollOffset>=g_TradeCount&&g_ScrollOffset>0)
@@ -3894,7 +4334,7 @@ void ProcessClosedQueue()
      { hTP=(snap.tp>0&&MathAbs(cPr-snap.tp)<=tol);
        hSL=(snap.sl>0&&MathAbs(cPr-snap.sl)<=tol);
        if(!hTP&&!hSL){hTP=(cPL>0);hSL=(cPL<=0);} }
-     string sn=(si>=0&&st>=0)?g_SysState[si].strategies[st].name:"MAN";
+     string sn=TradeStratName(si,st,snap.magic);
      string sym=(si>=0)?g_Symbols[si].name:"?";
      bool wc=(dTime>0)&&IsWeeklyCloseWindow((datetime)dTime);   // cierre dentro de la ventana semanal
      //--- cierre producido por el OBJETIVO POR PASOS: no aplica la lógica
@@ -4069,7 +4509,7 @@ void BuildStaticStructure()
 
    BuildDragZone();
    ObjLbl(OBJ_TITLE,x+W/2,y+10,
-          "▲▼  GESTIÓN CUANTITATIVA  v8.55  ▲▼",
+          "▲▼  GESTIÓN CUANTITATIVA  v8.60  ▲▼",
           clrGold,10,"Arial Bold",ANCHOR_CENTER);
    ObjLbl(PFX+"DRAG_HINT",x+W-4,y+24,"☰ drag",
           C'80,80,120',6,"Arial",ANCHOR_RIGHT_UPPER);
@@ -4606,8 +5046,7 @@ void BuildTabPosiciones()
       TradeRecord tr=g_Trades[k];
       string rid=IntegerToString(v);
       int    st2=tr.strategyId;
-      string sn=(st2>=0&&st2<STRAT_COUNT)?
-                 g_SysState[si].strategies[st2].name:"MAN";
+      string sn=TradeStratName(si,st2,tr.magic);
       bool trailOn=(st2>=0)?IsTrailingActive(si,st2):false;
 
       color rBG,rBRD;
@@ -5823,7 +6262,7 @@ void ShowTesterInfo()
    double fPL=eq-bal;
    double lossPct=GetDailyLossPct();
    string msg="╔══════════════════════════════════════════╗\n";
-   msg+="║    GESTIÓN CUANTITATIVA  v8.55           ║\n";
+   msg+="║    GESTIÓN CUANTITATIVA  v8.60           ║\n";
    msg+="╠══════════════════════════════════════════╣\n";
    msg+=StringFormat("║  Base capital : %s   Bal.máx: %.2f\n",
                      BaseDisplay(false),g_BaseMaxBalance);
@@ -5864,7 +6303,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.55 === X=",InpXActivacion,
+   Print("=== DIAG v8.60 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -5936,6 +6375,9 @@ int OnInit()
 
    for(int si=0;si<g_SymCount;si++) InitSystemState(si);
 
+   //--- ESTRATEGIAS TENDENCIALES T1..T5 (opcionales): handles de indicadores
+   TrendInit();
+
    g_BaseCapital    = InpBaseCapital;
    g_BaseMaxBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_DayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -6001,13 +6443,14 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.55 | Símbolos:",g_SymCount,
+   Print("EA v8.60 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
          " | 1:2=",InpUseTrailing12?(InpAutoFromLevel5?"ON (auto nivel≥5)":"ON (siempre)")
                                    :"OFF (solo se busca el TP)",
-         " | OBJETIVO=",InpUseProfitStep?"ON":"OFF");
+         " | OBJETIVO=",InpUseProfitStep?"ON":"OFF",
+         " | TENDENCIALES=",InpUseTrendStrat?"ON":"OFF");
    return INIT_SUCCEEDED;
 }
 
@@ -6020,8 +6463,9 @@ void OnDeinit(const int reason)
    if(!IsTester()){ DeletePanel(); RemoveLimitLine(); RemoveStructureLines(); }
    MultiPanelDestroy();
    RemovePositionLines();
+   TrendDeinit();
    Comment("");
-   Print("EA v8.55 cerrado | Razón:",reason);
+   Print("EA v8.60 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
