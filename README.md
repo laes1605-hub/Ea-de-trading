@@ -1,6 +1,6 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.55**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.60**:
 
 - **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
@@ -8,6 +8,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 - **Objetivo por pasos / profit step (v8.54)**: escalera de escalones **que nunca baja** (`base → base+paso → base+2·paso…`, paso en USD con `InpProfitStepUsd`). Al llegar a un escalón el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **sube la base al escalón logrado**. Se mide por **equity** o por **suma de posiciones cerradas** (`InpStepMeasure`); la base se puede fijar **manualmente** (`InpStepBaseValue`). Las LIVE siguen LIVE y el CV virtual se mantiene.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 - **1:2 opcional (v8.55)**: `InpUseTrailing12` es el **interruptor maestro** del SL protegido. `true` = comportamiento de siempre (mueve el SL a 1:2 según nivel/MODO AVANZADO); **`false` = no se mueve ningún SL, las operaciones solo buscan el TP** (o salen por su SL original). Aplica igual en **real y en virtual**, y domina sobre el MODO AVANZADO y el automático por nivel.
+- **5 estrategias tendenciales OPCIONALES (v8.60)**: **T1 cruce de EMAs**, **T2 ruptura Donchian**, **T3 ADX+DI**, **T4 MACD con filtro EMA**, **T5 Supertrend**. Todas **apagadas por defecto** (`InpUseTrendStrat` + `InpT1Use..InpT5Use`), abren a **mercado** con el **MISMO SL y TP de la configuración** (globales o por símbolo) y lote de la tabla de riesgo. No pasan por el ciclo virtual→LIVE ni mueven el nivel del par; respetan horario, viernes, circuit breaker y objetivo por pasos.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 
 ## Archivos
@@ -26,7 +27,7 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.55)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.60)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + **5 estrategias tendenciales opcionales T1..T5 (mismo SL/TP de la configuración)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
@@ -115,6 +116,32 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 > **Fix v8.51 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas), `InpStrat2MinAge=10` (antigüedad mínima de la zona), `InpAllowStrat2Orders=true` (permitir órdenes S2).
+
+## Estrategias tendenciales opcionales T1..T5 (v8.60) — mismo SL/TP de la configuración
+
+Cinco estrategias **de seguimiento de tendencia**, todas **APAGADAS por defecto** y activables de forma independiente. Abren órdenes a **MERCADO** usando el **MISMO SL y TP que se coloquen en la configuración** (`InpSL_Points`/`InpTP_Points` globales, o los `InpSymN_SL`/`InpSymN_TP` por símbolo si están definidos) y lote de la **tabla de riesgo** (igual que el resto del EA).
+
+| # | Estrategia | Señal de COMPRA | Señal de VENTA | Inputs propios |
+|---|---|---|---|---|
+| **T1** | **Cruce de EMAs** | EMA rápida cruza **arriba** la lenta | EMA rápida cruza **abajo** la lenta | `InpT1TF=M15`, `InpT1Fast=12`, `InpT1Slow=48` |
+| **T2** | **Canal Donchian** | cierre **sobre el máximo** de las últimas N velas | cierre **bajo el mínimo** de las últimas N velas | `InpT2TF=H1`, `InpT2Period=20` |
+| **T3** | **ADX + DI** | `+DI` cruza sobre `-DI` con `ADX ≥ mínimo` | `-DI` cruza sobre `+DI` con `ADX ≥ mínimo` | `InpT3TF=M30`, `InpT3Period=14`, `InpT3MinADX=22` |
+| **T4** | **MACD + filtro EMA** | MACD cruza su señal **y** precio sobre EMA200 | MACD cruza su señal **y** precio bajo EMA200 | `InpT4TF=H1`, `InpT4Fast=12`, `InpT4Slow=26`, `InpT4Signal=9`, `InpT4EmaFilter=200` |
+| **T5** | **Supertrend (ATR)** | giro **alcista** de las bandas ATR | giro **bajista** de las bandas ATR | `InpT5TF=H1`, `InpT5ATR=10`, `InpT5Mult=3.0` |
+
+**Cómo funcionan:**
+
+- **Activación**: interruptor maestro `InpUseTrendStrat=false` (por defecto) + interruptor individual `InpT1Use..InpT5Use=false`. Puedes activar 1, 3 o las 5 que quieras.
+- **Señales en velas cerradas**: cada estrategia evalúa la vela **cerrada** (1 vs 2) de su timeframe, **una sola vez por vela nueva** — sin repintar ni repetir entradas dentro de la misma vela.
+- **Mismo SL/TP**: la orden sale con `CalcSL/CalcTP` del EA → exactamente el SL y TP de la configuración (con offset `InpSL_Offset` y overrides por símbolo). Las posiciones salen por ese SL/TP; **no** les aplica el trailing 1:2 (conservan su SL original).
+- **Lote**: de la tabla de riesgo con `InpTrendLotMode`: `Nivel fijo` usa el nivel `InpTrendLevel` (por defecto 1); `Nivel del par` usa el nivel actual del par (igual que E1/S2).
+- **Una posición por estrategia/símbolo**: mientras T1 tenga una posición abierta en un par, T1 no abre otra ahí (las demás estrategias T son independientes entre sí).
+- **Regla 1 por par**: con `InpTrendBlockIfBusy=true` (por defecto) ninguna T abre si el símbolo ya tiene otra posición del EA (E1/S2/otra T), respetando la filosofía de una operación activa por par; ponlo en `false` para operarlas en paralelo.
+- **Reversión opcional**: `InpTrendReverse=false` por defecto; en `true`, una señal contraria cierra la posición de esa estrategia antes de abrir la nueva.
+- **Reglas generales del EA aplican igual**: filtro de horario, cierre de viernes, circuit breaker, objetivo por pasos (las cierra todas al lograr el escalón) y `EnforceSLTP` (restaura SL/TP si faltan).
+- **Independientes del nivel**: los cierres de las T **NO modifican** el nivel 1–20 del par ni el CV (no pasan por el ciclo virtual→LIVE). Sus magics son `InpMagicNumber + símbolo*10 + 3..7` (T1=+3 … T5=+7), se ven en la pestaña POSICIONES con su nombre (`T1-EMA`, `T2-DON`, `T3-ADX`, `T4-MACD`, `T5-ST`) y en el historial por el comentario `QA_EA_<símbolo>_T#-..._N<nivel>`.
+
+**Inputs (grupo `ESTRATEGIAS TENDENCIALES`):** `InpUseTrendStrat`, `InpTrendBlockIfBusy=true`, `InpTrendReverse=false`, `InpTrendLotMode`, `InpTrendLevel=1`, y por estrategia `InpTnUse` + timeframe + parámetros (tabla de arriba).
 
 ## Líneas visibles en el gráfico
 
