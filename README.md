@@ -39,6 +39,8 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `SMC_Lineas_BOS50.mq5` | **Indicador visual** (no opera): líneas L1-L4 + zonas premium/descuento + **BOS/CHoCH anclados dentro del 50%** de la estructura, con la misma lógica del EA v8.56, overlay H1, panel en gráfico y avisos en la pestaña Expertos. Listo para la terminal MT5 de Exness; convive con el EA en el mismo gráfico. Ver `README SMC50 LINEAS-BOS.md`. |
 | `SMC_Lineas_BOS50.txt` | Copia en texto plano de `SMC_Lineas_BOS50.mq5`. |
 | `README SMC50 LINEAS-BOS.md` | Guía del indicador: leyenda, lógica, instalación en Exness e inputs. |
+| `smc50-web/` | **App web compañera de Exness Terminal** (la terminal web de Exness no admite indicadores personalizados): mismo motor v8.56 en JavaScript, gráfico de velas con L1-L4 + 50% + zonas, **BOS/CHoCH anclados dentro del 50%**, TF madre, panel, terminal de eventos y avisos. Datos en vivo (Binance sin key para cripto, TwelveData con key gratuita para forex/oro/índices) + modo demo. Sin instalación: abrir `index.html`. Ver `README SMC50 WEB.md`. |
+| `README SMC50 WEB.md` | Guía de la app web: qué muestra, lógica, datos en vivo, API key y uso junto a Exness. |
 
 ## Estrategia 1 (v8.56) — líneas en H1 + BOS/CHoCH en M3 + 50% del tramo
 

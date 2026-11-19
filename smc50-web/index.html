@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMC50 · Líneas + BOS/CHoCH @50% — junto a Exness Terminal</title>
+<meta name="description" content="Lógica de líneas L1-L4 y reconocimiento de BOS/CHoCH dentro del 50% de la estructura. App web para usar al lado de Exness Terminal (no opera).">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="logo">SMC50</span>
+    <span class="tagline">Líneas L1-L4 + BOS/CHoCH dentro del 50% · para usar junto a Exness Terminal · <b>no opera</b></span>
+  </div>
+  <div id="status" class="status"><span class="dot warn"></span>Iniciando…</div>
+</header>
+
+<div class="toolbar">
+  <label>Símbolo
+    <input id="sym" list="symlist" value="BTCUSD" spellcheck="false" autocomplete="off">
+    <datalist id="symlist">
+      <option value="BTCUSD"></option>
+      <option value="ETHUSD"></option>
+      <option value="EURUSD"></option>
+      <option value="GBPUSD"></option>
+      <option value="USDJPY"></option>
+      <option value="AUDUSD"></option>
+      <option value="USDCAD"></option>
+      <option value="XAUUSD"></option>
+      <option value="XAGUSD"></option>
+      <option value="US30"></option>
+      <option value="NAS100"></option>
+      <option value="SPX500"></option>
+      <option value="USOIL"></option>
+    </datalist>
+  </label>
+  <label>TF
+    <select id="tf">
+      <option>M1</option><option>M3</option><option>M5</option>
+      <option selected>M15</option><option>M30</option>
+      <option>H1</option><option>H4</option>
+    </select>
+  </label>
+  <label>Madre
+    <select id="mom">
+      <option value="OFF">OFF</option>
+      <option>M15</option>
+      <option selected>H1</option>
+      <option>H4</option>
+      <option>D1</option>
+    </select>
+  </label>
+  <label>Fuente
+    <select id="src">
+      <option value="auto" selected>Auto</option>
+      <option value="twelvedata">TwelveData</option>
+      <option value="binance">Binance</option>
+      <option value="demo">Demo</option>
+    </select>
+  </label>
+  <label class="key">API key TwelveData
+    <input id="key" type="password" placeholder="solo para forex/metales/índices" autocomplete="off">
+  </label>
+  <label>Actualizar
+    <select id="ref">
+      <option value="10">10s</option>
+      <option value="15">15s</option>
+      <option value="20" selected>20s</option>
+      <option value="30">30s</option>
+      <option value="60">60s</option>
+    </select>
+  </label>
+  <label class="marks">Marcas
+    <input id="marks" type="number" min="5" max="100" value="30">
+  </label>
+  <button id="btnGo" class="go">Conectar</button>
+  <button id="btnPause">Pausar</button>
+</div>
+
+<div class="toggles">
+  <label><input type="checkbox" id="chkZones" checked> Zonas 50%</label>
+  <label><input type="checkbox" id="chkMom" checked> Ver madre</label>
+  <label><input type="checkbox" id="chkAnchor" checked> Etiquetas dentro del 50%</label>
+  <label><input type="checkbox" id="chkSound" checked> Sonido</label>
+  <label><input type="checkbox" id="chkNotif"> Notificación</label>
+  <button id="btnHelpKey" class="mini">¿Cómo consigo la API key?</button>
+</div>
+
+<div id="errbar" class="errbar hidden"></div>
+
+<main class="layout">
+  <section class="chartwrap">
+    <div class="charthead">
+      <div id="legend" class="legend">—</div>
+      <div class="chartbtns">
+        <button id="btnZo" title="Alejar">−</button>
+        <button id="btnZi" title="Acercar">+</button>
+        <button id="btnFollow" title="Seguir en vivo">⏮ vivo</button>
+      </div>
+    </div>
+    <div class="canvasbox"><canvas id="chart"></canvas></div>
+    <div class="chartfoot"><span id="countdown">—</span></div>
+  </section>
+
+  <aside class="side">
+    <div class="card" id="dashMain"><h3>Principal</h3><p class="dim">Cargando…</p></div>
+    <div class="card" id="dashMom"><h3>Madre</h3><p class="dim">Cargando…</p></div>
+    <div class="card feedcard">
+      <div class="feedhead"><h3>Terminal de eventos</h3><button id="btnClear" class="mini">Limpiar</button></div>
+      <div id="feed"></div>
+    </div>
+    <details class="card help" id="helpKey">
+      <summary>¿Cómo consigo la API key? (forex / oro / índices)</summary>
+      <ol>
+        <li>Entra a <b>twelvedata.com</b> → <b>Get free API key</b> y crea la cuenta (gratis).</li>
+        <li>Copia tu API key y pégala arriba en <b>API key TwelveData</b>.</li>
+        <li>Elige el símbolo igual que en Exness (<b>XAUUSD, EURUSD, US30…</b>) y pulsa <b>Conectar</b>.</li>
+      </ol>
+      <p class="dim">La key se guarda solo en tu navegador (localStorage). El plan gratis da ~800 consultas/día: con actualización cada 20s (≈6/min) alcanza para unas 2 horas de uso al día por símbolo. Para cripto (BTCUSD, ETHUSD) no necesitas key: usa Binance.</p>
+    </details>
+    <details class="card help">
+      <summary>¿Cómo la uso junto a Exness Terminal?</summary>
+      <ol>
+        <li>Abre <b>Exness Terminal</b> en una pestaña del navegador y esta app en otra (o media pantalla cada una).</li>
+        <li>Pon el <b>mismo símbolo y temporalidad</b> en ambas.</li>
+        <li>Aquí ves las <b>líneas L1-L4, el 50% y cada BOS/CHoCH</b>; en Exness ejecutas tu operativa manual.</li>
+      </ol>
+      <p class="dim">Exness Terminal no permite instalar indicadores personalizados, por eso esta app va al lado: misma lógica del EA v8.56, solo visual.</p>
+    </details>
+  </aside>
+</main>
+
+<footer class="foot">
+  SMC50-WEB v1.00 · Motor idéntico al EA v8.56 (L1-L4 + BOS + CHoCH + 50%) · Solo visual, no opera · Horas en hora local de tu equipo
+</footer>
+
+<script src="engine.js"></script>
+<script src="data.js"></script>
+<script src="chart.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
