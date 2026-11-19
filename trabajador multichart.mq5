@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.58"
+#property version   "8.59"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -77,6 +77,20 @@ input int             InpSmc3ZoneBars      = 120;       // Vida máxima de una z
 input int             InpSmc3MaxZones      = 4;         // Máx. zonas POI vivas por par (1-8)
 input double          InpSmc3MinLegPts     = 0.0;       // Tamaño mínimo del tramo del TF medio (puntos, 0 = sin filtro)
 input bool            InpSmc3Show          = true;      // Dibujar rango del TF alto, tramo, POI y entrada
+
+input group "=== REJILLA (GRID) — SOBRE LAS ENTRADAS DE E1 Y E3 ==="
+input bool            InpGridEnable    = false;  // Activar la rejilla (solo añade a la operación de E1/E3)
+input bool            InpGridOnE1      = true;   // Aplicar la rejilla a la Estrategia 1
+input bool            InpGridOnE3      = true;   // Aplicar la rejilla a la Estrategia 3
+input double          InpGridStepPts   = 0.0;    // Distancia del 1er nivel (puntos; 0 = mitad del SL del par)
+input double          InpGridDistMult  = 1.0;    // Multiplicador de DISTANCIA (1 = igual · 1.5 = cada vez más lejos)
+input double          InpGridLotInit   = 0.0;    // LOTaje del 1er nivel de la rejilla (0 = lote del nivel del par)
+input double          InpGridLotMult   = 1.0;    // Multiplicador de LOTaje (1 = fijo · 2 = doble)
+input int             InpGridMaxLevels = 4;      // Niveles extra máximos (0 = sin rejilla)
+input double          InpGridLotCap    = 5.0;    // Tope de lote por nivel de la rejilla (0 = sin tope)
+input bool            InpGridAvgTP     = true;   // TP común recalculado sobre el PRECIO MEDIO de la cesta
+input bool            InpGridBasketSL  = true;   // SL común recalculado sobre el PRECIO MEDIO de la cesta
+input bool            InpGridKeepTrail = false;  // Mantener el 1:2 por posición aunque la rejilla esté activa
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input bool   InpUseTrailing12    = true;   // ¿Activar el 1:2? true=mueve el SL a protección · false=solo buscar el TP
@@ -555,6 +569,11 @@ struct SymbolSystemState
    double   smc3VPendBuyPrice;
    bool     smc3VPendSell;        // LIMIT virtual de venta activa
    double   smc3VPendSellPrice;
+
+   //--- v8.59: REJILLA sobre la operación LIVE de E1/E3 ------------
+   int      gridStrategy;         // estrategia dueña de la rejilla (-1 = ninguna)
+   int      gridDir;              // +1 compra · -1 venta
+   int      gridLegs;             // niveles EXTRA abiertos por la rejilla
 };
 
 struct TradeRecord
@@ -720,6 +739,22 @@ void ClosePosition(ulong ticket);
 void UpdateLimitLine();
 void RemoveLimitLine();
 bool SendMarketOrderEx(int si, int st, ENUM_ORDER_TYPE ot, double lots, long magic);
+
+//--- v8.59: REJILLA (grid) sobre las entradas de E1 y E3
+bool   GridUsesStrategy(int st);
+bool   GridSkipTrail(int si,int st);
+bool   GridPartialClose(int si,int st);
+void   GridUpdate();
+void   GridResetState(int si);
+void   GridDeleteObjects(int si);
+int    GridCountPositions(int si,int st);
+int    GridBasketDir(int si,int st);
+void   GridBasketStats(int si,int st,double &avg,double &worst,double &lots);
+double GridStepPoints(int si,int legs);
+double GridNextLot(int si,int legs);
+void   GridRecalcBasket(int si,bool logIt);
+void   GridSyncState(int si);
+void   GridDraw(int si);
 void _SendLimitManual(int si, ENUM_ORDER_TYPE ot, double lots, double lp);
 
 //+------------------------------------------------------------------+
@@ -1405,6 +1440,11 @@ void InitSystemState(int si)
    g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0;
 
+   //--- v8.59: la rejilla arranca desactivada (-1 = sin rejilla)
+   g_SysState[si].gridStrategy=-1;
+   g_SysState[si].gridDir     =0;
+   g_SysState[si].gridLegs    =0;
+
    bool ena[STRAT_COUNT]={InpUseConfluencia,InpUseStrat2,InpUseSMC3};
    for(int st=0;st<STRAT_COUNT;st++)
    { g_SysState[si].strategies[st].enabled        = ena[st];
@@ -1506,6 +1546,9 @@ void SaveStateToFile()
        FileWriteString(h,pp+"VLOGIC="  +IntegerToString(g_SysState[si].strategies[st].liveLogicLevel)+"\n"); }
      //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
      FileWriteString(h,sp+"PLEVEL="  +IntegerToString(PairLevel(si))+"\n");
+     FileWriteString(h,sp+"GRID_ST="   +IntegerToString(g_SysState[si].gridStrategy)+"\n");
+     FileWriteString(h,sp+"GRID_DIR="  +IntegerToString(g_SysState[si].gridDir)+"\n");
+     FileWriteString(h,sp+"GRID_LEGS=" +IntegerToString(g_SysState[si].gridLegs)+"\n");
      FileWriteString(h,sp+"CONF_ARMED_B="+(g_SysState[si].confArmedBuy?"1":"0")            +"\n");
      FileWriteString(h,sp+"CONF_ARM_BT=" +IntegerToString((long)g_SysState[si].confArmBuyTime)+"\n");
      FileWriteString(h,sp+"CONF_ARMED_S="+(g_SysState[si].confArmedSell?"1":"0")           +"\n");
@@ -1609,6 +1652,9 @@ void LoadStateFromFile()
          if(rest=="HASLIVE") g_SysState[si].hasLive=(StringToInteger(val)>0);
          else if(rest=="ALIVE") g_SysState[si].activeLiveStrategy=(int)StringToInteger(val);
          else if(rest=="PLEVEL")    g_PairLevel[si]=(int)MathMax(1,MathMin(MAX_TABLE_SIZE,StringToInteger(val)));
+         else if(rest=="GRID_ST")   g_SysState[si].gridStrategy=(int)StringToInteger(val);
+         else if(rest=="GRID_DIR")  g_SysState[si].gridDir=(int)StringToInteger(val);
+         else if(rest=="GRID_LEGS") g_SysState[si].gridLegs=(int)MathMax(0,StringToInteger(val));
          else if(rest=="CONF_ARMED_B") g_SysState[si].confArmedBuy=(StringToInteger(val)>0);
          else if(rest=="CONF_ARM_BT")  g_SysState[si].confArmBuyTime=(datetime)StringToInteger(val);
          else if(rest=="CONF_ARMED_S") g_SysState[si].confArmedSell=(StringToInteger(val)>0);
@@ -5034,6 +5080,8 @@ void ManageOpenPositions()
    { if(g_Trades[k].isPending||g_Trades[k].slMoved) continue;
      int si=g_Trades[k].symbolIdx; int st=g_Trades[k].strategyId;
      if(si<0||st<0) continue;
+     //--- v8.59: con rejilla activa el SL lo gobierna la CESTA (precio medio)
+     if(GridSkipTrail(si,st)) continue;
      if(!g_Trades[k].advActive) continue;   // 1:2 fijado al abrir (nivel>=5)
      ulong t=g_Trades[k].ticket;
      if(!PositionSelectByTicket(t)) continue;
@@ -5149,6 +5197,398 @@ void _SendLimitManual(int si, ENUM_ORDER_TYPE ot, double lots, double lp)
    req.comment=StringFormat("%s_%s_MAN_LMT",InpComment,sym);
    if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
       Print("ERROR LimitManual [",sym,"]: ",res.retcode);
+}
+
+//+==================================================================+
+//| REJILLA (GRID) SOBRE LAS ENTRADAS DE E1 Y E3 (v8.59)             |
+//|                                                                  |
+//| La APERTURA sigue siendo la de la Estrategia 1 / Estrategia 3.   |
+//| La rejilla NO busca entradas propias: solo AÑADE operaciones a la |
+//| operación LIVE que ya abrió la estrategia cuando el precio va en  |
+//| contra.                                                          |
+//|                                                                  |
+//|   · DISTANCIA del nivel n = InpGridStepPts · InpGridDistMult^(n-1)|
+//|     (InpGridStepPts = 0 → mitad del SL del par)                   |
+//|   · LOTaje del nivel n    = (InpGridLotInit o lote del nivel)     |
+//|                              · InpGridLotMult^(n-1)               |
+//|   · TP común sobre el PRECIO MEDIO de la cesta (InpGridAvgTP)     |
+//|   · SL común sobre el PRECIO MEDIO (InpGridBasketSL); las         |
+//|     posiciones con el SL ya movido a protección (1:2) no se tocan |
+//|   · el NIVEL/CV del par se actualiza UNA sola vez, cuando cierra  |
+//|     la ÚLTIMA posición de la cesta (no una vez por nivel)         |
+//|                                                                  |
+//| La rejilla se aplica según InpGridOnE1 / InpGridOnE3 y nunca a la |
+//| Estrategia 2. Sigue vigente: UNA sola operación abierta por par.  |
+//+==================================================================+
+bool GridUsesStrategy(int st)
+{
+   if(!InpGridEnable)        return false;
+   if(st==STRAT_CONFLUENCIA) return InpGridOnE1;
+   if(st==STRAT_SMC3)        return InpGridOnE3;
+   return false;                                  // la S2 no usa rejilla
+}
+
+//--- prefijo de los objetos gráficos de la rejilla
+string GridObjPrefix(int si)
+{ return("GRID_"+g_Symbols[si].name+"_"); }
+
+int GridCountPositions(int si,int st)
+{
+   if(si<0||st<0||si>=g_SymCount) return 0;
+   string sym=g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,st);
+   int    n=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym)      continue;
+     if(PositionGetInteger(POSITION_MAGIC)!=magic)    continue;
+     n++; }
+   return n;
+}
+
+//--- media ponderada, peor precio de apertura y lotes de la cesta
+void GridBasketStats(int si,int st,double &avg,double &worst,double &lots)
+{
+   avg=0.0; worst=0.0; lots=0.0;
+   if(si<0||st<0||si>=g_SymCount) return;
+   string sym  =g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,st);
+   int    dir  =g_SysState[si].gridDir;
+   double spv=0.0, sv=0.0; int n=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym)   continue;
+     if(PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     double v=PositionGetDouble(POSITION_VOLUME);
+     double p=PositionGetDouble(POSITION_PRICE_OPEN);
+     if(v<=0.0||p<=0.0) continue;
+     spv+=p*v; sv+=v; n++;
+     if(n==1) worst=p;
+     else if(dir>0) worst=MathMin(worst,p);
+     else if(dir<0) worst=MathMax(worst,p); }
+   if(sv>0.0){ avg=spv/sv; lots=sv; }
+   if(n<=0) worst=0.0;
+}
+
+int GridBasketDir(int si,int st)
+{
+   if(si<0||st<0||si>=g_SymCount) return 0;
+   string sym  =g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,st);
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym)   continue;
+     if(PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     return(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1); }
+   return 0;
+}
+
+void GridDeleteObjects(int si)
+{
+   if(si<0||si>=g_SymCount) return;
+   string p=GridObjPrefix(si);
+   ObjectDelete(0,p+"NEXT");
+   ObjectDelete(0,p+"NEXT_T");
+}
+
+void GridResetState(int si)
+{
+   if(si<0||si>=g_SymCount) return;
+   if(g_SysState[si].gridStrategy>=0)
+      Print("REJILLA [",g_Symbols[si].name,"] fin de la cesta (niveles extra abiertos: ",
+            g_SysState[si].gridLegs,")");
+   g_SysState[si].gridStrategy=-1;
+   g_SysState[si].gridDir     =0;
+   g_SysState[si].gridLegs    =0;
+   GridDeleteObjects(si);
+}
+
+//--- distancia del siguiente nivel (en puntos)
+double GridStepPoints(int si,int legs)
+{
+   double basePts=(InpGridStepPts>0.0)?InpGridStepPts:SymSL(si)*0.5;
+   double m=InpGridDistMult;
+   if(m<0.1) m=0.1;
+   if(legs<0) legs=0;
+   return(basePts*MathPow(m,(double)legs));
+}
+
+double GridNormalizeLot(string sym,double lots,double cap)
+{
+   double mn=SymbolInfoDouble(sym,SYMBOL_VOLUME_MIN);
+   double mx=SymbolInfoDouble(sym,SYMBOL_VOLUME_MAX);
+   double st=SymbolInfoDouble(sym,SYMBOL_VOLUME_STEP);
+   if(st<=0.0)  st=0.01;
+   if(mn<=0.0)  mn=st;
+   if(mx<=0.0)  mx=lots;
+   if(cap>0.0)  mx=MathMin(mx,cap);
+   lots=MathFloor(lots/st+0.0000001)*st;
+   lots=MathMax(mn,MathMin(mx,lots));
+   int dg=2;
+   if(st>=0.1) dg=1;
+   if(st>=1.0) dg=0;
+   return NormalizeDouble(lots,dg);
+}
+
+//--- lotaje del nivel `legs+1`
+double GridNextLot(int si,int legs)
+{
+   double base=(InpGridLotInit>0.0)?InpGridLotInit:GetPairLot(si);
+   double m=InpGridLotMult;
+   if(m<0.1) m=0.1;
+   if(legs<0) legs=0;
+   double lots=base*MathPow(m,(double)legs);
+   if(InpGridLotCap>0.0&&lots>InpGridLotCap) lots=InpGridLotCap;
+   return GridNormalizeLot(g_Symbols[si].name,lots,InpGridLotCap);
+}
+
+//--- recalcula TP (y SL) comunes sobre el precio medio de la cesta
+void GridRecalcBasket(int si,bool logIt)
+{
+   if(si<0||si>=g_SymCount) return;
+   int st=g_SysState[si].gridStrategy;
+   if(st<0) return;
+   if(GridCountPositions(si,st)<=0) return;
+   if(!InpGridAvgTP&&!InpGridBasketSL) return;
+
+   string sym  =g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,st);
+   double pt   =SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    dg   =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    dir  =g_SysState[si].gridDir;
+   if(dir==0) return;
+   int    ptype=(dir>0)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+
+   double avg,worst,blots;
+   GridBasketStats(si,st,avg,worst,blots);
+   if(blots<=0.0) return;
+
+   double tp=(InpGridAvgTP)?CalcTP(sym,si,avg,ptype):0.0;
+   double sl=(InpGridBasketSL)?CalcSL(sym,si,avg,ptype):0.0;
+   double minD=(double)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL)*pt;
+   if(minD<=0.0) minD=pt*10.0;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+
+   int changed=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   { ulong t=PositionGetTicket(i); if(t==0) continue;
+     if(!PositionSelectByTicket(t)) continue;
+     if(PositionGetString(POSITION_SYMBOL)!=sym)   continue;
+     if(PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+     double cSL=PositionGetDouble(POSITION_SL);
+     double cTP=PositionGetDouble(POSITION_TP);
+     int    idx=FindTrade(t);
+     bool   prot=(idx>=0)?g_Trades[idx].slMoved:false;   // SL protegido 1:2 → intocable
+     double nSL=((sl>0.0&&!prot)?sl:cSL);
+     double nTP=((tp>0.0)?tp:cTP);
+     //--- respetar la distancia mínima del bróker
+     if(nSL>0.0)
+     { if(dir>0){ if(bid-nSL<minD) nSL=NormalizeDouble(bid-minD,dg); }
+       else     { if(nSL-ask<minD) nSL=NormalizeDouble(ask+minD,dg); } }
+     if(nTP>0.0)
+     { if(dir>0){ if(nTP-ask<minD) nTP=NormalizeDouble(ask+minD,dg); }
+       else     { if(bid-nTP<minD) nTP=NormalizeDouble(bid-minD,dg); } }
+     if(MathAbs(nSL-cSL)<pt*0.5&&MathAbs(nTP-cTP)<pt*0.5) continue;
+     if(!RestoreSLTP(t,nSL,nTP)) { Print("REJILLA [",sym,"] no se pudo ajustar SL/TP #",t); continue; }
+     if(idx>=0){ g_Trades[idx].sl=nSL; g_Trades[idx].tp=nTP; }
+     changed++; }
+
+   if(logIt)
+      Print("REJILLA [",sym,"/",GetStrategyName(st),"] cesta: media=",DoubleToString(avg,dg),
+            " lotes=",DoubleToString(blots,2),
+            " TP=",DoubleToString(tp,dg)," SL=",DoubleToString(sl,dg),
+            " ajustes=",changed);
+}
+
+//--- abre el siguiente nivel de la rejilla si el precio ya recorrió la distancia
+void GridTryStep(int si)
+{
+   int st=g_SysState[si].gridStrategy;
+   if(st<0) return;
+   int legs=g_SysState[si].gridLegs;
+   if(legs>=InpGridMaxLevels) return;
+
+   string sym=g_Symbols[si].name;
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    dir=g_SysState[si].gridDir;
+   if(dir==0){ g_SysState[si].gridDir=GridBasketDir(si,st); dir=g_SysState[si].gridDir; }
+   if(dir==0) return;
+
+   double avg,worst,blots;
+   GridBasketStats(si,st,avg,worst,blots);
+   if(blots<=0.0) return;
+
+   double stepPts=GridStepPoints(si,legs);
+   if(stepPts<=0.0) return;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double px =(dir>0)?ask:bid;
+   if(px<=0.0) return;
+   double adv=(dir>0)?(worst-px)/pt:(px-worst)/pt;
+   if(adv+0.0001<stepPts) return;                 // todavía no llegó al nivel
+
+   double lots=GridNextLot(si,legs);
+   if(lots<=0.0) return;
+
+   //--- margen libre
+   ENUM_ORDER_TYPE ot=(dir>0)?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   double margin=0.0;
+   if(OrderCalcMargin(ot,sym,lots,px,margin))
+   { double freeM=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+     if(freeM>0.0&&margin>freeM*0.90)
+     { Print("REJILLA [",sym,"] nivel ",legs+1," sin margen libre (necesita ",
+             DoubleToString(margin,2),")"); return; } }
+
+   //--- SL/TP proyectados sobre la media que quedaría con la nueva orden
+   double newAvg=(avg*blots+px*lots)/(blots+lots);
+   int    ptype=(dir>0)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   double sl=(InpGridBasketSL)?CalcSL(sym,si,newAvg,ptype):0.0;
+   double tp=(InpGridAvgTP)?CalcTP(sym,si,newAvg,ptype):0.0;
+   double minD=(double)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL)*pt;
+   if(minD<=0.0) minD=pt*10.0;
+   if(dir>0)
+   { if(sl>0.0&&bid-sl<minD) sl=NormalizeDouble(bid-minD,dg);
+     if(tp>0.0&&tp-ask<minD) tp=NormalizeDouble(ask+minD,dg); }
+   else
+   { if(sl>0.0&&sl-ask<minD) sl=NormalizeDouble(ask+minD,dg);
+     if(tp>0.0&&bid-tp<minD) tp=NormalizeDouble(bid-minD,dg); }
+
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action  =TRADE_ACTION_DEAL;
+   req.symbol  =sym;
+   req.volume  =lots;
+   req.type    =ot;
+   req.price   =px;
+   req.sl      =sl;
+   req.tp      =tp;
+   req.deviation=20;
+   req.magic   =GetStrategyMagic(si,st);
+   req.type_filling=ORDER_FILLING_IOC;
+   req.comment =StringFormat("%s_%s_GRID_L%d",InpComment,GetStrategyName(st),legs+1);
+   if(!OrderSend(req,res)||res.retcode!=TRADE_RETCODE_DONE)
+   { Print("ERROR REJILLA [",sym,"] nivel ",legs+1,": retcode=",res.retcode);
+     return; }
+
+   g_SysState[si].gridLegs=legs+1;
+   Print("★ REJILLA [",sym,"/",GetStrategyName(st),"] nivel ",legs+1,"/",InpGridMaxLevels,
+         " ",(dir>0?"COMPRA":"VENTA"),
+         " Lot=",DoubleToString(lots,2),
+         " @",DoubleToString(px,dg),
+         " dist=",DoubleToString(stepPts,0)," pts",
+         " media=",DoubleToString(newAvg,dg),
+         " SL=",DoubleToString(sl,dg)," TP=",DoubleToString(tp,dg));
+   GridRecalcBasket(si,false);
+   SaveState();
+   if(!IsTester()) RebuildPanel();
+}
+
+//--- dibujo: nivel siguiente de la rejilla (solo el par del panel)
+void GridDraw(int si)
+{
+   if(si<0||si>=g_SymCount) return;
+   string p=GridObjPrefix(si);
+   if(!InpGridEnable||g_SysState[si].gridStrategy<0||si!=g_PanelSymIdx)
+   { ObjectDelete(0,p+"NEXT"); ObjectDelete(0,p+"NEXT_T"); return; }
+   string sym=g_Symbols[si].name;
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    dgN=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   if(dgN<=0) dgN=5;
+   int    legs=g_SysState[si].gridLegs;
+   int    dir =g_SysState[si].gridDir;
+   double avg,worst,blots;
+   GridBasketStats(si,g_SysState[si].gridStrategy,avg,worst,blots);
+   if(worst<=0.0||dir==0){ ObjectDelete(0,p+"NEXT"); ObjectDelete(0,p+"NEXT_T"); return; }
+   double stepPts=GridStepPoints(si,legs);
+   double nx=(dir>0)?(worst-stepPts*pt):(worst+stepPts*pt);
+   string lbl="REJILLA L"+IntegerToString(legs+1)+"/"+IntegerToString(InpGridMaxLevels);
+   SE_HLine(p+"NEXT",NormalizeDouble(nx,dgN),clrDodgerBlue,STYLE_DOT,1,lbl);
+}
+
+//--- estado de la rejilla (descubrir / reconciliar / cerrar)
+void GridSyncState(int si)
+{
+   if(si<0||si>=g_SymCount) return;
+   if(!InpGridEnable)
+   { if(g_SysState[si].gridStrategy>=0) GridResetState(si);
+     GridDraw(si); return; }
+
+   int st=g_SysState[si].gridStrategy;
+
+   //--- 1) sin posiciones → la cesta terminó
+   if(st>=0&&GridCountPositions(si,st)<=0) GridResetState(si);
+
+   //--- 2) descubrir la rejilla: primera posición real de la estrategia LIVE
+   if(g_SysState[si].gridStrategy<0)
+   { int al=g_SysState[si].activeLiveStrategy;
+     if(al>=0&&al<STRAT_COUNT&&GridUsesStrategy(al)&&
+        g_SysState[si].strategies[al].isLive&&GridCountPositions(si,al)>0)
+     { g_SysState[si].gridStrategy=al;
+       g_SysState[si].gridDir     =GridBasketDir(si,al);
+       int n=GridCountPositions(si,al);
+       //--- nunca sobre-contar niveles (la entrada puede venir partida en tickets)
+       g_SysState[si].gridLegs    =MathMin(g_SysState[si].gridLegs,MathMax(0,n-1));
+       Print("REJILLA activa [",g_Symbols[si].name,"/",GetStrategyName(al),
+             "] ",(g_SysState[si].gridDir>0?"COMPRA":"VENTA"),
+             " · dist=",DoubleToString(GridStepPoints(si,g_SysState[si].gridLegs),0)," pts",
+             " · lot=",DoubleToString(GridNextLot(si,g_SysState[si].gridLegs),2),
+             " · niveles=",InpGridMaxLevels);
+       GridRecalcBasket(si,true);
+       SaveState(); } }
+
+   //--- 3) reconciliar el número de niveles (por si el estado se perdió)
+   st=g_SysState[si].gridStrategy;
+   if(st>=0)
+   { int n=GridCountPositions(si,st);
+     if(g_SysState[si].gridLegs>MathMax(0,n-1))
+        g_SysState[si].gridLegs=MathMax(0,n-1); }
+
+   GridDraw(si);
+}
+
+//--- ¿la rejilla de este par está abierta con niveles extra ya puestos?
+bool GridSkipTrail(int si,int st)
+{
+   if(!InpGridEnable)   return false;
+   if(InpGridKeepTrail) return false;
+   if(si<0||si>=g_SymCount) return false;
+   if(g_SysState[si].gridStrategy!=st) return false;
+   return(g_SysState[si].gridLegs>0);
+}
+
+//--- ¿cierre parcial de la cesta? (quedan posiciones → no contabilizar aún)
+bool GridPartialClose(int si,int st)
+{
+   if(si<0||si>=g_SymCount||st<0) return false;
+   if(g_SysState[si].gridStrategy!=st) return false;
+   return(GridCountPositions(si,st)>0);
+}
+
+//--- motor de la rejilla (desde OnTick, después de SyncAllTrades)
+void GridUpdate()
+{
+   for(int si=0;si<g_SymCount;si++)
+   {
+      GridSyncState(si);
+      if(g_SysState[si].gridStrategy<0)      continue;
+      if(!g_Symbols[si].active)              continue;
+      if(g_CircuitBreakerOn)                 continue;
+      if(!IsTradeTimeAllowed())              continue;
+      if(IsWeeklyCloseWindow())              continue;
+      if(!g_SysState[si].hasLive)            continue;
+      int st=g_SysState[si].gridStrategy;
+      if(!GridUsesStrategy(st))              continue;
+      if(!g_SysState[si].strategies[st].enabled) continue;
+      if(g_SysState[si].strategies[st].cbPaused) continue;
+      if(st==STRAT_CONFLUENCIA&&!InpAllowConfluOrders) continue;
+      if(st==STRAT_SMC3       &&!InpAllowSmc3Orders)   continue;
+      if(InpGridMaxLevels<=0)                continue;
+      GridTryStep(si);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -5314,6 +5754,10 @@ void ProcessClosedQueue()
          if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
          if(st==STRAT_S2)          Strat2OnTradeClosed(si);
          if(st==STRAT_SMC3)        Smc3OnTradeClosed(si); } }
+     else if(!snap.isManual&&GridPartialClose(si,st))
+     { Print("CIERRE PARCIAL de la REJILLA [",sym,"/",sn,"] #",snap.ticket,
+             " PL=",DoubleToString(cPL,2)," → quedan ",GridCountPositions(si,st),
+             " posición(es): el NIVEL y el CV se actualizan al cerrar la última"); }
      else if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
         !counted[si][st])
      {
@@ -6601,6 +7045,11 @@ void MPFillSnapshot(int si,MPSnapshot &s)
    { s.state="PAUSA (CIRCUIT BREAKER)"; s.stateClr=clrTomato; s.prio=0; }
    else
    { s.state="FUERA DE ZONA"; s.stateClr=clrSilver; s.prio=0; }
+
+   //--- v8.59: rejilla activa en el par
+   if(g_SysState[si].gridStrategy>=0)
+      s.state+=" · REJILLA "+IntegerToString(g_SysState[si].gridLegs)+"/"+
+               IntegerToString(InpGridMaxLevels);
 }
 
 //+------------------------------------------------------------------+
@@ -7319,7 +7768,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.58 === X=",InpXActivacion,
+   Print("=== DIAG v8.59 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -7458,7 +7907,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.58 | Símbolos:",g_SymCount,
+   Print("EA v8.59 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
@@ -7506,7 +7955,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.58 cerrado | Razón:",reason);
+   Print("EA v8.59 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -7547,6 +7996,9 @@ void OnTick()
 
    if(!g_CircuitBreakerOn&&IsTradeTimeAllowed())
       UpdateAllStrategies();
+
+   //--- REJILLA (v8.59): niveles extra sobre la operación LIVE de E1/E3
+   GridUpdate();
 
    if(IsTester())
    {
