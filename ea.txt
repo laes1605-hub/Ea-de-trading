@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.55"
+#property version   "8.56"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -29,12 +29,15 @@ enum ENUM_STEP_MEASURE
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
 //+------------------------------------------------------------------+
-input group "=== ESTRATEGIA ÚNICA: ESTRUCTURA LÍNEAS H1 + CONFLUENCIA M3 ==="
-input bool            InpUseConfluencia    = true;       // Activar la estrategia (estructura + confluencia)
+input group "=== ESTRATEGIA 1: ESTRUCTURA LÍNEAS H1 + BOS/CHoCH M3 ==="
+input bool            InpUseConfluencia    = true;       // Activar la estrategia (estructura H1 + rompimiento M3)
 input bool            InpAllowConfluOrders = true;       // Permitir órdenes (virtuales/LIVE)
-input ENUM_TIMEFRAMES InpConfTFSuperior    = PERIOD_H1;  // TF estructura madre (bias + rango L1-L2 + zona 50%)
-input ENUM_TIMEFRAMES InpConfTFEntrada     = PERIOD_M3;  // TF entrada (CHoCH a favor de H1 + 50% L1-L2 M3)
-input bool            InpShowConfluencias  = true;       // Dibujar 50% H1 (zonas) y entrada 50% M3
+input ENUM_TIMEFRAMES InpConfTFSuperior    = PERIOD_H1;  // TF estructura madre (dirección + rango L1-L2 + zona 50%)
+input ENUM_TIMEFRAMES InpConfTFEntrada     = PERIOD_M3;  // TF de entrada (BOS/CHoCH a favor de H1 + 50% del tramo)
+input bool            InpShowConfluencias  = true;       // Dibujar 50% H1 (zonas) y tramo/50% BOS-CHoCH M3
+input bool            InpConfAcceptBOS     = true;       // E1: aceptar BOS (ruptura de continuación) en M3
+input bool            InpConfAcceptCHoCH   = true;       // E1: aceptar CHoCH (cambio de estructura) en M3
+input bool            InpConfCancelLegBreak= true;       // E1: cancelar la entrada si el precio rompe el origen del tramo
 
 input group "=== ESTRATEGIA 2: ZONA 4H (L1-L2 + 50%) + ORDER BLOCKS 1H ==="
 input bool            InpUseStrat2       = true;       // Activar Estrategia 2 (zona 4H + OB 1H + órdenes virtual→LIVE)
@@ -362,6 +365,13 @@ struct StructureEngine
    ENUM_STRUCTURE_PHASE Phase;
    bool                 Valid;
    ENUM_TIMEFRAMES      TF;
+   //--- v8.56: rompimientos de estructura ---------------------------------
+   double               RefLevel;      // nivel que debe CERRARSE para el BOS (techo L1 / suelo L2 de la reacción)
+   bool                 BosDone;       // BOS del tramo actual ya emitido (se re-arma con el retroceso)
+   double               BosLegHigh;    // extremo superior del tramo del BOS (retroceso → extremo)
+   double               BosLegLow;     // extremo inferior del tramo del BOS (origen)
+   double               LastBreakHigh; // extremo superior del tramo que rompió (L3 en el CHoCH)
+   double               LastBreakLow;  // extremo inferior  del tramo que rompió (L4 en el CHoCH)
 };
 
 //--- Zona de rebote de la Estrategia 2: order block + imbalance juntos.
@@ -425,15 +435,28 @@ struct SymbolSystemState
    int      m3ChochDir2;    // CHoCH de M3 pendiente de procesar para Estrategia 2 (+1/-1)
    datetime m3ChochTime2;   // momento del CHoCH de M3 para Estrategia 2
 
-   //--- estado de la ESTRATEGIA ÚNICA (estructura H1 + confluencia M3)
+   //--- estado de la ESTRATEGIA 1 (estructura H1 + BOS/CHoCH M3)
    int      m3ChochDir;      // CHoCH de M3 pendiente de procesar (+1/-1)
    datetime m3ChochTime;     // momento del CHoCH de M3
+   //--- v8.56: rompimiento de M3 (BOS o CHoCH) con su tramo congelado
+   int      m3BreakDir;      // +1/-1 rompimiento de M3 pendiente (BOS o CHoCH)
+   bool     m3BreakIsChoch;  // true = CHoCH · false = BOS (continuación)
+   double   m3BreakHigh;     // extremo superior del tramo que rompió
+   double   m3BreakLow;      // extremo inferior del tramo que rompió
+   double   m3Break50;       // 50% del tramo = nivel de la orden LIMIT
+   datetime m3BreakTime;     // momento del rompimiento
    bool     confArmedBuy;    // zona de compra H1 tocada → búsqueda de compras activa
    bool     confArmedSell;   // zona de venta H1 tocada → búsqueda de ventas activa
-   datetime confArmBuyTime;  // momento del toque (los CHoCH cuentan desde aquí)
+   datetime confArmBuyTime;  // momento del toque (los rompimientos cuentan desde aquí)
    datetime confArmSellTime;
-   double   confEntryBuy;    // 50% del rango M3 CONGELADO en el CHoCH para compra (0 = ninguno)
-   double   confEntrySell;   // 50% del rango M3 CONGELADO en el CHoCH para venta (0 = ninguno)
+   double   confEntryBuy;    // 50% del tramo del BOS/CHoCH CONGELADO para compra (0 = ninguno)
+   double   confEntrySell;   // 50% del tramo del BOS/CHoCH CONGELADO para venta (0 = ninguno)
+   double   confLegHighBuy;  // tramo congelado (compra): extremo superior
+   double   confLegLowBuy;   //                          extremo inferior (origen)
+   double   confLegHighSell; // tramo congelado (venta): extremo superior (origen)
+   double   confLegLowSell;  //                          extremo inferior
+   bool     confLegChochBuy; // el tramo congelado vino de un CHoCH (false = BOS)
+   bool     confLegChochSell;
    bool     confWaitBuy;     // 50% congelado: espera que el precio quede por ENCIMA para colocar la LIMIT
    bool     confWaitSell;    // 50% congelado: espera que el precio quede por DEBAJO para colocar la LIMIT
    bool     confVPendBuy;    // orden limit VIRTUAL de compra activa
@@ -1240,9 +1263,15 @@ void InitSystemState(int si)
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
    g_SysState[si].m3ChochDir=0;        g_SysState[si].m3ChochTime=0;
+   g_SysState[si].m3BreakDir=0;        g_SysState[si].m3BreakTime=0;
+   g_SysState[si].m3BreakIsChoch=false;g_SysState[si].m3Break50=0.0;
+   g_SysState[si].m3BreakHigh=0.0;     g_SysState[si].m3BreakLow=0.0;
    g_SysState[si].confArmedBuy=false;  g_SysState[si].confArmedSell=false;
    g_SysState[si].confArmBuyTime=0;    g_SysState[si].confArmSellTime=0;
    g_SysState[si].confEntryBuy=0.0;    g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confLegHighBuy=0.0;  g_SysState[si].confLegLowBuy=0.0;
+   g_SysState[si].confLegHighSell=0.0; g_SysState[si].confLegLowSell=0.0;
+   g_SysState[si].confLegChochBuy=false; g_SysState[si].confLegChochSell=false;
    g_SysState[si].confWaitBuy=false;   g_SysState[si].confWaitSell=false;
    g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0;
@@ -1347,6 +1376,13 @@ void SaveStateToFile()
      FileWriteString(h,sp+"CONF_ARM_ST=" +IntegerToString((long)g_SysState[si].confArmSellTime)+"\n");
      FileWriteString(h,sp+"CONF_ENTRY_B="+DoubleToString(g_SysState[si].confEntryBuy,8)    +"\n");
      FileWriteString(h,sp+"CONF_ENTRY_S="+DoubleToString(g_SysState[si].confEntrySell,8)   +"\n");
+     //--- v8.56: tramo del BOS/CHoCH congelado (origen → extremo)
+     FileWriteString(h,sp+"CONF_LEG_BH="+DoubleToString(g_SysState[si].confLegHighBuy,8)  +"\n");
+     FileWriteString(h,sp+"CONF_LEG_BL="+DoubleToString(g_SysState[si].confLegLowBuy,8)   +"\n");
+     FileWriteString(h,sp+"CONF_LEG_SH="+DoubleToString(g_SysState[si].confLegHighSell,8) +"\n");
+     FileWriteString(h,sp+"CONF_LEG_SL="+DoubleToString(g_SysState[si].confLegLowSell,8)  +"\n");
+     FileWriteString(h,sp+"CONF_LEG_BC="+(g_SysState[si].confLegChochBuy?"1":"0")          +"\n");
+     FileWriteString(h,sp+"CONF_LEG_SC="+(g_SysState[si].confLegChochSell?"1":"0")         +"\n");
      FileWriteString(h,sp+"CONF_WAIT_B=" +(g_SysState[si].confWaitBuy?"1":"0")             +"\n");
      FileWriteString(h,sp+"CONF_WAIT_S=" +(g_SysState[si].confWaitSell?"1":"0")            +"\n");
      FileWriteString(h,sp+"CONF_VPEND_B="+(g_SysState[si].confVPendBuy?"1":"0")            +"\n");
@@ -1427,6 +1463,12 @@ void LoadStateFromFile()
          else if(rest=="CONF_ARM_ST")  g_SysState[si].confArmSellTime=(datetime)StringToInteger(val);
          else if(rest=="CONF_ENTRY_B") g_SysState[si].confEntryBuy=StringToDouble(val);
          else if(rest=="CONF_ENTRY_S") g_SysState[si].confEntrySell=StringToDouble(val);
+         else if(rest=="CONF_LEG_BH")  g_SysState[si].confLegHighBuy=StringToDouble(val);
+         else if(rest=="CONF_LEG_BL")  g_SysState[si].confLegLowBuy=StringToDouble(val);
+         else if(rest=="CONF_LEG_SH")  g_SysState[si].confLegHighSell=StringToDouble(val);
+         else if(rest=="CONF_LEG_SL")  g_SysState[si].confLegLowSell=StringToDouble(val);
+         else if(rest=="CONF_LEG_BC")  g_SysState[si].confLegChochBuy=(StringToInteger(val)>0);
+         else if(rest=="CONF_LEG_SC")  g_SysState[si].confLegChochSell=(StringToInteger(val)>0);
          else if(rest=="CONF_WAIT_B")  g_SysState[si].confWaitBuy=(StringToInteger(val)>0);
          else if(rest=="CONF_WAIT_S")  g_SysState[si].confWaitSell=(StringToInteger(val)>0);
          else if(rest=="CONF_VPEND_B") g_SysState[si].confVPendBuy=(StringToInteger(val)>0);
@@ -1782,6 +1824,10 @@ void SE_ClearReaction(StructureEngine &SE)
    SE.L4=0.0;
    SE.L3L4_Active=false;
    SE.PendingBreakDir=0;
+   SE.RefLevel=0.0;
+   SE.BosDone=false;
+   SE.BosLegHigh=0.0;
+   SE.BosLegLow=0.0;
    SE.Phase=PHASE_CONTINUATION;
 }
 
@@ -1792,6 +1838,11 @@ int SE_CommitStructureMove(StructureEngine &SE, int dir, int &choch)
    ENUM_STRUCTURE_BIAS oldBias=SE.Bias;
    ENUM_STRUCTURE_BIAS newBias=BIAS_BULLISH;
    if(dir<0) newBias=BIAS_BEARISH;
+
+   //--- v8.56: el TRAMO del rompimiento es el rango de reacción/impulso
+   //    acumulado (L3..L4). Su 50% es el nivel de entrada de la E1.
+   SE.LastBreakHigh=MathMax(SE.L3,SE.L4);
+   SE.LastBreakLow =MathMin(SE.L3,SE.L4);
 
    //--- El nuevo rango siempre queda definido por los extremos
    //    acumulados en la reacción: techo=L3, suelo=L4.
@@ -1866,12 +1917,53 @@ int SE_CheckBreakAndCommit(StructureEngine &SE, double O, double C, int &choch)
    return SE_CommitStructureMove(SE,dir,choch);
 }
 
+//+------------------------------------------------------------------+
+//| BOS (v8.56): CONTINUACIÓN de la estructura.                       |
+//| Con la reacción L3/L4 activa, si la vela CIERRA más allá del      |
+//| nivel de referencia de la reacción (RefLevel = techo L1 en        |
+//| alcista / suelo L2 en bajista), la estructura CONTINÚA en la      |
+//| dirección del bias: BOS, no CHoCH.                                |
+//| El TRAMO es el rango de reacción/impulso acumulado (L3..L4) y su  |
+//| 50% es el nivel de la orden LIMIT de la Estrategia 1.             |
+//| Un solo BOS por reacción (BosDone): la reacción NO se borra para  |
+//| que la detección del CHoCH siga exactamente igual que antes.      |
+//+------------------------------------------------------------------+
+int SE_CheckContinuationBreak(StructureEngine &SE, double C)
+{
+   if(!SE.Valid || !SE.L3L4_Active) return 0;
+   if(SE.BosDone)                   return 0;
+   if(SE.RefLevel<=0.0)             return 0;
+
+   int dir=0;
+   if(SE.Bias==BIAS_BULLISH && C>SE.RefLevel) dir=+1;
+   if(SE.Bias==BIAS_BEARISH && C<SE.RefLevel) dir=-1;
+   if(dir==0) return 0;
+
+   //--- tramo del BOS = del retroceso (origen) al extremo del impulso
+   SE.LastBreakHigh=MathMax(SE.BosLegHigh,SE.BosLegLow);
+   SE.LastBreakLow =MathMin(SE.BosLegHigh,SE.BosLegLow);
+   if(SE.LastBreakHigh<=SE.LastBreakLow)
+   { SE.LastBreakHigh=MathMax(SE.L3,SE.L4);
+     SE.LastBreakLow =MathMin(SE.L3,SE.L4); }
+   if(SE.LastBreakHigh<=SE.LastBreakLow) return 0;
+
+   //--- el rango de la estructura acompaña al impulso de continuación
+   if(dir>0 && SE.LastBreakHigh>SE.L1) { SE.L1=SE.LastBreakHigh; SE_UpdateEQ(SE); }
+   if(dir<0 && SE.LastBreakLow <SE.L2) { SE.L2=SE.LastBreakLow;  SE_UpdateEQ(SE); }
+
+   SE.BosDone=true;
+   return dir;
+}
+
 bool SE_Init(StructureEngine &SE, string sym, ENUM_TIMEFRAMES tf)
 {
    SE.TF=tf; SE.Valid=false;
    SE.L1=0; SE.L2=0; SE.L3=0; SE.L4=0; SE.EQ=0;
    SE.L3L4_Active=false; SE.PendingBreakDir=0;
    SE.Bias=BIAS_UNDEFINED; SE.Phase=PHASE_CONTINUATION;
+   SE.RefLevel=0.0; SE.BosDone=false;
+   SE.BosLegHigh=0.0; SE.BosLegLow=0.0;
+   SE.LastBreakHigh=0.0; SE.LastBreakLow=0.0;
    double p =SymbolInfoDouble(sym,SYMBOL_BID);
    double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
    if(p<=0.0||pt<=0.0) return false;
@@ -1903,6 +1995,10 @@ int SE_OnTick(StructureEngine &SE, string sym, int &choch)
    if(price>SE.L3) SE.L3=price;
    if(price<SE.L4) SE.L4=price;
 
+   //--- v8.56: el tramo del BOS también se mide al tick (origen → extremo)
+   if(price>SE.BosLegHigh) SE.BosLegHigh=price;
+   if(price<SE.BosLegLow)  SE.BosLegLow =price;
+
    //--- L1/L2 rastrean al tick como pidió el usuario
    if(SE.Bias==BIAS_BULLISH && price>SE.L1) { SE.L1=price; SE_UpdateEQ(SE); }
    else if(SE.Bias==BIAS_BEARISH && price<SE.L2) { SE.L2=price; SE_UpdateEQ(SE); }
@@ -1917,10 +2013,17 @@ int SE_OnTick(StructureEngine &SE, string sym, int &choch)
 //+------------------------------------------------------------------+
 //| Procesa la vela cerrada: actualiza L1/L2 al cierre, activa       |
 //| L3/L4 con vela contraria y consolida rupturas pendientes.        |
+//|                                                                  |
+//| Salidas (v8.56):                                                 |
+//|   choch = rompimiento que CAMBIA el bias  (CHoCH)                |
+//|   trig  = rompimiento de estructura (CHoCH o BOS)                |
+//|   bos   = rompimiento de CONTINUACIÓN (BOS) — mismo bias         |
+//| El TRAMO de cualquier rompimiento queda en                      |
+//|   SE.LastBreakHigh / SE.LastBreakLow (su 50% = entrada E1).      |
 //+------------------------------------------------------------------+
-void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
+void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig, int &bos)
 {
-   choch=0; trig=0;
+   choch=0; trig=0; bos=0;
    if(!SE.Valid) return;
 
    double O=iOpen(sym,SE.TF,1), C=iClose(sym,SE.TF,1);
@@ -1943,8 +2046,39 @@ void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
    {
       if(H>SE.L3) SE.L3=H;
       if(L<SE.L4) SE.L4=L;
+
+      //--- v8.56: tramo del BOS (retroceso → extremo)
+      if(H>SE.BosLegHigh) SE.BosLegHigh=H;
+      if(L<SE.BosLegLow)  SE.BosLegLow =L;
+
+      //--- v8.56: una vela CONTRARIA re-arma el BOS contra el techo (alcista)
+      //    o el suelo (bajista) vigente. Si ya hubo un BOS, el retroceso abre
+      //    un TRAMO NUEVO (el 50% se vuelve a medir desde este mínimo/máximo).
+      bool contrary=((SE.Bias==BIAS_BULLISH && red)||
+                     (SE.Bias==BIAS_BEARISH && green));
+      if(contrary)
+      {
+         if(SE.BosDone)
+         { SE.BosLegHigh=H; SE.BosLegLow=L; }
+         SE.RefLevel=(SE.Bias==BIAS_BULLISH? SE.L1 : SE.L2);
+         SE.BosDone=false;
+      }
+
+      //--- el CHoCH manda: si la vela cambia la estructura se consolida
+      //    (tramo = rango de la reacción L3..L4)
+      double blh=SE.BosLegHigh, bll=SE.BosLegLow;
       trig=SE_CheckBreakAndCommit(SE,O,C,choch);
-      if(trig==0) SE.Phase=PHASE_REACTION;
+      if(trig!=0)
+      {
+         //--- misma dirección del bias → continuación (BOS por commit)
+         if(choch==0)
+         { if(blh>bll){ SE.LastBreakHigh=blh; SE.LastBreakLow=bll; }
+           bos=trig; }
+         return;
+      }
+      //--- sin cambio de estructura: ¿continuación (BOS por RefLevel)?
+      bos=SE_CheckContinuationBreak(SE,C);
+      if(bos==0) SE.Phase=PHASE_REACTION;
       return;
    }
 
@@ -1967,6 +2101,9 @@ void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
       SE.L3L4_Active=true;
       SE.L3=SE.L1;   // en alcista L3 inicia en L1
       SE.L4=L;       // L4 inicia en el mínimo de la vela contraria
+      SE.RefLevel=SE.L1;   // v8.56: techo que hay que CERRAR para el BOS
+      SE.BosDone=false;
+      SE.BosLegHigh=H; SE.BosLegLow=L;   // tramo del BOS (retroceso → extremo)
       SE.Phase=PHASE_REACTION;
       trig=SE_CheckBreakAndCommit(SE,O,C,choch);
    }
@@ -1975,6 +2112,9 @@ void SE_OnClose(StructureEngine &SE, string sym, int &choch, int &trig)
       SE.L3L4_Active=true;
       SE.L3=H;       // en bajista L3 inicia en el máximo de la vela contraria
       SE.L4=SE.L2;   // en bajista L4 inicia en L2
+      SE.RefLevel=SE.L2;   // v8.56: suelo que hay que CERRAR para el BOS
+      SE.BosDone=false;
+      SE.BosLegHigh=H; SE.BosLegLow=L;   // tramo del BOS (retroceso → extremo)
       SE.Phase=PHASE_REACTION;
       trig=SE_CheckBreakAndCommit(SE,O,C,choch);
    }
@@ -2006,9 +2146,9 @@ void UpdateStructureState(int si)
    if(bt!=g_SysState[si].structLastBar)
    {
       g_SysState[si].structLastBar=bt;
-      int c2=0,t2=0;
+      int c2=0,t2=0,b2=0;
       if(g_SysState[si].SE.Valid)
-         SE_OnClose(g_SysState[si].SE,sym,c2,t2);
+         SE_OnClose(g_SysState[si].SE,sym,c2,t2,b2);
    }
 
    //--- vela del TF madre nueva → estructura madre (Estrategia 1)
@@ -2018,10 +2158,10 @@ void UpdateStructureState(int si)
       if(tm!=g_SysState[si].h1LastBar)
       {
          g_SysState[si].h1LastBar=tm;
-         int c1=0,t1=0;
+         int c1=0,t1=0,b1=0;
          if(g_SysState[si].SE_H1.Valid)
          {
-            SE_OnClose(g_SysState[si].SE_H1,sym,c1,t1);
+            SE_OnClose(g_SysState[si].SE_H1,sym,c1,t1,b1);
             if(c1!=0) ConfluenciaOnH1Change(si,c1);   // rango madre nuevo → reinicio
          }
       }
@@ -2034,16 +2174,37 @@ void UpdateStructureState(int si)
       if(te!=g_SysState[si].m3LastBar)
       {
          g_SysState[si].m3LastBar=te;
-         int c3=0,t3=0;
+         int c3=0,t3=0,b3=0;
          if(g_SysState[si].SE_M3.Valid)
          {
-            SE_OnClose(g_SysState[si].SE_M3,sym,c3,t3);
+            SE_OnClose(g_SysState[si].SE_M3,sym,c3,t3,b3);
+
+            //--- v8.56: rompimiento de M3 para la ESTRATEGIA 1 ---------
+            //    CHoCH (cambia el bias) o BOS (continuación). El tramo
+            //    del rompimiento ya quedó en SE_M3.LastBreakHigh/Low y
+            //    se congela aquí (el 50% es el nivel de la orden LIMIT).
+            int brkDir=(c3!=0)?c3:b3;
+            if(brkDir!=0 && confOn)
+            {
+               double bh=g_SysState[si].SE_M3.LastBreakHigh;
+               double bl=g_SysState[si].SE_M3.LastBreakLow;
+               if(bh>bl && bl>0.0)
+               {
+                  g_SysState[si].m3BreakDir    =brkDir;
+                  g_SysState[si].m3BreakIsChoch=(c3!=0);
+                  g_SysState[si].m3BreakHigh   =bh;
+                  g_SysState[si].m3BreakLow    =bl;
+                  g_SysState[si].m3Break50     =(bh+bl)*0.5;
+                  g_SysState[si].m3BreakTime   =TimeCurrent();
+               }
+            }
             if(c3!=0)
             {
-               //--- el mismo CHoCH se reparte a ambas estrategias
+               //--- CHoCH: además se mantiene el campo histórico (panel)
                if(confOn)
                { g_SysState[si].m3ChochDir =c3;
                  g_SysState[si].m3ChochTime=TimeCurrent(); }
+               //--- el mismo CHoCH se reparte a la Estrategia 2
                g_SysState[si].m3ChochDir2=c3;
                g_SysState[si].m3ChochTime2=TimeCurrent();
             }
@@ -2072,30 +2233,36 @@ void UpdateStructureState(int si)
 }
 
 //+==================================================================+
-//| ESTRATEGIA ÚNICA: ESTRUCTURA DE LÍNEAS (H1) + CONFLUENCIA (M3)   |
+//| ESTRATEGIA 1 (v8.56) — LÍNEAS EN H1 + BOS/CHoCH EN M3            |
 //|                                                                  |
-//| 1) El motor de líneas L1-L4 (el mismo de siempre) corre SIEMPRE  |
-//|    en H1 (estructura madre) y en M3 (estructura de entrada).     |
+//| 1) El motor de líneas L1-L4 corre SIEMPRE en H1 (estructura      |
+//|    madre) y en M3 (estructura de entrada).                       |
 //| 2) En H1: L1/L2 = rango (techo/suelo), EQ = 50%. El bias H1      |
-//|    (alcista/bajista) manda la dirección: H1 alcista → solo       |
-//|    compras; H1 bajista → solo ventas.                            |
-//| 3) Zona de COMPRA = parte de abajo del rango H1 (≤ 50%); zona de |
-//|    VENTA = parte de arriba (≥ 50%). Con solo TOCAR la zona se    |
-//|    activa la búsqueda (aunque el precio salga de la zona).       |
-//| 4) En M3 se espera un cambio de estructura (CHoCH) A FAVOR de la |
-//|    estructura de H1: bajista→alcista en H1 alcista, o            |
-//|    alcista→bajista en H1 bajista.                                |
-//| 5) Al generarse el CHoCH de M3, el rango para medir el 50% es el |
-//|    rango L1-L2 de M3 EN ESE MOMENTO; ese nivel queda CONGELADO   |
-//|    y allí se coloca la orden LIMIT con el SL/TP del EA.          |
-//|    allí se coloca una orden LIMIT de compra con el SL/TP del EA. |
-//| 4) VENTA: simétrico (CHoCH alcista→bajista, cruce a la baja).    |
-//| 5) Solo puede haber UNA posición abierta por par: al abrirse una |
-//|    posición se eliminan las demás órdenes limit pendientes.      |
-//|    Si la posición se pierde y el precio sigue en la zona, se     |
-//|    puede buscar otra entrada (con CHoCH nuevo); si no está en    |
-//|    la zona, hay que esperar un nuevo toque de la zona.           |
-//| 6) Fase virtual (simulación) → LIVE: mismo sistema de gestión    |
+//|    (alcista/bajista) manda la DIRECCIÓN del precio:              |
+//|      H1 alcista → solo compras · H1 bajista → solo ventas.       |
+//| 3) Zona de COMPRA = parte de abajo del rango H1 (precio ≤ 50%);   |
+//|    zona de VENTA = parte de arriba (precio ≥ 50%). Con solo      |
+//|    TOCARLA se activa la búsqueda (aunque el precio luego salga);  |
+//|    un cambio de estructura H1 reinicia las zonas.                |
+//| 4) En M3 se busca un ROMPIMIENTO A FAVOR de la zona de H1:        |
+//|      · CHoCH → el rompimiento CAMBIA la estructura de M3         |
+//|      · BOS   → el rompimiento CONFIRMA la continuación de M3     |
+//|    (se pueden activar por separado con InpConfAcceptCHoCH /      |
+//|     InpConfAcceptBOS).                                           |
+//| 5) El TRAMO del rompimiento es el rango del impulso que rompió    |
+//|    (de su ORIGEN a su EXTREMO, las líneas L4-L3 de M3). El       |
+//|    50% de ese tramo queda CONGELADO y allí se pone la orden      |
+//|    LIMIT (compra por debajo del precio / venta por encima),      |
+//|    con el SL/TP y el lote del nivel del par.                     |
+//|    La LIMIT se coloca en cuanto el precio está del lado          |
+//|    correcto del 50% (encima en compras, debajo en ventas).       |
+//| 6) SOLO UNA OPERACIÓN ABIERTA POR PAR: al abrirse una posición    |
+//|    se retiran las demás órdenes limit del par y la otra          |
+//|    estrategia queda cancelada hasta que cierre.                  |
+//| 7) Si el precio CIERRA en M3 más allá del ORIGEN del tramo, el    |
+//|    rompimiento quedó anulado y se retira la entrada              |
+//|    (InpConfCancelLegBreak).                                      |
+//| 8) Fase virtual (simulación) → LIVE: mismo sistema de gestión    |
 //|    que el resto de estrategias (CV/CR, tabla de riesgo).         |
 //+==================================================================+
 
@@ -2116,9 +2283,15 @@ bool HasAnyPositionSymbol(int si)
 void ConfluenciaResetState(int si)
 {
    g_SysState[si].m3ChochDir=0;         g_SysState[si].m3ChochTime=0;
+   g_SysState[si].m3BreakDir=0;         g_SysState[si].m3BreakTime=0;
+   g_SysState[si].m3BreakIsChoch=false; g_SysState[si].m3Break50=0.0;
+   g_SysState[si].m3BreakHigh=0.0;      g_SysState[si].m3BreakLow=0.0;
    g_SysState[si].confArmedBuy=false;   g_SysState[si].confArmedSell=false;
    g_SysState[si].confArmBuyTime=0;     g_SysState[si].confArmSellTime=0;
    g_SysState[si].confEntryBuy=0.0;     g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confLegHighBuy=0.0;   g_SysState[si].confLegLowBuy=0.0;
+   g_SysState[si].confLegHighSell=0.0;  g_SysState[si].confLegLowSell=0.0;
+   g_SysState[si].confLegChochBuy=false;g_SysState[si].confLegChochSell=false;
    g_SysState[si].confWaitBuy=false;    g_SysState[si].confWaitSell=false;
    g_SysState[si].confVPendBuy=false;   g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false;  g_SysState[si].confVPendSellPrice=0.0;
@@ -2165,24 +2338,59 @@ void ConfluenciaUpdateArming(int si)
    }
 }
 
-//--- CHoCH de M3 (cambio de estructura con la lógica de líneas) -----
+//+------------------------------------------------------------------+
+//| ROMPIMIENTO DE M3: BOS o CHoCH hacia la zona de 1 hora           |
+//|                                                                  |
+//| El motor de líneas de M3 emite DOS tipos de rompimiento:          |
+//|   · CHoCH → el rompimiento CAMBIA el bias de M3                   |
+//|   · BOS   → el rompimiento CONFIRMA la continuación (mismo bias)  |
+//| Solo se acepta el que va a favor de la zona de H1:                |
+//|   zona de COMPRA (H1 alcista) → rompimiento ALCISTA               |
+//|   zona de VENTA  (H1 bajista) → rompimiento BAJISTA               |
+//| El nivel de la LIMIT es el 50% del TRAMO del rompimiento          |
+//| (rango del impulso que rompió, de su origen a su extremo).        |
+//|                                                                  |
+//| Solo se congela el nivel aquí: la LIMIT se coloca cuando el       |
+//| precio queda del lado correcto del 50% (ConfluenciaTryPlace),     |
+//| así la orden es siempre llenable.                                 |
+//+------------------------------------------------------------------+
 void ConfluenciaProcessChoch(int si)
 {
    if(!InpUseConfluencia)               return;
    if(!InpAllowConfluOrders)            return;
-   int dir=g_SysState[si].m3ChochDir;
+
+   int dir=g_SysState[si].m3BreakDir;
    if(dir==0)  return;
-   g_SysState[si].m3ChochDir=0;          // consumir el evento
+
+   //--- consumir el evento (aunque luego no se pueda operar)
+   bool isChoch=g_SysState[si].m3BreakIsChoch;
+   datetime t =g_SysState[si].m3BreakTime;
+   double legH=g_SysState[si].m3BreakHigh;
+   double legL=g_SysState[si].m3BreakLow;
+   double mid =g_SysState[si].m3Break50;
+   g_SysState[si].m3BreakDir=0;
+
+   if(!InpConfAcceptCHoCH &&  isChoch) return;
+   if(!InpConfAcceptBOS   && !isChoch) return;
+
+   //--- el rompimiento tiene que ser RECIENTE (si quedó pendiente por
+   //    filtro horario / circuit breaker, el nivel ya está viejo)
+   int maxAge=PeriodSeconds(InpConfTFEntrada)*3;
+   if(t>0 && (long)(TimeCurrent()-t)>maxAge)
+   {
+      Print("CONFL [",g_Symbols[si].name,"] ",(isChoch?"CHoCH":"BOS"),
+            " de M3 descartado (evento de ",IntegerToString((int)((TimeCurrent()-t)/60)),
+            " min, más de 3 velas de ",EnumToString(InpConfTFEntrada),")");
+      return;
+   }
+
    if(g_SysState[si].strategies[STRAT_CONFLUENCIA].cbPaused) return;
    if(PairOtherVirtualActive(si,STRAT_CONFLUENCIA)) return;   // S2 ya tiene operación activa
-   datetime t=g_SysState[si].m3ChochTime;
-   string   sym=g_Symbols[si].name;
-   int      dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
 
-   //--- el rango para el 50% es L1-L2 de M3 EN EL MOMENTO del CHoCH
-   if(!g_SysState[si].SE_M3.Valid)                 return;
-   double mid=NormalizeDouble(g_SysState[si].SE_M3.EQ,dg);
-   if(mid<=0.0)                                    return;
+   string sym=g_Symbols[si].name;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+
+   if(mid<=0.0 || legH<=legL)                     return;
 
    //--- solo una posición y una limit por par
    if(HasAnyPositionSymbol(si))                    return;
@@ -2193,28 +2401,98 @@ void ConfluenciaProcessChoch(int si)
    bool sellSide=(g_SysState[si].SE_H1.Valid &&
                   g_SysState[si].SE_H1.Bias==BIAS_BEARISH);   // H1 bajista → solo ventas
 
-   //--- COMPRA: CHoCH bajista→alcista a favor de la estructura H1.
-   //    SOLO se congela el 50% aquí; la LIMIT se coloca cuando el precio
-   //    quede por ENCIMA del nivel (ver ConfluenciaTryPlace): así la orden
-   //    es siempre llenable y no se generan virtuales que pierden al instante.
+   string tipo=(isChoch?"CHoCH":"BOS");
+
+   //--- COMPRA: rompimiento ALCISTA en la zona de compra de H1
    if(dir>0 && buySide && g_SysState[si].confArmedBuy &&
       t>=g_SysState[si].confArmBuyTime)
    {
-      g_SysState[si].confEntryBuy=mid;             // nivel CONGELADO en el CHoCH
-      g_SysState[si].confWaitBuy=true;             // espera del lado correcto
-      g_SysState[si].confWaitSell=false;
-      Print("CONFL [",sym,"] CHoCH M3 bajista→alcista → 50% de L1-L2 M3 CONGELADO en ",
-            DoubleToString(mid,dg)," → esperando lado COMPRA (precio encima del 50%)");
+      mid=NormalizeDouble(mid,dg);
+      g_SysState[si].confEntryBuy     =mid;        // 50% del TRAMO congelado
+      g_SysState[si].confLegHighBuy   =legH;
+      g_SysState[si].confLegLowBuy    =legL;       // origen del tramo (invalidación)
+      g_SysState[si].confLegChochBuy  =isChoch;
+      g_SysState[si].confWaitBuy      =true;       // espera del lado correcto
+      g_SysState[si].confWaitSell     =false;
+      Print("CONFL [",sym,"] ",tipo," alcista M3 · tramo ",
+            DoubleToString(legL,dg),"-",DoubleToString(legH,dg),
+            " → 50% CONGELADO en ",DoubleToString(mid,dg),
+            " → esperando lado COMPRA (precio encima del 50%)");
    }
-   //--- VENTA: CHoCH alcista→bajista a favor de la estructura H1
+   //--- VENTA: rompimiento BAJISTA en la zona de venta de H1
    else if(dir<0 && sellSide && g_SysState[si].confArmedSell &&
            t>=g_SysState[si].confArmSellTime)
    {
-      g_SysState[si].confEntrySell=mid;            // nivel CONGELADO en el CHoCH
-      g_SysState[si].confWaitSell=true;            // espera del lado correcto
+      mid=NormalizeDouble(mid,dg);
+      g_SysState[si].confEntrySell    =mid;        // 50% del TRAMO congelado
+      g_SysState[si].confLegHighSell  =legH;       // origen del tramo (invalidación)
+      g_SysState[si].confLegLowSell   =legL;
+      g_SysState[si].confLegChochSell =isChoch;
+      g_SysState[si].confWaitSell     =true;       // espera del lado correcto
+      g_SysState[si].confWaitBuy      =false;
+      Print("CONFL [",sym,"] ",tipo," bajista M3 · tramo ",
+            DoubleToString(legL,dg),"-",DoubleToString(legH,dg),
+            " → 50% CONGELADO en ",DoubleToString(mid,dg),
+            " → esperando lado VENTA (precio debajo del 50%)");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| INVALIDACIÓN DEL TRAMO (v8.56)                                   |
+//| Si el precio CIERRA en M3 más allá del origen del tramo, el       |
+//| rompimiento quedó anulado: se retira la espera y la LIMIT.       |
+//|   compra → cierre por DEBAJO del mínimo del tramo                |
+//|   venta  → cierre por ENCIMA del máximo del tramo                |
+//+------------------------------------------------------------------+
+void ConfluenciaCheckLegInvalid(int si)
+{
+   if(!InpConfCancelLegBreak)                        return;
+   if(!InpUseConfluencia)                            return;
+   if(!g_SysState[si].SE_M3.Valid)                   return;
+
+   string sym=g_Symbols[si].name;
+   double c1=iClose(sym,InpConfTFEntrada,1);
+   if(c1<=0.0) return;
+   int dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+
+   //--- ¿hay flujo vivo? (espera, limit virtual o limit REAL en el mercado)
+   bool realBuy=false, realSell=false;
+   long magic=GetStrategyMagic(si,STRAT_CONFLUENCIA);
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   { ulong ot=OrderGetTicket(i); if(ot==0) continue;
+     if(OrderGetString(ORDER_SYMBOL)!=sym)    continue;
+     if(OrderGetInteger(ORDER_MAGIC)!=magic)  continue;
+     long ty=OrderGetInteger(ORDER_TYPE);
+     if(ty==ORDER_TYPE_BUY_LIMIT)  realBuy =true;
+     if(ty==ORDER_TYPE_SELL_LIMIT) realSell=true; }
+
+   bool buyFlow =(g_SysState[si].confWaitBuy  || g_SysState[si].confVPendBuy  || realBuy);
+   bool sellFlow=(g_SysState[si].confWaitSell || g_SysState[si].confVPendSell || realSell);
+
+   if(buyFlow && g_SysState[si].confLegLowBuy>0.0 &&
+      c1<g_SysState[si].confLegLowBuy)
+   {
+      Print("CONFL [",sym,"] cierre ",DoubleToString(c1,dg),
+            " rompe el ORIGEN del tramo de COMPRA (",
+            DoubleToString(g_SysState[si].confLegLowBuy,dg),
+            ") → entrada cancelada");
       g_SysState[si].confWaitBuy=false;
-      Print("CONFL [",sym,"] CHoCH M3 alcista→bajista → 50% de L1-L2 M3 CONGELADO en ",
-            DoubleToString(mid,dg)," → esperando lado VENTA (precio debajo del 50%)");
+      g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
+      g_SysState[si].confEntryBuy=0.0;    g_SysState[si].confLegLowBuy=0.0;
+      ConfluenciaDeleteRealPendings(si);
+      return;
+   }
+   if(sellFlow && g_SysState[si].confLegHighSell>0.0 &&
+      c1>g_SysState[si].confLegHighSell)
+   {
+      Print("CONFL [",sym,"] cierre ",DoubleToString(c1,dg),
+            " rompe el ORIGEN del tramo de VENTA (",
+            DoubleToString(g_SysState[si].confLegHighSell,dg),
+            ") → entrada cancelada");
+      g_SysState[si].confWaitSell=false;
+      g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0;
+      g_SysState[si].confEntrySell=0.0;   g_SysState[si].confLegHighSell=0.0;
+      ConfluenciaDeleteRealPendings(si);
    }
 }
 
@@ -2339,7 +2617,7 @@ void ConfluenciaStartVirtual(int si, int dir, double price)
    //--- activó UNA estrategia: la otra queda cancelada (una operación por par)
    PairOnActivation(si,st);
    Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
-         (dir>0?"BUY":"SELL")," (fill 50% M3) @",DoubleToString(price,dg),
+         (dir>0?"BUY":"SELL")," (fill 50% tramo M3) @",DoubleToString(price,dg),
          " CV=",g_SysState[si].strategies[st].CV,
          " NIVEL=",g_SysState[si].strategies[st].virtualOpenLevel,
          " SL=",DoubleToString(g_SysState[si].strategies[st].virtualSL_price,dg),
@@ -2431,6 +2709,8 @@ void ConfluenciaOnTradeClosed(int si)
 {
    g_SysState[si].confEntryBuy=0.0;
    g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confLegHighBuy=0.0;   g_SysState[si].confLegLowBuy=0.0;
+   g_SysState[si].confLegHighSell=0.0;  g_SysState[si].confLegLowSell=0.0;
    g_SysState[si].confWaitBuy=false;
    g_SysState[si].confWaitSell=false;
 
@@ -2454,17 +2734,19 @@ void UpdateConfluencia(int si)
    if(!InpUseConfluencia) return;
 
    //--- Con una posición abierta en el par no avanza ningún flujo de
-   //    entrada: las esperas y los CHoCH que lleguen caducan; al cerrar
-   //    la posición hay que empezar de nuevo (nuevo toque si corresponde).
+   //    entrada: las esperas y los rompimientos que lleguen caducan; al
+   //    cerrar la posición hay que empezar de nuevo (nuevo toque si toca).
    if(HasAnyPositionSymbol(si))
    {
       g_SysState[si].m3ChochDir=0;
+      g_SysState[si].m3BreakDir=0;
       g_SysState[si].confWaitBuy=false;
       g_SysState[si].confWaitSell=false;
       return;
    }
 
-   ConfluenciaProcessChoch(si);
+   ConfluenciaCheckLegInvalid(si);   // v8.56: origen del tramo roto → fuera
+   ConfluenciaProcessChoch(si);      // v8.56: BOS / CHoCH de M3 → 50% del tramo
    ConfluenciaTryPlace(si);
    ConfluenciaCheckVirtualFills(si);
 }
@@ -2592,7 +2874,7 @@ void Strat2StartVirtual(int si, int dir, double price)
    //--- activó UNA estrategia: la otra queda cancelada (una operación por par)
    PairOnActivation(si,st);
    Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
-         (dir>0?"BUY":"SELL")," (fill 50% M3) @",DoubleToString(price,dg),
+         (dir>0?"BUY":"SELL")," (fill 50% tramo M3) @",DoubleToString(price,dg),
          " CV=",g_SysState[si].strategies[st].CV,
          " NIVEL=",g_SysState[si].strategies[st].virtualOpenLevel,
          " SL=",DoubleToString(g_SysState[si].strategies[st].virtualSL_price,dg),
@@ -2674,9 +2956,12 @@ void ConfluenciaCancelFlow(int si)
 {
    g_SysState[si].confWaitBuy=false;  g_SysState[si].confWaitSell=false;
    g_SysState[si].confEntryBuy=0.0;   g_SysState[si].confEntrySell=0.0;
+   g_SysState[si].confLegHighBuy=0.0; g_SysState[si].confLegLowBuy=0.0;
+   g_SysState[si].confLegHighSell=0.0;g_SysState[si].confLegLowSell=0.0;
    g_SysState[si].confVPendBuy=false; g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false;g_SysState[si].confVPendSellPrice=0.0;
    g_SysState[si].m3ChochDir=0;       // el CHoCH no queda pendiente de reprocesar
+   g_SysState[si].m3BreakDir=0;       // v8.56: el BOS/CHoCH tampoco
    ConfluenciaDeleteRealPendings(si);
 }
 
@@ -2848,6 +3133,27 @@ void SE_Rect(string name,double p1,double p2,color clr)
    double   top=MathMax(p1,p2), bot=MathMin(p1,p2);
    uchar    alpha=(uchar)(255-(86*255/100));          // transparencia 86%
    color    c=(color)ColorToARGB(clr,alpha);
+   if(ObjectFind(0,name)<0)
+   { ObjectCreate(0,name,OBJ_RECTANGLE,0,t1,top,t2,bot);
+     ObjectSetInteger(0,name,OBJPROP_FILL,true);
+     ObjectSetInteger(0,name,OBJPROP_BACK,true);
+     ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+     ObjectSetInteger(0,name,OBJPROP_HIDDEN,true); }
+   ObjectSetInteger(0,name,OBJPROP_TIME, 0,t1);
+   ObjectSetDouble (0,name,OBJPROP_PRICE,0,top);
+   ObjectSetInteger(0,name,OBJPROP_TIME, 1,t2);
+   ObjectSetDouble (0,name,OBJPROP_PRICE,1,bot);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,c);
+   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,c);
+}
+
+//--- Rectángulo relleno entre dos tiempos (tramo BOS/CHoCH M3) ------
+void SE_TimeRect(string name,datetime t1,datetime t2,double p1,double p2,color clr)
+{
+   if(p1<=0.0||p2<=0.0||t1<=0||t2<=0){ ObjectDelete(0,name); return; }
+   double top=MathMax(p1,p2), bot=MathMin(p1,p2);
+   uchar  alpha=(uchar)(255-(88*255/100));          // transparencia 88%
+   color  c=(color)ColorToARGB(clr,alpha);
    if(ObjectFind(0,name)<0)
    { ObjectCreate(0,name,OBJ_RECTANGLE,0,t1,top,t2,bot);
      ObjectSetInteger(0,name,OBJPROP_FILL,true);
@@ -3337,8 +3643,8 @@ void Strat2Update(int si)
    if(t4!=g_SysState[si].h4LastBar)
    {
       g_SysState[si].h4LastBar=t4;
-      int c4=0,t4t=0;
-      if(g_SysState[si].SE_H4.Valid) SE_OnClose(g_SysState[si].SE_H4,sym,c4,t4t);
+      int c4=0,t4t=0,b4=0;
+      if(g_SysState[si].SE_H4.Valid) SE_OnClose(g_SysState[si].SE_H4,sym,c4,t4t,b4);
       Strat2ScanOBs(si);
    }
 
@@ -3527,11 +3833,36 @@ void DrawConfluencia(int si)
                 g_SysState[si].confArmedSell?"ZONA VENTA H1  [BUSCANDO VENTA]":"ZONA VENTA H1",
                 g_SysState[si].confArmedSell?clrTomato:clrLightSalmon);
 
-   //--- nivel de entrada CONGELADO (50% del rango M3)
+   //--- tramo del BOS/CHoCH de M3 que generó la entrada (v8.56)
+   string tipoB=(g_SysState[si].confLegChochBuy ?"CHoCH":"BOS");
+   string tipoS=(g_SysState[si].confLegChochSell?"CHoCH":"BOS");
+   SE_HLine(SE_PREFIX+"LEGHB",g_SysState[si].confLegHighBuy,clrGreen,STYLE_DOT,1,
+            "TRAMO "+tipoB+" COMPRA (máx)");
+   SE_HLine(SE_PREFIX+"LEGLB",g_SysState[si].confLegLowBuy,clrGreen,STYLE_DOT,1,
+            "TRAMO "+tipoB+" COMPRA (origen)");
+   SE_HLine(SE_PREFIX+"LEGHS",g_SysState[si].confLegHighSell,clrFireBrick,STYLE_DOT,1,
+            "TRAMO "+tipoS+" VENTA (origen)");
+   SE_HLine(SE_PREFIX+"LEGLS",g_SysState[si].confLegLowSell,clrFireBrick,STYLE_DOT,1,
+            "TRAMO "+tipoS+" VENTA (mín)");
+
+   //--- rectángulo del tramo (del rompimiento a la vela actual)
+   datetime tb=g_SysState[si].m3BreakTime;
+   datetime tb2=TimeCurrent()+PeriodSeconds(InpConfTFEntrada)*2;
+   if(tb<=0) tb=TimeCurrent()-PeriodSeconds(InpConfTFEntrada)*20;
+   if(g_SysState[si].confLegLowBuy>0.0 && g_SysState[si].confLegHighBuy>0.0)
+      SE_TimeRect(SE_PREFIX+"LEGB",tb,tb2,g_SysState[si].confLegHighBuy,
+                  g_SysState[si].confLegLowBuy,clrLime);
+   else ObjectDelete(0,SE_PREFIX+"LEGB");
+   if(g_SysState[si].confLegLowSell>0.0 && g_SysState[si].confLegHighSell>0.0)
+      SE_TimeRect(SE_PREFIX+"LEGS",tb,tb2,g_SysState[si].confLegHighSell,
+                  g_SysState[si].confLegLowSell,clrTomato);
+   else ObjectDelete(0,SE_PREFIX+"LEGS");
+
+   //--- nivel de entrada CONGELADO (50% del TRAMO del BOS/CHoCH)
    SE_HLine(SE_PREFIX+"CFB",g_SysState[si].confEntryBuy,clrLime,STYLE_DASH,2,
-            "ENTRADA COMPRA (50% M3)");
+            "ENTRADA COMPRA (50% "+tipoB+" M3)");
    SE_HLine(SE_PREFIX+"CFS",g_SysState[si].confEntrySell,clrRed,STYLE_DASH,2,
-            "ENTRADA VENTA (50% M3)");
+            "ENTRADA VENTA (50% "+tipoS+" M3)");
 }
 
 void DrawStructureLines(int si)
@@ -3550,7 +3881,8 @@ void DrawStructureLines(int si)
       DrawConfluencia(si);
    else
    {
-      string Cf[]={"H1L1","H1L2","H1L3","H1L4","H1EQ","H1ZB","H1ZS","H1ZBL","H1ZSL","CFB","CFS"};
+      string Cf[]={"H1L1","H1L2","H1L3","H1L4","H1EQ","H1ZB","H1ZS","H1ZBL","H1ZSL",
+                   "CFB","CFS","LEGHB","LEGLB","LEGHS","LEGLS","LEGB","LEGS"};
       for(int c=0;c<ArraySize(Cf);c++)
       { ObjectDelete(0,SE_PREFIX+Cf[c]); ObjectDelete(0,SE_PREFIX+Cf[c]+"_T"); }
    }
@@ -4392,10 +4724,14 @@ void BuildTabOperar()
    string missSt = "";
    if(g_SysState[si].hasLive) missSt = "TIENE-ORDEN";
    else if(limB||limS)        missSt = "LIMIT PUESTA";
-   else if(g_SysState[si].confWaitBuy)  missSt = "50% CONGELADO · ESPERA PRECIO (compra)";
-   else if(g_SysState[si].confWaitSell) missSt = "50% CONGELADO · ESPERA PRECIO (venta)";
-   else if(zB && h1Str=="ALC") missSt = "ESPERA CHoCH M3 (compra)";
-   else if(zS && h1Str=="BAJ") missSt = "ESPERA CHoCH M3 (venta)";
+   else if(g_SysState[si].confWaitBuy)
+      missSt = StringFormat("50%% %s M3 CONGELADO · ESPERA PRECIO (compra)",
+                            (g_SysState[si].confLegChochBuy?"CHoCH":"BOS"));
+   else if(g_SysState[si].confWaitSell)
+      missSt = StringFormat("50%% %s M3 CONGELADO · ESPERA PRECIO (venta)",
+                            (g_SysState[si].confLegChochSell?"CHoCH":"BOS"));
+   else if(zB && h1Str=="ALC") missSt = "ESPERA BOS/CHoCH M3 alcista (compra)";
+   else if(zS && h1Str=="BAJ") missSt = "ESPERA BOS/CHoCH M3 bajista (venta)";
    else if(zB && h1Str!="ALC") missSt = "FALTA: H1 alcista";
    else if(zS && h1Str!="BAJ") missSt = "FALTA: H1 bajista";
    else if(!zB && !zS) missSt = "FALTA: tocar zona";
@@ -5150,19 +5486,21 @@ void MPFillSnapshot(int si,MPSnapshot &s)
                           DoubleToString(g_SysState[si].confVPendSellPrice,s.dg));
      s.stateClr=clrOrangeRed; s.prio=2; }
    else if(g_SysState[si].confWaitBuy)
-   { s.state=StringFormat("50%% CONGELADO %s · ESPERA PRECIO",
+   { s.state=StringFormat("50%% %s %s · ESPERA PRECIO",
+                          (g_SysState[si].confLegChochBuy?"CHoCH":"BOS"),
                           DoubleToString(g_SysState[si].confEntryBuy,s.dg));
      s.stateClr=clrYellow; s.prio=1; }
    else if(g_SysState[si].confWaitSell)
-   { s.state=StringFormat("50%% CONGELADO %s · ESPERA PRECIO",
+   { s.state=StringFormat("50%% %s %s · ESPERA PRECIO",
+                          (g_SysState[si].confLegChochSell?"CHoCH":"BOS"),
                           DoubleToString(g_SysState[si].confEntrySell,s.dg));
      s.stateClr=clrYellow; s.prio=1; }
    else if(s.zBuy)
-   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ZONA C ✓ CHoCH M3"
+   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ZONA C ✓ BOS/CHoCH M3"
                                                        :"ZONA C ✓ H1 NO ALCISTA";
      s.stateClr=clrYellow; s.prio=1; }
    else if(s.zSell)
-   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"ZONA V ✓ CHoCH M3"
+   { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BEARISH)?"ZONA V ✓ BOS/CHoCH M3"
                                                        :"ZONA V ✓ H1 NO BAJISTA";
      s.stateClr=clrYellow; s.prio=1; }
    else if(s.paused)
@@ -5529,7 +5867,12 @@ void MPVirtStratLine(int x,int y,int w,int si,int st,int thr)
      bool wait50=(st==STRAT_S2)?
         (g_SysState[si].s2WaitBuy || g_SysState[si].s2WaitSell):
         (g_SysState[si].confWaitBuy || g_SysState[si].confWaitSell);
-     if(wait50) txt+=" · ESPERA PRECIO (50%)";
+     if(wait50)
+     { bool ch=true;                        // S2 siempre entra por CHoCH
+       if(st!=STRAT_S2)
+          ch=g_SysState[si].confWaitBuy?g_SysState[si].confLegChochBuy
+                                      :g_SysState[si].confLegChochSell;
+       txt+=(ch?" · ESPERA PRECIO (50% CHoCH)":" · ESPERA PRECIO (50% BOS)"); }
      tc=(falta<=1)?clrOrange:(falta<=2)?clrDodgerBlue:C'150,170,210'; }
    MPText(x+42+bw+6,y+4,txt,tc,false,7);
 }
@@ -6001,13 +6344,19 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.55 | Símbolos:",g_SymCount,
+   Print("EA v8.56 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
          " | 1:2=",InpUseTrailing12?(InpAutoFromLevel5?"ON (auto nivel≥5)":"ON (siempre)")
                                    :"OFF (solo se busca el TP)",
          " | OBJETIVO=",InpUseProfitStep?"ON":"OFF");
+   Print("ESTRATEGIA 1: H1=",EnumToString(InpConfTFSuperior),
+         " (dirección) · entrada ",EnumToString(InpConfTFEntrada),
+         " BOS/CHoCH → LIMIT en el 50% del tramo",
+         " | BOS=",InpConfAcceptBOS?"ON":"OFF",
+         " CHoCH=",InpConfAcceptCHoCH?"ON":"OFF",
+         " cancelar-si-rompe-origen=",InpConfCancelLegBreak?"ON":"OFF");
    return INIT_SUCCEEDED;
 }
 
@@ -6021,7 +6370,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.55 cerrado | Razón:",reason);
+   Print("EA v8.56 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
