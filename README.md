@@ -1,10 +1,12 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.55**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.60**:
 
-- **Estrategia 1** — estructura de líneas L1-L4 en **H1** + apertura por confluencia en **M3** (CHoCH + 50% congelado + fix del lado correcto de la limit).
+- **Estrategia 1 (v8.56)** — la **dirección la manda la estructura de líneas L1-L4 en H1** (bias + rango + zona del 50%) y la **entrada se busca en M3 con un BOS o un CHoCH a favor de la zona de 1 hora**; la orden **LIMIT se coloca en el 50% del tramo del BOS/CHoCH** (del origen del impulso a su extremo), congelado, y **solo una operación abierta por par**. La LIMIT se envía cuando el precio está del lado correcto del 50% (encima en compras / debajo en ventas) y se cancela si el precio cierra M3 más allá del origen del tramo.
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
-- **Una sola operación activa por par (v8.52)**: E1 y S2 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
+- **Estrategia 3 (v8.57) — SMC completo multi-temporal**: **correlación de tres temporalidades**. El **TF alto** (H4 por defecto) manda la **dirección** (bias del motor de líneas) y el **premium/descuento** (solo se compra por debajo del 50% del rango y se vende por encima). El **TF medio** (M15) aporta la **estructura del mercado**: cada **BOS/CHoCH** entrega su tramo y dentro de él se busca el **POI** (order block + imbalance/FVG). El **TF bajo** (M3) da el **gatillo**: con la zona armada, un **BOS o CHoCH** a favor congela la entrada en el **50% del tramo** (o en el 50%/borde del POI, configurable). Magia propia (+3), SL/TP del EA y el mismo ciclo virtual→LIVE.
+- **Rejilla / GRID opcional sobre E1 y E3 (v8.60)**: con `InpGridEnable=true` el EA **añade operaciones a la operación LIVE que ya abrió la Estrategia 1 o la Estrategia 3** cuando el precio va en contra, con **multiplicador de lotaje**, **lotaje inicial propio de la rejilla** (independiente de la tabla de riesgo) y **multiplicador de distancia**, hasta **20 operaciones** de rejilla por par. La cesta va **SIN stop loss** y se cierra con un **TP en USD**: cuando el beneficio flotante llega al objetivo se cierran todas las posiciones y el cierre cuenta como **TP (nivel→1, CV→1)**. El **primer nivel** de la rejilla solo se abre en el **horario de trading**; los **siguientes, a cualquier hora**.
+- **Una sola operación activa por par (v8.52)**: E1, S2 y E3 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
 - **Objetivo por pasos / profit step (v8.54)**: escalera de escalones **que nunca baja** (`base → base+paso → base+2·paso…`, paso en USD con `InpProfitStepUsd`). Al llegar a un escalón el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **sube la base al escalón logrado**. Se mide por **equity** o por **suma de posiciones cerradas** (`InpStepMeasure`); la base se puede fijar **manualmente** (`InpStepBaseValue`). Las LIVE siguen LIVE y el CV virtual se mantiene.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 - **1:2 opcional (v8.55)**: `InpUseTrailing12` es el **interruptor maestro** del SL protegido. `true` = comportamiento de siempre (mueve el SL a 1:2 según nivel/MODO AVANZADO); **`false` = no se mueve ningún SL, las operaciones solo buscan el TP** (o salen por su SL original). Aplica igual en **real y en virtual**, y domina sobre el MODO AVANZADO y el automático por nivel.
@@ -26,39 +28,67 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.55)**: estrategia 1 (estructura L1-L4 H1 + confluencia M3) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.60)**: estrategia 1 (**estructura L1-L4 H1 → bias/zona del 50%** + **BOS/CHoCH en M3** + **LIMIT en el 50% del tramo**) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + **Estrategia 3 (SMC multi-temporal: H4 dirección/descuento → M15 POI OB+FVG → M3 gatillo BOS/CHoCH → 50%)** con magia +3 + **rejilla opcional sobre E1/E3 (lote propio, sin SL, TP en USD, hasta 20 niveles)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
+| `sim_smc3.py` | **Simulación en Python de la E3 v8.57** (SMC multi-temporal): motor L1-L4 en 3 temporalidades, POI (order block + FVG), armado por toque, gatillo del TF bajo, 50% del tramo y las invalidaciones. 7 escenarios (flujo completo, TF alto en contra, premium, sin POI armada, zona mitigada, origen roto, 50% de la zona). Se ejecuta con `python3 sim_smc3.py`. |
+| `sim_grid.py` | **Simulación en Python de la REJILLA v8.60**: lotaje propio (independiente de la tabla), progresión de lote y distancia, cesta **sin SL**, **TP en USD** de la cesta, tope de **20 niveles**, horario (1er nivel sí, siguientes no), tope de lote, cierres parciales (un solo evento de nivel/CV) y filtros (apagada, S2, circuit breaker, ventana semanal). 38 comprobaciones; `python3 sim_grid.py`. |
+| `sim_bos_choch.py` | **Simulación en Python de la E1 v8.56** (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados): reproduce el motor y los escenarios de BOS alcista, CHoCH alcista, rompimiento contrario (ignorado), BOS desactivado y cancelación por origen roto. Se ejecuta con `python3 sim_bos_choch.py`. |
 
-## Estrategia única (v8.43): estructura de líneas H1 + confluencia M3
+## Estrategia 1 (v8.56) — líneas en H1 + BOS/CHoCH en M3 + 50% del tramo
 
-El EA tiene **una sola estrategia**: la **estructura** se reconoce con la lógica de líneas **L1-L4** (la misma de siempre) y la **apertura** se hace con la lógica de confluencia. No hay una segunda estrategia de entrada.
+**Resumen:** la **dirección del precio a una hora** la sigue determinando la **lógica de líneas L1-L4 en H1** (bias, rango y zona del 50%). Cuando el precio está **en zona para abrir operación**, en **M3** se busca un **BOS** (ruptura de continuación) o un **CHoCH** (cambio de estructura) **a favor de la zona de 1 hora**; en el **50% del rango de ese BOS/CHoCH** se coloca la **orden LIMIT**. Solo puede haber **una operación abierta por par**.
 
-**Cómo funciona:**
+**Cómo funciona, paso a paso:**
 
 1. **Estructura madre (H1)** — el motor de líneas L1-L4 corre **siempre**:
    - **L1/L2** = techo/suelo del rango; **EQ** = 50% del rango; **L3/L4** = zona de reacción (vela contraria).
-   - El **bias H1** (alcista/bajista) manda la dirección: **H1 alcista → solo compras; H1 bajista → solo ventas**.
+   - El **bias H1** manda la dirección: **H1 alcista → solo compras; H1 bajista → solo ventas**.
    - Zona de **COMPRA = parte de abajo** del rango H1 (precio ≤ 50%) y zona de **VENTA = parte de arriba** (precio ≥ 50%).
-2. **Toque de zona**: con solo tocar la zona se activa la búsqueda (aunque el precio luego salga de ella; un cambio de estructura H1 reinicia zonas y exige un nuevo toque).
-3. **Estructura de entrada (M3)** — el motor de líneas L1-L4 de M3 también corre **siempre**:
-   - Se espera un **cambio de estructura (CHoCH) en M3 a favor de la estructura de H1** (bajista→alcista si H1 es alcista; alcista→bajista si H1 es bajista).
-4. **Entrada**: al generarse el CHoCH de M3, el rango para medir el **50% es el rango L1-L2 del M3 en ese momento** (el nivel queda **CONGELADO**). La **orden LIMIT** (BUY/SELL) con el SL/TP del EA **solo se coloca cuando el precio está del lado correcto del 50%** (por encima para compras, por debajo para ventas); si aún no está, el EA espera el cruce. Así la order siempre es llenable y no se generan virtuales que pierden al instante.
-5. **Gestión**: la misma de siempre — tabla de riesgo, nivel 1-20 por par, trailing 1:2 automático, virtual→LIVE, circuit breaker.
+2. **Toque de zona** → se activa la búsqueda: con solo tocar la zona queda armada (aunque el precio luego salga). Un cambio de estructura H1 reinicia las zonas y exige un nuevo toque.
+3. **Rompimiento en M3 (el motor de líneas de M3)** — dos tipos:
+   - **CHoCH** → el rompimiento **cambia** la estructura de M3 (el bias pasa de bajista a alcista, o al revés).
+   - **BOS** → el rompimiento **confirma la continuación**: con la reacción L3/L4 activa, la vela **cierra** más allá del nivel de referencia de la reacción (techo `L1` en alcista / suelo `L2` en bajista).
+   - Solo se acepta el que va **a favor de la zona de H1**: zona de compra → rompimiento **alcista**; zona de venta → rompimiento **bajista**. El rompimiento además debe ser **posterior al toque** de la zona.
+   - Cada tipo se puede activar/apagar por separado: `InpConfAcceptCHoCH` y `InpConfAcceptBOS`.
+4. **Tramo del rompimiento y 50 %** — el **tramo** es el rango del movimiento que rompió, **del origen al extremo**:
+   - **CHoCH** → rango de la reacción consolidada en el cambio de estructura (`L4` mínimo ↔ `L3` máximo).
+   - **BOS** → **del retroceso al extremo del impulso**: el origen es el mínimo (compra) o máximo (venta) del retroceso que re-armó el BOS y el extremo es el máximo/mínimo alcanzado por el impulso que rompió. El retroceso **re-arma** el BOS en cada vela contraria, así que hay un rompimiento por cada retroceso (no uno solo por tendencia).
+   - Se calcula **una sola vez** y el nivel queda **CONGELADO**:
+     - **COMPRA** → LIMIT BUY en el **50 %** del tramo (por debajo del precio, se llena en el retroceso).
+     - **VENTA** → LIMIT SELL en el **50 %** del tramo (por encima del precio, se llena en el rebote).
+5. **Colocación de la LIMIT** — se envía cuando el precio está **del lado correcto** del 50 % (por encima en compras, por debajo en ventas) y no está más cerca que `SYMBOL_TRADE_STOPS_LEVEL`; así la orden es siempre llenable y el broker no la rechaza.
+6. **Invalidación (v8.56)** — si el precio **cierra en M3 más allá del origen del tramo** (por debajo del mínimo en compras / por encima del máximo en ventas) el rompimiento quedó anulado y se **retira la entrada** (espera + LIMIT virtual/real). Se puede desactivar con `InpConfCancelLegBreak`.
+7. **Una sola operación por par** — con posición abierta no se coloca nada (los rompimientos que llegan caducan) y **al abrirse una posición se eliminan el resto de órdenes limit** del par, incluidas las de la Estrategia 2.
+8. **Gestión** — la misma de siempre: tabla de riesgo, nivel 1-20 por par, trailing 1:2 automático, virtual→LIVE, circuit breaker.
 
-**Reglas de órdenes:**
+**Entradas / salidas en el gráfico:**
 
-- **Solo puede haber una posición abierta por par** y **una limit pendiente por par**. Con posición abierta no se coloca nada y los CHoCH que llegan caducan.
-- **La LIMIT solo se coloca con el precio del lado correcto del 50% congelado** (v8.43): el CHoCH congela el 50% y marca una espera; cuando el precio cruza al lado correcto (por encima para COMPRA / por debajo para VENTA) se coloca la limit en ese nivel. Esto evita que la limit quede "fuera de mercado" (que en virtual se llenara al instante y perdiera, disparando el LIVE y el "bucle"; y que el broker la rechazara en LIVE por estar pegada al precio).
-- **Al abrirse una posición se eliminan el resto de órdenes limit** pendientes del par.
-- Si la orden se ejecutó y la posición **se perdió estando el precio aún en la zona**, puede buscar otra entrada (con un CHoCH nuevo). Si **ya no está en la zona**, no busca hasta que **vuelva a tocarla**.
-- Un **cambio de estructura H1** reinicia las zonas y exige un nuevo toque.
+| Objeto | Color | Significado |
+|---|---|---|
+| `TRAMO BOS/CHoCH COMPRA (máx)` / `(origen)` | 🟢 Verde punteado | Extremos del tramo congelado de compra |
+| `TRAMO BOS/CHoCH VENTA (origen)` / `(mín)` | 🔴 Rojo punteado | Extremos del tramo congelado de venta |
+| Rectángulo del tramo | 🟢/🔴 relleno | Del rompimiento a la vela actual |
+| `ENTRADA COMPRA (50% BOS M3)` / `(50% CHoCH M3)` | 🟢 Lima discontinuo | Nivel de la LIMIT congelado |
+
+**Inputs (grupo `ESTRATEGIA 1`):**
+
+| Input | Default | Significado |
+|---|---|---|
+| `InpUseConfluencia` | `true` | Activa la estrategia. |
+| `InpAllowConfluOrders` | `true` | Permite órdenes (virtuales y LIVE). |
+| `InpConfTFSuperior` | `H1` | TF de la estructura madre (dirección + rango + zona del 50 %). |
+| `InpConfTFEntrada` | `M3` | TF donde se busca el BOS/CHoCH y se mide el tramo. |
+| `InpShowConfluencias` | `true` | Dibuja zonas H1, tramo y 50 % de entrada. |
+| `InpConfAcceptBOS` | `true` | Aceptar **BOS** (ruptura de continuación). |
+| `InpConfAcceptCHoCH` | `true` | Aceptar **CHoCH** (cambio de estructura). |
+| `InpConfCancelLegBreak` | `true` | Cancelar la entrada si el precio cierra más allá del origen del tramo. |
 
 **Fases:** la estrategia primero opera en **simulación (virtual)** —sus limit se simulan y se registran como `vOPEN`— y pasa a **LIVE** (órdenes limit reales) al alcanzar el umbral `InpXActivacion`. Toda la gestión (CV/CR, tabla de riesgo, trailing 1:2, circuit breaker) se aplica igual.
 
-**Inputs:** `InpUseConfluencia` (activar la estrategia), `InpAllowConfluOrders` (permitir órdenes, por defecto `true`), `InpConfTFSuperior=H1`, `InpConfTFEntrada=M3`, `InpShowConfluencias`.
+> **Diferencia con v8.55:** antes solo se aceptaba el **CHoCH** de M3 y el 50 % se medía sobre el rango L1-L2 de M3 en ese instante. Ahora se acepta también el **BOS**, y el 50 % se mide sobre el **tramo del rompimiento**: para el **CHoCH** es el rango de la reacción consolidada (`L4..L3`, igual que antes) y para el **BOS** es el **retroceso → extremo del impulso** (`BosLeg`), que se **re-arma con cada vela contraria** (así hay un BOS por cada retroceso, no uno solo por tendencia). Lo nuevo es el BOS, esa re-armadura, la invalidación por origen roto y el dibujo del tramo.
 
 ### Motor de estructura (las 4 líneas)
 
@@ -105,7 +135,7 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 2. **CHoCH a favor del rebote**:
    - **OB de VENTA** → debe haber un CHoCH **alcista → bajista** (dir −) en M3.
    - **OB de COMPRA** → debe haber un CHoCH **bajista → alcista** (dir +) en M3.
-3. **Entrada congelada**: al confirmarse el CHoCH, el precio de entrada se pone en el **50% del rango L1-L2 de M3** en ese momento (igual que la Estrategia 1) y se **CONGELA**; se dibuja la línea `ENTRADA S2 COMPRA/VENTA (50% M3)`.
+3. **Entrada congelada**: al confirmarse el CHoCH, el precio de entrada se pone en el **50% del rango L1-L2 de M3** en ese momento (la S2 conserva ese criterio; la E1 desde la v8.56 usa el **50% del tramo del BOS/CHoCH**) y se **CONGELA**; se dibuja la línea `ENTRADA S2 COMPRA/VENTA (50% M3)`.
 4. Se elige **una zona por lado** (prioridad: dentro del rango 4H y la más reciente); si la zona se **mitiga** antes (cruza el imbalance), la búsqueda y la entrada congelada se cancelan.
 5. **Órdenes (v8.52)**: la entrada congelada pasa al **motor de órdenes de la S2** (`UpdateStrat2Orders`, llamado desde `UpdateAllStrategies` igual que E1): coloca una **LIMIT** cuando el precio está del lado correcto del 50% (por encima para compras, por debajo para ventas). En fase **virtual** la limit se simula y al llenarse abre **vOPEN** con CV/niveles de par; con `InpXActivacion` pérdidas virtuales pasa a **LIVE** y coloca **LIMIT reales con magia `+2`** (`S2-OB`), SL/TP del EA y 1:2. **`InpAllowStrat2Orders`** (por defecto `true`) apaga/enciende las órdenes S2.
 6. El estado se ve en el gráfico (`TOCADA → CHoCH M3` / `50% M3 CONGELADO`), en el panel (`armados N · 50% M3 N · mitigados M`) y en la fila **virtual → LIVE** (línea `S2-OB` con vOPEN / ESPERA PRECIO / pérdidas).
@@ -115,6 +145,130 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 > **Fix v8.51 (¡esto era lo que impedía abrir operaciones!):** `Strat2IsVisible` exigía que el precio estuviera **fuera** de la zona (`ZoneTop < bid` en compras / `ZoneBottom > bid` en ventas), pero el toque que **arma** la zona requiere que el precio esté **dentro** del rectángulo — condición imposible, así que ninguna zona se armaba y la S2 nunca llegaba al CHoCH. Ahora una zona es invisible solo si el precio ya la **atravesó por completo** (quedó debajo en compras / encima en ventas); dentro del rectángulo sigue visible y el toque la arma. Se añadió además el espejo exacto de E1: el CHoCH debe ser **posterior al toque** (`ArmedTime ≤ m3ChochTime2`), y los contadores del panel usan la misma regla.
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas), `InpStrat2MinAge=10` (antigüedad mínima de la zona), `InpAllowStrat2Orders=true` (permitir órdenes S2).
+
+## Estrategia 3 (v8.57) — SMC multi-temporal: CHoCH/BOS + POI + 50%
+
+La **Estrategia 3** es un **SMC completo** montado sobre el mismo motor de líneas L1-L4 del EA, pero con **correlación de tres temporalidades**: cada una decide una cosa distinta y **el gatillo de entrada solo se acepta si las tres coinciden**.
+
+| Temporalidad | Input | Qué decide |
+|---|---|---|
+| **TF ALTO** | `InpSmc3TFHigh` = **H4** | **Dirección** (bias del motor) y **premium / descuento**: `L1-L2` es el rango y su **50% (EQ)** divide el precio en **prima** (arriba) y **descuento** (abajo). |
+| **TF MEDIO** | `InpSmc3TFMid` = **M15** | **Estructura del mercado**: cada **BOS / CHoCH** entrega su **tramo** (origen → extremo) y dentro de él se busca el **POI** (order block + imbalance). |
+| **TF BAJO** | `InpSmc3TFLow` = **M3** | **Gatillo**: con la zona armada, un **BOS o CHoCH a favor** congela el nivel de entrada. |
+
+**Cómo funciona, paso a paso:**
+
+1. **Dirección (TF alto)** — el motor L1-L4 del TF alto define el **bias**; con `InpSmc3UseDiscount=true` solo se **compra en descuento** (precio ≤ 50% del rango) y solo se **vende en prima** (precio ≥ 50%).
+2. **Estructura y POI (TF medio)** — cuando el motor del TF medio emite un **CHoCH** (cambio de estructura) o un **BOS** (continuación), se toma su **tramo** (`LastBreakHigh/Low` = origen → extremo) y se busca dentro de él:
+   - **ORDER BLOCK** = la **última vela contraria** antes del impulso (bajista → demanda; alcista → oferta).
+   - **IMBALANCE / FVG** = hueco de 3 velas dentro del impulso que **solape** con el OB (`InpSmc3UseFVG`). Si solapan, la **zona = unión**; con `InpSmc3RequireFVG=true` se descartan las zonas sin imbalance.
+   - La zona tiene que estar en la **mitad correcta del tramo** (demanda en descuento del tramo / oferta en prima).
+   - El tamaño mínimo del tramo se filtra con `InpSmc3MinLegPts` (0 = sin filtro).
+3. **Vigencia de la zona** — la zona se **ARMA** cuando el precio **vuelve a entrar** en ella; se **MITIGA** (muere) cuando el **cierre del TF medio la atraviesa** por completo; **caduca** a las `InpSmc3ZoneBars` velas del TF medio. Hay como máximo `InpSmc3MaxZones` zonas vivas por par (se recicla la más vieja que no esté en uso).
+4. **Gatillo (TF bajo)** — con la zona **armada**, un **BOS o CHoCH** del TF bajo **a favor** (`InpSmc3AcceptBOS` / `InpSmc3AcceptCHoCH`), **posterior al toque**, congela el **nivel de entrada** según `InpSmc3EntryMode`:
+   - `SMC3_ENTRY_LEG50` (**defecto**) → **50% del tramo del gatillo** (igual criterio que la E1).
+   - `SMC3_ENTRY_ZONE50` → **50% de la zona POI**.
+   - `SMC3_ENTRY_ZONEPROX` → **borde proximal** de la zona (el más cercano al precio).
+5. **Correlación obligatoria** — el gatillo se **descarta** (con su motivo en el log) si: el **bias del TF alto** no coincide, el precio está en **premium/descuento equivocado**, el **TF medio no acompaña**, no hay **POI armada** de ese lado o el evento tiene más de 3 velas de antigüedad.
+6. **Orden** — la **LIMIT** se coloca cuando el precio está del lado correcto del nivel (encima en compras / debajo en ventas), con el **SL/TP de la configuración del EA** (`InpSL_Points`/`InpTP_Points` o los del símbolo) y el **lote del NIVEL del par**. Ciclo **virtual → vOPEN → LIVE** igual que E1/E2, con **magia +3**.
+7. **Invalidaciones** — se retira la entrada si el **cierre del TF de gatillo** rompe el **origen del tramo** o, con `InpSmc3CancelZoneBreak=true`, si rompe el **lado contrario de la zona POI**.
+8. **Una sola operación por par** — al abrirse una posición se cancelan los flujos y límites de las otras estrategias del par (y viceversa).
+
+**Objetos en el gráfico:**
+
+| Objeto | Color | Significado |
+|---|---|---|
+| `3T H4 techo` / `3T H4 suelo` / `3T 50%` | 🟤 Marrón raya-punto / punteada | Rango del TF alto y su 50% (premium / descuento) |
+| `3 tramo` | 🟤 Punteada | Extremos del tramo del último rompimiento del TF medio |
+| `POI C/V …` (rectángulo + etiqueta) | 🟢 Verde / 🔴 Rojo | Zona POI (order block + FVG). La etiqueta dice `POI`, `ARMADA` o `ENTRADA` |
+| `ENTRADA 3 COMPRA` / `ENTRADA 3 VENTA` | 🟢 Lima / 🔴 Rojo discontinuo | Nivel congelado de la LIMIT |
+
+**Inputs (grupo `ESTRATEGIA 3`):**
+
+| Input | Default | Significado |
+|---|---|---|
+| `InpUseSMC3` | `true` | Activa la estrategia. |
+| `InpAllowSmc3Orders` | `true` | Permite órdenes (virtuales y LIVE). |
+| `InpSmc3TFHigh` | `H4` | TF de dirección + premium/descuento. |
+| `InpSmc3TFMid` | `M15` | TF de estructura → tramo → POI. |
+| `InpSmc3TFLow` | `M3` | TF del gatillo. |
+| `InpSmc3EntryMode` | `LEG50` | Nivel de la LIMIT: 50% del tramo / 50% de la zona / borde proximal. |
+| `InpSmc3UseDiscount` | `true` | Solo comprar en descuento y vender en prima. |
+| `InpSmc3UseFVG` | `true` | Incorporar el imbalance a la zona del OB. |
+| `InpSmc3RequireFVG` | `false` | Exigir imbalance (descarta zonas sin FVG). |
+| `InpSmc3AcceptBOS` | `true` | Aceptar BOS en el TF de gatillo. |
+| `InpSmc3AcceptCHoCH` | `true` | Aceptar CHoCH en el TF de gatillo. |
+| `InpSmc3CancelZoneBreak` | `true` | Cancelar si el precio cierra fuera de la zona. |
+| `InpSmc3ZoneLookback` | `8` | Velas del TF medio hacia atrás para buscar el OB/FVG. |
+| `InpSmc3ZoneBars` | `120` | Vida máxima de una zona (velas del TF medio). |
+| `InpSmc3MaxZones` | `4` | Zonas POI vivas por par (1-8). |
+| `InpSmc3MinLegPts` | `0` | Tamaño mínimo del tramo del TF medio (puntos; 0 = sin filtro). |
+| `InpSmc3Show` | `true` | Dibujar rango, tramo, POI y entrada. |
+
+> **Nota:** la E3 **no toca** la lógica de E1 ni de S2 — usa **sus propios motores** (tres instancias del motor de líneas) y su **propia magia (+3)**. Si prefieres el criterio clásico de entrada dentro del POI, cambia `InpSmc3EntryMode` a `ZONE50` o `ZONEPROX`.
+
+## Rejilla (GRID) sobre las entradas de E1 y E3 (v8.60)
+
+La rejilla **no busca entradas propias**: la **apertura sigue siendo la de la Estrategia 1 o la Estrategia 3** (su LIMIT en el 50%, su ciclo virtual→LIVE y su magia). Cuando esa operación ya está en el mercado y el precio va **en contra**, la rejilla **añade operaciones en el mismo sentido** para promediar, hasta **20 operaciones** de rejilla por par.
+
+```
+                 precio
+   ▲ 1.10000  ■ entrada de E1/E3          (lote de la TABLA de riesgo)
+   │           │
+   │ ←dist 1→  ■ L1  loteRejilla                    ← horario permitido
+   │           │
+   │ ←dist 2→  ■ L2  loteRejilla · mult             ← cualquier hora
+   │           │
+   │ ←dist 3→  ■ L3  loteRejilla · mult²            ← cualquier hora
+   ▼
+   SIN SL · la CESTA se cierra cuando el flotante ≥ InpGridTPUsd
+```
+
+| Regla | Cómo se calcula |
+|---|---|
+| **Distancia del nivel n** | `InpGridStepPts · InpGridDistMult^(n-1)` medida desde el **peor precio** de la cesta. Con `InpGridStepPts=0` se usa **la mitad del SL del par**. |
+| **Lotaje del nivel n** | `InpGridLotInit · InpGridLotMult^(n-1)` — **lotaje propio de la rejilla**, nunca el de la **tabla de riesgo**; normalizado al paso de volumen y limitado por `InpGridLotCap`. |
+| **Niveles** | `InpGridMaxLevels` de 0 a **20** (tope duro `GRID_MAX_LEVELS=20`). |
+| **Stop loss** | **NO hay SL** (`InpGridStripSL`): la rejilla **retira** el SL de todas las posiciones de la cesta (la entrada incluida) y el 1:2 no la toca. |
+| **Take profit** | **TP en USD** (`InpGridTPUsd`): cuando el beneficio flotante de la cesta (`profit + swap`) llega al objetivo, se **cierran todas** las posiciones y el cierre cuenta como **TP → nivel 1 y CV 1**. |
+| **Horario** | El **primer** nivel de la rejilla solo se abre en el **horario de trading** (`InpStartHour/EndHour`); los niveles **2..20** se abren **a cualquier hora** (`InpGridFreeHours`). |
+| **Nivel / CV del par** | Se actualiza **una sola vez**, cuando cierra la **última** posición de la cesta. |
+
+**Inputs (`=== REJILLA (GRID) — SOBRE LAS ENTRADAS DE E1 Y E3 ===`)**
+
+| Input | Default | Significado |
+|---|---|---|
+| `InpGridEnable` | `false` | Activa la rejilla. **Desactivada por defecto**: sin ella el EA funciona como en la v8.58. |
+| `InpGridOnE1` | `true` | Aplicar la rejilla a la **Estrategia 1**. |
+| `InpGridOnE3` | `true` | Aplicar la rejilla a la **Estrategia 3**. |
+| `InpGridStepPts` | `0` | Distancia del **primer** nivel en puntos (`0` = mitad del SL del par). |
+| `InpGridDistMult` | `1.0` | **Multiplicador de distancia** (`1` = nivel equidistante · `1.5` = cada nivel un 50% más lejos). |
+| `InpGridLotInit` | `0.01` | **Lotaje inicial de la rejilla** — **independiente de la tabla de riesgo** (`0` = lote mínimo del símbolo). |
+| `InpGridLotMult` | `1.0` | **Multiplicador de lotaje** (`1` = todos iguales · `2` = dobla cada nivel). |
+| `InpGridMaxLevels` | `20` | Operaciones de rejilla por par (0–20). |
+| `InpGridLotCap` | `5.0` | Tope de lote por nivel de rejilla. |
+| `InpGridTPUsd` | `5.0` | **TP de la cesta en USD** (`0` = sin TP en USD → con `InpGridAvgTP=false` la cesta solo cerraría por el circuit breaker o el objetivo por pasos). |
+| `InpGridStripSL` | `true` | La cesta va **sin SL** (se retira el SL de todas sus posiciones). |
+| `InpGridAvgTP` | `false` | Respaldo: TP por **precio medio** (solo se usa si `InpGridTPUsd=0`). |
+| `InpGridFreeHours` | `true` | Niveles **2..20** a cualquier hora (el primero solo en horario permitido). |
+| `InpGridKeepTrail` | `false` | Mantener el 1:2 por posición aunque haya rejilla. |
+
+**Cuándo NO añade niveles:** circuit breaker activo, **cierre semanal activo y dentro de su ventana** (las órdenes se cerrarían en el acto), estrategia con `cbPaused`, `InpAllowConfluOrders`/`InpAllowSmc3Orders` apagado, sin **margen libre** (más del 90% del margen consumido por la nueva orden), llegada a `InpGridMaxLevels`, o **fuera de horario cuando toca el primer nivel** (con `InpGridFreeHours=false` se aplica a todos).
+
+**Ejemplo (EURUSD, 5 dígitos, SL 95 pts)** con `InpGridStepPts=150`, `InpGridDistMult=1`, `InpGridLotInit=0.01`, `InpGridLotMult=2`, `InpGridTPUsd=5`:
+
+| Nivel | Precio | Distancia | Lote | Lotes cesta | Horario |
+|---|---|---|---|---|---|
+| entrada E1/E3 | 1.10000 | — | 0.37 (tabla) | 0.37 | horario del EA |
+| L1 | 1.09850 | 150 pts | 0.01 | 0.38 | **solo en horario** |
+| L2 | 1.09700 | 150 pts | 0.02 | 0.40 | cualquier hora |
+| L3 | 1.09550 | 150 pts | 0.04 | 0.44 | cualquier hora |
+
+Sin SL, la cesta se cierra en cuanto el **beneficio flotante** de esas posiciones alcanza **5 USD** (el precio necesario depende del lotaje acumulado: con 0.44 lotes son ≈ 11 puntos desde el precio medio). Al cerrarse, el par cuenta **un TP**: nivel → 1 y CV → 1.
+
+> ⚠️ **Sin stop loss el riesgo no está acotado por precio**: una tendencia en contra mantiene la cesta abierta indefinidamente y el lotaje crece si `InpGridLotMult > 1`. Los frenos que quedan son el **circuit breaker** (`InpMaxDailyLossPct`, que cierra todo) y el **objetivo por pasos**. Pruébalo en demo y con `InpGridLotMult=1` al principio.
+
+**Persistencia**: el estado de la rejilla por par (`GRID_ST`, `GRID_DIR`, `GRID_LEGS`) se guarda en el `.dat`, así que un reinicio no pierde los niveles ya abiertos.
 
 ## Líneas visibles en el gráfico
 
@@ -128,7 +282,13 @@ Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 | `H1 L1` / `H1 L2` | 🟠 Naranja | Sólida, grosor 2 | Rango de la estructura madre H1 (estructura única) |
 | `50% H1` | 🟡 Dorado | Punteada | Punto medio del rango H1 (estructura única) |
 | Zona COMPRA / VENTA H1 | 🟢 Verde / 🔴 Rojo | Rectángulo relleno | Mitad inferior / superior del rango H1 |
-| `ENTRADA (50% M3)` | 🟢 Lima / 🔴 Rojo | Discontinua | 50% L1-L2 de M3 congelado en el CHoCH (orden limit) |
+| `ENTRADA (50% BOS M3)` / `(50% CHoCH M3)` | 🟢 Lima / 🔴 Rojo | Discontinua | 50% del **tramo** del BOS/CHoCH de M3 congelado (nivel de la orden limit) |
+| `TRAMO BOS/CHoCH ...` | 🟢 Verde / 🔴 Rojo | Punteada + rectángulo relleno | Origen y extremo del tramo que rompió (v8.56) |
+| `3T H4 techo` / `suelo` / `3T 50%` | 🟤 Marrón | Raya-punto / punteada | Rango y 50% del TF alto de la **Estrategia 3** (v8.57) |
+| `REJILLA L2/4` | 🔵 Azul (DodgerBlue) | Punteada | Precio del **siguiente nivel** de la rejilla del par del panel (v8.59/v8.60) |
+| `3 tramo` | 🟤 Marrón | Punteada | Tramo del último rompimiento del TF medio (E3) |
+| `POI C/V` (rectángulo) | 🟢/🔴 relleno | — | Zona POI (order block + FVG) de la **Estrategia 3** |
+| `ENTRADA 3 COMPRA/VENTA` | 🟢 Lima / 🔴 Rojo | Discontinua | Nivel congelado (50% del tramo del gatillo) de la E3 |
 
 - Se dibujan en el gráfico **en vivo y también en el Strategy Tester (modo visual)**.
 - Etiqueta al lado derecho de cada línea con su nombre y precio (ej. `L1  1.08452`).
@@ -151,7 +311,7 @@ Panel **organizado y legible con una fila por par**, dibujado sobre un único bi
    | EURUSD | ALC | BAJ | C | B 1.08452 | ▲ 0.02 1.0845 | 3 | 0.03 | +1.25 | POSICIÓN ABIERTA |
 
    - Fila **verde** = posición abierta · **azul** = limit pendiente · **roja** = pausa por circuit breaker.
-   - **ESTADO** dice qué falta en lenguaje claro: `50% CONGELADO 1.08452 · ESPERA PRECIO`, `ZONA C ✓ CHoCH M3`, `ZONA C ✓ H1 NO ALCISTA`, `FUERA DE ZONA`, `LIMIT B 1.08452`, `POSICIÓN ABIERTA`.
+   - **ESTADO** dice qué falta en lenguaje claro: `50% BOS 1.08452 · ESPERA PRECIO`, `50% CHoCH 1.08452 · ESPERA PRECIO`, `ZONA C ✓ BOS/CHoCH M3`, `ZONA C ✓ H1 NO ALCISTA`, `FUERA DE ZONA`, `LIMIT B 1.08452`, `POSICIÓN ABIERTA`.
 4. **Mini-gráficos por par** (hasta 6): precio del TF de entrada (M3) con **sus propias líneas** — L1/L2/L3/L4 del motor, rango H1 y 50% H1, entrada limit congelada y ENTRADA/SL/TP de la posición. Cada par tiene su propia escala, así que **todos los pares abiertos se ven con sus líneas aunque el tester solo muestre un gráfico**.
 5. **Leyenda** de colores al pie.
 
@@ -162,18 +322,18 @@ Extras de esta versión:
 - El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
 - Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
 
-## Nivel compartido entre E1 y S2 (v8.52) — una sola operación activa por par
+## Nivel compartido entre E1, S2 y E3 (v8.52/v8.57) — una sola operación activa por par
 
-Las dos estrategias activas (Estrategia 1 `CONFL` y Estrategia 2 `S2-OB`) operan **sobre la misma tabla de niveles del par**:
+Las **tres** estrategias activas (Estrategia 1 `CONFL`, Estrategia 2 `S2-OB` y Estrategia 3 `SMC3`) operan **sobre la misma tabla de niveles del par**:
 
-1. **Nivel compartido**: el nivel (`PairLevel`, 1–20) es **por par**, no por estrategia. Cualquiera de las dos que coloque la LIMIT usa el nivel actual de la tabla; el lote y el SL/TP se calculan con ese nivel.
-2. **Primera que activa, se queda**: pueden existir señal/espera o límites pendientes de ambas al mismo tiempo, pero **en cuanto una activa** (fill de la LIMIT virtual → `vOPEN`, o posición real) **se cancelan los límites restantes del par** (virtuales y reales), se limpian las esperas/entradas congeladas de la otra y el par espera el resultado. La otra estrategia no puede congelar ni colocar mientras la primera tiene la operación activa.
-3. **Al cerrar la operación** (sea de E1 o de S2):
+1. **Nivel compartido**: el nivel (`PairLevel`, 1–20) es **por par**, no por estrategia. Cualquiera de las tres que coloque la LIMIT usa el nivel actual de la tabla; el lote y el SL/TP se calculan con ese nivel.
+2. **Primera que activa, se queda**: pueden existir señal/espera o límites pendientes de las tres al mismo tiempo, pero **en cuanto una activa** (fill de la LIMIT virtual → `vOPEN`, o posición real) **se cancelan los límites restantes del par** (virtuales y reales), se limpian las esperas/entradas congeladas de las demás y el par espera el resultado. Las otras estrategias no pueden congelar ni colocar mientras la primera tiene la operación activa.
+3. **Al cerrar la operación** (sea de E1, de S2 o de E3):
    - **TP** (ganancia limpia) → **nivel = 1** y CV = 1.
    - **SL sin trailing** (pérdida) → **nivel +1** y CV +1.
    - **SL con trailing/protección** (ganancia protegida) → **retroceso −3** posiciones si CV < 10, **−4** si CV ≥ 10 (regla de Asistente 3).
-4. La cancelación de la otra estrategia **no cuenta como pérdida** (no toca nivel ni CV): es solo la limpieza de su flujo; si estaba en espera o con zona armada, necesitará una nueva señal/CHoCH después del resultado.
-5. Con posición real abierta solo queda la estrategia que la abrió (LIVE); la otra se cancela y conserva su CV para la siguiente ronda. El `liveLogicLevel` de la LIVE no se toca (rige el 1:2).
+4. La cancelación de las otras estrategias **no cuenta como pérdida** (no toca nivel ni CV): es solo la limpieza de su flujo; si estaba en espera o con zona armada, necesitará una nueva señal/CHoCH después del resultado.
+5. Con posición real abierta solo queda la estrategia que la abrió (LIVE); las demás se cancelan y conservan su CV para la siguiente ronda. El `liveLogicLevel` de la LIVE no se toca (rige el 1:2).
 
 **En vivo se ve así:** `vOPEN [EURUSD/CONFL] ...` → `S2 [EURUSD] ... eliminada` (o al revés); cuando la primera cierra, el journal muestra `TP → nivel 1` / `SL → nivel +1` / `retroceso −3/−4` y el panel (pestaña ESTRAT) actualiza el nivel compartido.
 
@@ -299,7 +459,8 @@ El lote siempre sale de la **tabla de riesgo de 20 niveles** (% de la base). Lo 
    - **Ya no necesitas rellenar `InpSymbol1..20` en el tester**: el EA añade automáticamente el símbolo del gráfico que estás probando, opera sobre él y dibuja sus líneas.
    - El **PANEL MULTI-PAR** aparece arriba a la derecha: tabla con el estado de cada par + mini-gráficos con sus líneas. Si pruebas varios pares (rellenando `InpSymbol1..20`), cada par abierto muestra su mini-gráfico con L1/L2, H1, 50%, entrada y SL/TP — todo en el único gráfico del tester.
    - En el log verás `TESTER: símbolo del gráfico [XXX] añadido automáticamente.` y las líneas calculadas (`LINEAS [...] L1=… L2=…`).
-2. En el log: `vOPEN` (simulación), `LIVE`, `CV/CR`, `CIRCUIT BREAKER`.
+2. En el log: `vOPEN` (simulación), `LIVE`, `CV/CR`, `CIRCUIT BREAKER`, y los rompimientos de la E1 (`BOS`/`CHoCH` alcista|bajista · tramo … → 50% CONGELADO en …`).
+   - La lógica se puede comprobar **sin MetaTrader** con `python3 sim_bos_choch.py` (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados de la E1), `python3 sim_smc3.py` (E3: tres temporalidades + POI + gatillo + invalidaciones) y `python3 sim_grid.py` (rejilla: lotaje, distancia, media, cierres parciales y filtros).
 3. Métricas: profit factor, win rate, nº de trades, **máximo drawdown** (crítico por la tabla de riesgo).
 
 ### Si no ves las líneas en el tester
@@ -326,9 +487,21 @@ git show --stat HEAD
   ```bash
   grep -cE "CheckSMCSignal|CheckFVGSignal|CheckOBBounceSignal|InpUseSMC|InpUseFVG|InpUseOBBounce|InpZoneScanBars" "trabajador multichart.mq5"
   ```
-- Estrategia única (debe dar `1`):
+- Dos estrategias (E1 + S2, debe dar `2`):
   ```bash
-  grep -c "STRAT_COUNT      1" "trabajador multichart.mq5"
+  grep -E "^#define STRAT_COUNT" "trabajador multichart.mq5"
+  ```
+- Rompimientos BOS/CHoCH de la E1 v8.56 presentes (debe dar `> 0`):
+  ```bash
+  grep -cE "SE_CheckContinuationBreak|InpConfAcceptBOS|InpConfAcceptCHoCH|m3Break50|confLegLowBuy" "trabajador multichart.mq5"
+  ```
+- Estrategia 3 (SMC multi-temporal) completa (debe dar `> 0`):
+  ```bash
+  grep -cE "InpUseSMC3|Smc3BuildPoi|Smc3ProcessTrigger|Smc3MaintainZones|smc3z\[|InpSmc3EntryMode" "trabajador multichart.mq5"
+  ```
+- Las tres estrategias registradas (debe dar `3`):
+  ```bash
+  grep -cE "^   STRAT_(CONFLUENCIA|S2|SMC3) +=" "trabajador multichart.mq5"
   ```
 - Estrategia única (estructura H1 + confluencia M3) presente (debe dar `> 0`):
   ```bash
@@ -346,6 +519,18 @@ git show --stat HEAD
   ```bash
   grep -cE "MPVirtStratLine|MPDrawVirtualState|falta %d|VIRTUAL → LIVE" "trabajador multichart.mq5"
   ```
+- Rejilla v8.60 presente (debe dar `> 0`):
+  ```bash
+  grep -cE "InpGridEnable|GridStepPoints|GridTryStep|GridRecalcBasket|GridPartialClose|GridCheckTPUsd|gridLegs" "trabajador multichart.mq5"
+  ```
+- Rejilla con TP en USD, sin SL y con lote propio (debe dar `> 0`):
+  ```bash
+  grep -cE "InpGridTPUsd|InpGridStripSL|base=InpGridLotInit" "trabajador multichart.mq5"
+  ```
+- La rejilla NO se aplica a la S2 (`GridUsesStrategy` solo nombra E1 y E3; debe dar `0`):
+  ```bash
+  awk '/^bool GridUsesStrategy/,/^}/' "trabajador multichart.mq5" | grep -c "STRAT_S2"
+  ```
 - Etiquetas sueltas antiguas eliminadas (debe dar `0`):
   ```bash
   grep -cE "void DrawPerPairInfo" "trabajador multichart.mq5"
@@ -360,10 +545,14 @@ git show --stat HEAD
 1. Abre **MetaEditor** → `Archivo > Abrir datos > MQL5 > Experts` → pega `trabajador multichart.mq5`.
 2. Pulsa **F7 (Compilar)**: debe compilar sin errores (usa `Canvas.mqh` de la librería estándar de MT5, ya incluida en la instalación).
 3. En MT5: arrastra el EA al gráfico; en Inputs debe aparecer `ESTRATEGIA ÚNICA: ESTRUCTURA LÍNEAS H1 + CONFLUENCIA M3`, `PANEL MULTI-PAR (TESTER VISUAL + GRÁFICO REAL)` y `PARAMETROS MOTOR DE LINEAS`.
-4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y la entrada 50% M3 cuando se congele. Arriba a la derecha, el **PANEL MULTI-PAR** con la tabla de todos los pares y sus mini-gráficos. En el tester, activa el **modo visual** para verlas.
+4. Verás en el gráfico las líneas L1-L4 del TF (azules/magenta/rojo) y, con la confluencia activa, el rango H1 naranja con su 50% dorado, las zonas verde (compra) y roja (venta), y —cuando se congele— el **tramo del BOS/CHoCH** (rectángulo + extremos punteados) con su **entrada en el 50%**. Arriba a la derecha, el **PANEL MULTI-PAR** con la tabla de todos los pares y sus mini-gráficos. En el tester, activa el **modo visual** para verlas.
 
 ## ⚠️ Advertencia
 
-La tabla de riesgo llega al **2.414% de la base en el nivel 20**. En modo LIVE, una racha larga de
+La tabla de riesgo llega al **2.414% de la base en el nivel 20**. Si activas la **rejilla (v8.60)** el
+riesgo por par ya no es el de una sola operación y, además, **la cesta va SIN stop loss**: puede
+acumular hasta **20 operaciones** con multiplicador de lotaje y permanecer abierta mientras el precio
+siga en contra. Sus únicos frenos son el **circuit breaker** y el **objetivo por pasos**. Prueba en
+demo, con `InpGridLotMult=1.0` y `InpGridMaxLevels` bajo, antes de usarlo en real. En modo LIVE, una racha larga de
 pérdidas puede destruir la cuenta (*blow-up*). Revisa la tabla, `InpMaxDailyLossPct` y `InpXActivacion`
 antes de usarlo con dinero real.
