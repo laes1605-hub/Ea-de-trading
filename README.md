@@ -1,10 +1,11 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.56**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.57**:
 
 - **Estrategia 1 (v8.56)** — la **dirección la manda la estructura de líneas L1-L4 en H1** (bias + rango + zona del 50%) y la **entrada se busca en M3 con un BOS o un CHoCH a favor de la zona de 1 hora**; la orden **LIMIT se coloca en el 50% del tramo del BOS/CHoCH** (del origen del impulso a su extremo), congelado, y **solo una operación abierta por par**. La LIMIT se envía cuando el precio está del lado correcto del 50% (encima en compras / debajo en ventas) y se cancela si el precio cierra M3 más allá del origen del tramo.
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
-- **Una sola operación activa por par (v8.52)**: E1 y S2 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
+- **Estrategia 3 (v8.57) — SMC completo multi-temporal**: **correlación de tres temporalidades**. El **TF alto** (H4 por defecto) manda la **dirección** (bias del motor de líneas) y el **premium/descuento** (solo se compra por debajo del 50% del rango y se vende por encima). El **TF medio** (M15) aporta la **estructura del mercado**: cada **BOS/CHoCH** entrega su tramo y dentro de él se busca el **POI** (order block + imbalance/FVG). El **TF bajo** (M3) da el **gatillo**: con la zona armada, un **BOS o CHoCH** a favor congela la entrada en el **50% del tramo** (o en el 50%/borde del POI, configurable). Magia propia (+3), SL/TP del EA y el mismo ciclo virtual→LIVE.
+- **Una sola operación activa por par (v8.52)**: E1, S2 y E3 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
 - **Objetivo por pasos / profit step (v8.54)**: escalera de escalones **que nunca baja** (`base → base+paso → base+2·paso…`, paso en USD con `InpProfitStepUsd`). Al llegar a un escalón el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **sube la base al escalón logrado**. Se mide por **equity** o por **suma de posiciones cerradas** (`InpStepMeasure`); la base se puede fijar **manualmente** (`InpStepBaseValue`). Las LIVE siguen LIVE y el CV virtual se mantiene.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
 - **1:2 opcional (v8.55)**: `InpUseTrailing12` es el **interruptor maestro** del SL protegido. `true` = comportamiento de siempre (mueve el SL a 1:2 según nivel/MODO AVANZADO); **`false` = no se mueve ningún SL, las operaciones solo buscan el TP** (o salen por su SL original). Aplica igual en **real y en virtual**, y domina sobre el MODO AVANZADO y el automático por nivel.
@@ -26,11 +27,12 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.56)**: estrategia 1 (**estructura L1-L4 H1 → bias/zona del 50%** + **BOS/CHoCH en M3** + **LIMIT en el 50% del tramo**) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.57)**: estrategia 1 (**estructura L1-L4 H1 → bias/zona del 50%** + **BOS/CHoCH en M3** + **LIMIT en el 50% del tramo**) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + **Estrategia 3 (SMC multi-temporal: H4 dirección/descuento → M15 POI OB+FVG → M3 gatillo BOS/CHoCH → 50%)** con magia +3 + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
+| `sim_smc3.py` | **Simulación en Python de la E3 v8.57** (SMC multi-temporal): motor L1-L4 en 3 temporalidades, POI (order block + FVG), armado por toque, gatillo del TF bajo, 50% del tramo y las invalidaciones. 7 escenarios (flujo completo, TF alto en contra, premium, sin POI armada, zona mitigada, origen roto, 50% de la zona). Se ejecuta con `python3 sim_smc3.py`. |
 | `sim_bos_choch.py` | **Simulación en Python de la E1 v8.56** (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados): reproduce el motor y los escenarios de BOS alcista, CHoCH alcista, rompimiento contrario (ignorado), BOS desactivado y cancelación por origen roto. Se ejecuta con `python3 sim_bos_choch.py`. |
 
 ## Estrategia 1 (v8.56) — líneas en H1 + BOS/CHoCH en M3 + 50% del tramo
@@ -142,6 +144,67 @@ La **Estrategia 2** mantiene el **rango L1-L2 de 4H con su 50%** (mismo motor de
 
 **Inputs (grupo `ESTRATEGIA 2`):** `InpUseStrat2`, `InpStrat2TF=H4`, `InpStrat2OBTF=H1`, `InpStrat2ShowZone`, `InpStrat2ShowOBs`, `InpStrat2MaxOBs=5` (por lado visibles), `InpStrat2Lookback=150` (velas 1H escaneadas), `InpStrat2MinAge=10` (antigüedad mínima de la zona), `InpAllowStrat2Orders=true` (permitir órdenes S2).
 
+## Estrategia 3 (v8.57) — SMC multi-temporal: CHoCH/BOS + POI + 50%
+
+La **Estrategia 3** es un **SMC completo** montado sobre el mismo motor de líneas L1-L4 del EA, pero con **correlación de tres temporalidades**: cada una decide una cosa distinta y **el gatillo de entrada solo se acepta si las tres coinciden**.
+
+| Temporalidad | Input | Qué decide |
+|---|---|---|
+| **TF ALTO** | `InpSmc3TFHigh` = **H4** | **Dirección** (bias del motor) y **premium / descuento**: `L1-L2` es el rango y su **50% (EQ)** divide el precio en **prima** (arriba) y **descuento** (abajo). |
+| **TF MEDIO** | `InpSmc3TFMid` = **M15** | **Estructura del mercado**: cada **BOS / CHoCH** entrega su **tramo** (origen → extremo) y dentro de él se busca el **POI** (order block + imbalance). |
+| **TF BAJO** | `InpSmc3TFLow` = **M3** | **Gatillo**: con la zona armada, un **BOS o CHoCH a favor** congela el nivel de entrada. |
+
+**Cómo funciona, paso a paso:**
+
+1. **Dirección (TF alto)** — el motor L1-L4 del TF alto define el **bias**; con `InpSmc3UseDiscount=true` solo se **compra en descuento** (precio ≤ 50% del rango) y solo se **vende en prima** (precio ≥ 50%).
+2. **Estructura y POI (TF medio)** — cuando el motor del TF medio emite un **CHoCH** (cambio de estructura) o un **BOS** (continuación), se toma su **tramo** (`LastBreakHigh/Low` = origen → extremo) y se busca dentro de él:
+   - **ORDER BLOCK** = la **última vela contraria** antes del impulso (bajista → demanda; alcista → oferta).
+   - **IMBALANCE / FVG** = hueco de 3 velas dentro del impulso que **solape** con el OB (`InpSmc3UseFVG`). Si solapan, la **zona = unión**; con `InpSmc3RequireFVG=true` se descartan las zonas sin imbalance.
+   - La zona tiene que estar en la **mitad correcta del tramo** (demanda en descuento del tramo / oferta en prima).
+   - El tamaño mínimo del tramo se filtra con `InpSmc3MinLegPts` (0 = sin filtro).
+3. **Vigencia de la zona** — la zona se **ARMA** cuando el precio **vuelve a entrar** en ella; se **MITIGA** (muere) cuando el **cierre del TF medio la atraviesa** por completo; **caduca** a las `InpSmc3ZoneBars` velas del TF medio. Hay como máximo `InpSmc3MaxZones` zonas vivas por par (se recicla la más vieja que no esté en uso).
+4. **Gatillo (TF bajo)** — con la zona **armada**, un **BOS o CHoCH** del TF bajo **a favor** (`InpSmc3AcceptBOS` / `InpSmc3AcceptCHoCH`), **posterior al toque**, congela el **nivel de entrada** según `InpSmc3EntryMode`:
+   - `SMC3_ENTRY_LEG50` (**defecto**) → **50% del tramo del gatillo** (igual criterio que la E1).
+   - `SMC3_ENTRY_ZONE50` → **50% de la zona POI**.
+   - `SMC3_ENTRY_ZONEPROX` → **borde proximal** de la zona (el más cercano al precio).
+5. **Correlación obligatoria** — el gatillo se **descarta** (con su motivo en el log) si: el **bias del TF alto** no coincide, el precio está en **premium/descuento equivocado**, el **TF medio no acompaña**, no hay **POI armada** de ese lado o el evento tiene más de 3 velas de antigüedad.
+6. **Orden** — la **LIMIT** se coloca cuando el precio está del lado correcto del nivel (encima en compras / debajo en ventas), con el **SL/TP de la configuración del EA** (`InpSL_Points`/`InpTP_Points` o los del símbolo) y el **lote del NIVEL del par**. Ciclo **virtual → vOPEN → LIVE** igual que E1/E2, con **magia +3**.
+7. **Invalidaciones** — se retira la entrada si el **cierre del TF de gatillo** rompe el **origen del tramo** o, con `InpSmc3CancelZoneBreak=true`, si rompe el **lado contrario de la zona POI**.
+8. **Una sola operación por par** — al abrirse una posición se cancelan los flujos y límites de las otras estrategias del par (y viceversa).
+
+**Objetos en el gráfico:**
+
+| Objeto | Color | Significado |
+|---|---|---|
+| `3T H4 techo` / `3T H4 suelo` / `3T 50%` | 🟤 Marrón raya-punto / punteada | Rango del TF alto y su 50% (premium / descuento) |
+| `3 tramo` | 🟤 Punteada | Extremos del tramo del último rompimiento del TF medio |
+| `POI C/V …` (rectángulo + etiqueta) | 🟢 Verde / 🔴 Rojo | Zona POI (order block + FVG). La etiqueta dice `POI`, `ARMADA` o `ENTRADA` |
+| `ENTRADA 3 COMPRA` / `ENTRADA 3 VENTA` | 🟢 Lima / 🔴 Rojo discontinuo | Nivel congelado de la LIMIT |
+
+**Inputs (grupo `ESTRATEGIA 3`):**
+
+| Input | Default | Significado |
+|---|---|---|
+| `InpUseSMC3` | `true` | Activa la estrategia. |
+| `InpAllowSmc3Orders` | `true` | Permite órdenes (virtuales y LIVE). |
+| `InpSmc3TFHigh` | `H4` | TF de dirección + premium/descuento. |
+| `InpSmc3TFMid` | `M15` | TF de estructura → tramo → POI. |
+| `InpSmc3TFLow` | `M3` | TF del gatillo. |
+| `InpSmc3EntryMode` | `LEG50` | Nivel de la LIMIT: 50% del tramo / 50% de la zona / borde proximal. |
+| `InpSmc3UseDiscount` | `true` | Solo comprar en descuento y vender en prima. |
+| `InpSmc3UseFVG` | `true` | Incorporar el imbalance a la zona del OB. |
+| `InpSmc3RequireFVG` | `false` | Exigir imbalance (descarta zonas sin FVG). |
+| `InpSmc3AcceptBOS` | `true` | Aceptar BOS en el TF de gatillo. |
+| `InpSmc3AcceptCHoCH` | `true` | Aceptar CHoCH en el TF de gatillo. |
+| `InpSmc3CancelZoneBreak` | `true` | Cancelar si el precio cierra fuera de la zona. |
+| `InpSmc3ZoneLookback` | `8` | Velas del TF medio hacia atrás para buscar el OB/FVG. |
+| `InpSmc3ZoneBars` | `120` | Vida máxima de una zona (velas del TF medio). |
+| `InpSmc3MaxZones` | `4` | Zonas POI vivas por par (1-8). |
+| `InpSmc3MinLegPts` | `0` | Tamaño mínimo del tramo del TF medio (puntos; 0 = sin filtro). |
+| `InpSmc3Show` | `true` | Dibujar rango, tramo, POI y entrada. |
+
+> **Nota:** la E3 **no toca** la lógica de E1 ni de S2 — usa **sus propios motores** (tres instancias del motor de líneas) y su **propia magia (+3)**. Si prefieres el criterio clásico de entrada dentro del POI, cambia `InpSmc3EntryMode` a `ZONE50` o `ZONEPROX`.
+
 ## Líneas visibles en el gráfico
 
 Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
@@ -156,6 +219,10 @@ Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 | Zona COMPRA / VENTA H1 | 🟢 Verde / 🔴 Rojo | Rectángulo relleno | Mitad inferior / superior del rango H1 |
 | `ENTRADA (50% BOS M3)` / `(50% CHoCH M3)` | 🟢 Lima / 🔴 Rojo | Discontinua | 50% del **tramo** del BOS/CHoCH de M3 congelado (nivel de la orden limit) |
 | `TRAMO BOS/CHoCH ...` | 🟢 Verde / 🔴 Rojo | Punteada + rectángulo relleno | Origen y extremo del tramo que rompió (v8.56) |
+| `3T H4 techo` / `suelo` / `3T 50%` | 🟤 Marrón | Raya-punto / punteada | Rango y 50% del TF alto de la **Estrategia 3** (v8.57) |
+| `3 tramo` | 🟤 Marrón | Punteada | Tramo del último rompimiento del TF medio (E3) |
+| `POI C/V` (rectángulo) | 🟢/🔴 relleno | — | Zona POI (order block + FVG) de la **Estrategia 3** |
+| `ENTRADA 3 COMPRA/VENTA` | 🟢 Lima / 🔴 Rojo | Discontinua | Nivel congelado (50% del tramo del gatillo) de la E3 |
 
 - Se dibujan en el gráfico **en vivo y también en el Strategy Tester (modo visual)**.
 - Etiqueta al lado derecho de cada línea con su nombre y precio (ej. `L1  1.08452`).
@@ -189,18 +256,18 @@ Extras de esta versión:
 - El resumen de validación por pares ya **no se imprime en cada tick** (inundaba el journal): ahora va al log cada 5 min y su versión visual es el panel.
 - Se eliminaron las etiquetas sueltas de 7px (`PAIRLBL_*`, `VALIDA_SUM`) que se encimaban; si el panel está apagado en el tester, vuelve el `Comment()` de siempre como respaldo.
 
-## Nivel compartido entre E1 y S2 (v8.52) — una sola operación activa por par
+## Nivel compartido entre E1, S2 y E3 (v8.52/v8.57) — una sola operación activa por par
 
-Las dos estrategias activas (Estrategia 1 `CONFL` y Estrategia 2 `S2-OB`) operan **sobre la misma tabla de niveles del par**:
+Las **tres** estrategias activas (Estrategia 1 `CONFL`, Estrategia 2 `S2-OB` y Estrategia 3 `SMC3`) operan **sobre la misma tabla de niveles del par**:
 
-1. **Nivel compartido**: el nivel (`PairLevel`, 1–20) es **por par**, no por estrategia. Cualquiera de las dos que coloque la LIMIT usa el nivel actual de la tabla; el lote y el SL/TP se calculan con ese nivel.
-2. **Primera que activa, se queda**: pueden existir señal/espera o límites pendientes de ambas al mismo tiempo, pero **en cuanto una activa** (fill de la LIMIT virtual → `vOPEN`, o posición real) **se cancelan los límites restantes del par** (virtuales y reales), se limpian las esperas/entradas congeladas de la otra y el par espera el resultado. La otra estrategia no puede congelar ni colocar mientras la primera tiene la operación activa.
-3. **Al cerrar la operación** (sea de E1 o de S2):
+1. **Nivel compartido**: el nivel (`PairLevel`, 1–20) es **por par**, no por estrategia. Cualquiera de las tres que coloque la LIMIT usa el nivel actual de la tabla; el lote y el SL/TP se calculan con ese nivel.
+2. **Primera que activa, se queda**: pueden existir señal/espera o límites pendientes de las tres al mismo tiempo, pero **en cuanto una activa** (fill de la LIMIT virtual → `vOPEN`, o posición real) **se cancelan los límites restantes del par** (virtuales y reales), se limpian las esperas/entradas congeladas de las demás y el par espera el resultado. Las otras estrategias no pueden congelar ni colocar mientras la primera tiene la operación activa.
+3. **Al cerrar la operación** (sea de E1, de S2 o de E3):
    - **TP** (ganancia limpia) → **nivel = 1** y CV = 1.
    - **SL sin trailing** (pérdida) → **nivel +1** y CV +1.
    - **SL con trailing/protección** (ganancia protegida) → **retroceso −3** posiciones si CV < 10, **−4** si CV ≥ 10 (regla de Asistente 3).
-4. La cancelación de la otra estrategia **no cuenta como pérdida** (no toca nivel ni CV): es solo la limpieza de su flujo; si estaba en espera o con zona armada, necesitará una nueva señal/CHoCH después del resultado.
-5. Con posición real abierta solo queda la estrategia que la abrió (LIVE); la otra se cancela y conserva su CV para la siguiente ronda. El `liveLogicLevel` de la LIVE no se toca (rige el 1:2).
+4. La cancelación de las otras estrategias **no cuenta como pérdida** (no toca nivel ni CV): es solo la limpieza de su flujo; si estaba en espera o con zona armada, necesitará una nueva señal/CHoCH después del resultado.
+5. Con posición real abierta solo queda la estrategia que la abrió (LIVE); las demás se cancelan y conservan su CV para la siguiente ronda. El `liveLogicLevel` de la LIVE no se toca (rige el 1:2).
 
 **En vivo se ve así:** `vOPEN [EURUSD/CONFL] ...` → `S2 [EURUSD] ... eliminada` (o al revés); cuando la primera cierra, el journal muestra `TP → nivel 1` / `SL → nivel +1` / `retroceso −3/−4` y el panel (pestaña ESTRAT) actualiza el nivel compartido.
 
@@ -327,7 +394,7 @@ El lote siempre sale de la **tabla de riesgo de 20 niveles** (% de la base). Lo 
    - El **PANEL MULTI-PAR** aparece arriba a la derecha: tabla con el estado de cada par + mini-gráficos con sus líneas. Si pruebas varios pares (rellenando `InpSymbol1..20`), cada par abierto muestra su mini-gráfico con L1/L2, H1, 50%, entrada y SL/TP — todo en el único gráfico del tester.
    - En el log verás `TESTER: símbolo del gráfico [XXX] añadido automáticamente.` y las líneas calculadas (`LINEAS [...] L1=… L2=…`).
 2. En el log: `vOPEN` (simulación), `LIVE`, `CV/CR`, `CIRCUIT BREAKER`, y los rompimientos de la E1 (`BOS`/`CHoCH` alcista|bajista · tramo … → 50% CONGELADO en …`).
-   - La lógica se puede comprobar **sin MetaTrader** con `python3 sim_bos_choch.py` (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados de la E1).
+   - La lógica se puede comprobar **sin MetaTrader** con `python3 sim_bos_choch.py` (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados de la E1) y `python3 sim_smc3.py` (E3: tres temporalidades + POI + gatillo + invalidaciones).
 3. Métricas: profit factor, win rate, nº de trades, **máximo drawdown** (crítico por la tabla de riesgo).
 
 ### Si no ves las líneas en el tester
@@ -361,6 +428,14 @@ git show --stat HEAD
 - Rompimientos BOS/CHoCH de la E1 v8.56 presentes (debe dar `> 0`):
   ```bash
   grep -cE "SE_CheckContinuationBreak|InpConfAcceptBOS|InpConfAcceptCHoCH|m3Break50|confLegLowBuy" "trabajador multichart.mq5"
+  ```
+- Estrategia 3 (SMC multi-temporal) completa (debe dar `> 0`):
+  ```bash
+  grep -cE "InpUseSMC3|Smc3BuildPoi|Smc3ProcessTrigger|Smc3MaintainZones|smc3z\[|InpSmc3EntryMode" "trabajador multichart.mq5"
+  ```
+- Las tres estrategias registradas (debe dar `3`):
+  ```bash
+  grep -cE "^   STRAT_(CONFLUENCIA|S2|SMC3) +=" "trabajador multichart.mq5"
   ```
 - Estrategia única (estructura H1 + confluencia M3) presente (debe dar `> 0`):
   ```bash

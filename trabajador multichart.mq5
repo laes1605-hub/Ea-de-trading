@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.56"
+#property version   "8.57"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -49,6 +49,25 @@ input int             InpStrat2MaxOBs    = 5;          // Máx. order blocks por
 input int             InpStrat2Lookback  = 150;        // Velas 1H a revisar para encontrar order blocks
 input int             InpStrat2MinAge    = 10;         // Velas 1H mínimas de antigüedad de la zona para ser válida
 input bool            InpAllowStrat2Orders=true;      // Permitir órdenes S2 (virtuales y LIVE)
+
+input group "=== ESTRATEGIA 3: SMC MULTI-TEMPORAL (BOS/CHoCH + POI) ==="
+input bool            InpUseSMC3           = true;      // Activar Estrategia 3 (SMC multi-temporal)
+input bool            InpAllowSmc3Orders   = true;      // Permitir órdenes E3 (virtuales y LIVE)
+input ENUM_TIMEFRAMES InpSmc3TFHigh        = PERIOD_H4; // TF de dirección: bias + premium/descuento (50% del rango)
+input ENUM_TIMEFRAMES InpSmc3TFMid         = PERIOD_M15;// TF de estructura: BOS/CHoCH → tramo → POI (OB/FVG)
+input ENUM_TIMEFRAMES InpSmc3TFLow         = PERIOD_M3; // TF de gatillo: BOS/CHoCH → nivel de entrada
+input ENUM_SMC3_ENTRY InpSmc3EntryMode     = SMC3_ENTRY_LEG50; // Nivel de la LIMIT
+input bool            InpSmc3UseDiscount   = true;      // Comprar solo en descuento / vender solo en prima (50% TF alto)
+input bool            InpSmc3UseFVG        = true;      // Incorporar el imbalance (FVG) a la zona del order block
+input bool            InpSmc3RequireFVG    = false;     // Exigir imbalance: descartar zonas POI sin FVG
+input bool            InpSmc3AcceptBOS     = true;      // E3: aceptar BOS en el TF de gatillo
+input bool            InpSmc3AcceptCHoCH   = true;      // E3: aceptar CHoCH en el TF de gatillo
+input bool            InpSmc3CancelZoneBreak = true;    // Cancelar la entrada si el precio cierra fuera de la zona POI
+input int             InpSmc3ZoneLookback  = 8;         // Velas del TF medio hacia atrás del rompimiento para el POI
+input int             InpSmc3ZoneBars      = 120;       // Vida máxima de una zona POI (velas del TF medio)
+input int             InpSmc3MaxZones      = 4;         // Máx. zonas POI vivas por par (1-8)
+input double          InpSmc3MinLegPts     = 0.0;       // Tamaño mínimo del tramo del TF medio (puntos, 0 = sin filtro)
+input bool            InpSmc3Show          = true;      // Dibujar rango del TF alto, tramo, POI y entrada
 
 input group "=== GESTIÓN AVANZADA 1:2 (GLOBAL / FALLBACK) ==="
 input bool   InpUseTrailing12    = true;   // ¿Activar el 1:2? true=mueve el SL a protección · false=solo buscar el TP
@@ -280,7 +299,10 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 #define TAB_CONFIG       3
 #define TAB_ESTRAT       4
 #define N_TABS           5
-#define STRAT_COUNT      2
+#define STRAT_COUNT      3
+#define SMC3_MAX_ZONES   8           // capacidad de zonas POI de la Estrategia 3
+#define SE_PREFIX      "GQP_SE_"     // prefijo de TODOS los objetos del motor de líneas
+#define SE_LBL_OFF_BARS 6            // barras hacia el futuro para la etiqueta
 #define DRAG_ZONE        "GQP_DRAG"
 #define GV_PREFIX        "GQP_"
 #define OBJ_TITLE        "GQP_TITLE"
@@ -302,7 +324,16 @@ input bool   InpShowStructureLines  = true; // dibujar líneas L1/L2/EQ/L3/L4 en
 enum ENUM_STRATEGY_ID
 {
    STRAT_CONFLUENCIA  = 0,   // Estrategia 1: estructura de líneas L1-L4 (H1) + apertura confluencia (M3)
-   STRAT_S2           = 1    // Estrategia 2: OB + imbalance históricos (zona 4H) + CHoCH M3 + 50% M3
+   STRAT_S2           = 1,   // Estrategia 2: OB + imbalance históricos (zona 4H) + CHoCH M3 + 50% M3
+   STRAT_SMC3         = 2    // Estrategia 3: SMC multi-temporal (BOS/CHoCH + POI OB/FGV + 50%)
+};
+
+//--- Estrategia 3: cómo se fija el nivel de la orden LIMIT ---------
+enum ENUM_SMC3_ENTRY
+{
+   SMC3_ENTRY_LEG50    = 0,  // 50% del tramo del BOS/CHoCH del TF de gatillo
+   SMC3_ENTRY_ZONE50   = 1,  // 50% de la zona POI (order block / FVG)
+   SMC3_ENTRY_ZONEPROX = 2   // Borde proximal de la zona POI
 };
 
 enum ENUM_STRUCTURE_BIAS
@@ -404,6 +435,29 @@ struct Strat2OrderBlock
    datetime EntryTime;          // momento en que se congeló
 };
 
+//--- Zona POI de la Estrategia 3: order block (+imbalance) del tramo
+//    que rompió la estructura del TF medio. La zona se ARMA cuando el
+//    precio vuelve a entrar en ella y espera el gatillo del TF bajo.
+struct Smc3Zone
+{
+   bool     Active;        // zona viva (no caducada ni mitigada)
+   bool     IsBull;        // true = demanda (compra) · false = oferta (venta)
+   double   Top, Bottom;   // zona (OB ∪ FVG)
+   double   OBHigh, OBLow; // vela del order block
+   datetime OBTime;        // apertura de la vela del OB
+   bool     HasFVG;        // la zona incluye un imbalance
+   double   FVGTop, FVGBot;
+   double   LegHigh, LegLow;   // tramo del rompimiento que la originó
+   datetime LegTime;
+   datetime Created;       // para caducidad y reciclaje
+   bool     Mitigated;     // el precio atravesó la zona
+   bool     Armed;         // precio dentro de la zona → esperando gatillo
+   datetime ArmedTime;
+   bool     EntryFrozen;   // gatillo del TF bajo → nivel congelado
+   double   EntryPrice;
+   datetime EntryTime;
+};
+
 struct SymbolSystemState
 {
    bool     hasLive;
@@ -473,6 +527,33 @@ struct SymbolSystemState
    double   s2VPendBuyPrice;
    bool     s2VPendSell;     // orden limit VIRTUAL de venta activa
    double   s2VPendSellPrice;
+
+   //--- estado de la ESTRATEGIA 3 (SMC multi-temporal) --------------
+   StructureEngine SE_SMC_H;      // TF alto: dirección + rango (premium/descuento)
+   StructureEngine SE_SMC_M;      // TF medio: estructura → tramo → POI
+   StructureEngine SE_SMC_L;      // TF bajo: gatillo (BOS/CHoCH)
+   datetime smc3HLastBar;         // última vela del TF alto procesada
+   datetime smc3MLastBar;         // última vela del TF medio procesada
+   datetime smc3LLastBar;         // última vela del TF bajo procesada
+   int      smc3BreakDirM;        // rompimiento del TF medio pendiente (+1/-1)
+   bool     smc3BreakIsChochM;    // true = CHoCH · false = BOS
+   datetime smc3BreakTimeM;
+   double   smc3LegHighM, smc3LegLowM;   // tramo del último rompimiento medio
+   Smc3Zone smc3z[SMC3_MAX_ZONES];       // zonas POI vivas
+   int      smc3BreakDirL;        // gatillo del TF bajo pendiente (+1/-1)
+   bool     smc3TrigIsChoch;
+   datetime smc3BreakTimeL;
+   double   smc3TrigHigh, smc3TrigLow, smc3Trig50;  // tramo del gatillo
+   bool     smc3WaitBuy, smc3WaitSell;             // nivel congelado, esperando precio
+   double   smc3EntryBuy, smc3EntrySell;           // nivel de entrada congelado
+   double   smc3EntryLegHighBuy,  smc3EntryLegLowBuy;   // tramo del gatillo (compra)
+   double   smc3EntryLegHighSell, smc3EntryLegLowSell;  // tramo del gatillo (venta)
+   double   smc3EntryZoneTopBuy,  smc3EntryZoneBotBuy;  // zona POI usada (compra)
+   double   smc3EntryZoneTopSell, smc3EntryZoneBotSell; // zona POI usada (venta)
+   bool     smc3VPendBuy;         // LIMIT virtual de compra activa
+   double   smc3VPendBuyPrice;
+   bool     smc3VPendSell;        // LIMIT virtual de venta activa
+   double   smc3VPendSellPrice;
 };
 
 struct TradeRecord
@@ -593,6 +674,29 @@ void ConfluenciaDeleteRealPendings(int si);
 void Strat2DeleteRealPendings(int si);
 void SelectNextLiveStrategy(int si);
 void Strat2Update(int si);
+void UpdateSmc3(int si);
+void Smc3ResetState(int si);
+void Smc3ResetZones(int si);
+void Smc3CancelFlow(int si);
+void Smc3OnTradeClosed(int si);
+void Smc3OnMidBreak(int si,int dir,bool isChoch,double legH,double legL);
+void Smc3OnHighChange(int si,int dir);
+void Smc3MaintainZones(int si);
+void Smc3ProcessTrigger(int si);
+void Smc3TryPlace(int si);
+bool Smc3PlacePending(int si,int dir,double price);
+bool Smc3HasPending(int si);
+void Smc3CheckVirtualFills(int si);
+void Smc3DeleteRealPendings(int si);
+void Smc3CheckLegInvalid(int si);
+void Smc3UnfreezeSide(int si,bool bull);
+void Smc3ManagePendings(int si);
+int  Smc3ArmedCount(int si,bool bull);
+void DrawSmc3(int si);
+void Smc3DeleteObjects(int si);
+void SE_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,int w,string lbl);
+void SE_TimeRect(string name,datetime t1,datetime t2,double p1,double p2,color clr);
+void SE_ZoneLabel(string name,double price,string txt,color clr);
 void Strat2DeleteObjects(int si);
 void Strat2ResetState(int si);
 void DrawStrat2(int si);
@@ -649,7 +753,8 @@ long GetStrategyMagic(int symIdx, int sid)
    //    las versiones anteriores: así se siguen gestionando las órdenes y
    //    posiciones LIVE ya existentes (no quedan huérfanas al actualizar).
    return InpMagicNumber+(long)(symIdx*10)+
-          ((sid==STRAT_CONFLUENCIA)?1:((sid==STRAT_S2)?2:0));
+          ((sid==STRAT_CONFLUENCIA)?1:((sid==STRAT_S2)?2:
+           ((sid==STRAT_SMC3)?3:0)));
 }
 
 long MagicManual(int symIdx)
@@ -696,6 +801,7 @@ string GetStrategyName(int sid)
    switch(sid)
    { case STRAT_CONFLUENCIA:  return "CONFL";
      case STRAT_S2:           return "S2-OB";
+     case STRAT_SMC3:         return "SMC3";
      default:                 return "???"; }
 }
 
@@ -1262,6 +1368,28 @@ void InitSystemState(int si)
    g_SysState[si].s2VPendSell=false; g_SysState[si].s2VPendSellPrice=0.0;
    for(int k=0;k<STRAT2_STORED_OBS;k++) ZeroMemory(g_SysState[si].ob2[k]);
 
+   //--- Estrategia 3: SMC multi-temporal (se recalcula desde el historial)
+   ZeroMemory(g_SysState[si].SE_SMC_H);
+   ZeroMemory(g_SysState[si].SE_SMC_M);
+   ZeroMemory(g_SysState[si].SE_SMC_L);
+   g_SysState[si].smc3HLastBar=0;   g_SysState[si].smc3MLastBar=0;
+   g_SysState[si].smc3LLastBar=0;
+   g_SysState[si].smc3BreakDirM=0;  g_SysState[si].smc3BreakTimeM=0;
+   g_SysState[si].smc3LegHighM=0.0; g_SysState[si].smc3LegLowM=0.0;
+   g_SysState[si].smc3BreakIsChochM=false;
+   g_SysState[si].smc3BreakDirL=0;  g_SysState[si].smc3BreakTimeL=0;
+   g_SysState[si].smc3TrigHigh=0.0; g_SysState[si].smc3TrigLow=0.0;
+   g_SysState[si].smc3Trig50=0.0;   g_SysState[si].smc3TrigIsChoch=false;
+   g_SysState[si].smc3WaitBuy=false;   g_SysState[si].smc3WaitSell=false;
+   g_SysState[si].smc3EntryBuy=0.0;    g_SysState[si].smc3EntrySell=0.0;
+   g_SysState[si].smc3EntryLegHighBuy=0.0;  g_SysState[si].smc3EntryLegLowBuy=0.0;
+   g_SysState[si].smc3EntryLegHighSell=0.0; g_SysState[si].smc3EntryLegLowSell=0.0;
+   g_SysState[si].smc3EntryZoneTopBuy=0.0;  g_SysState[si].smc3EntryZoneBotBuy=0.0;
+   g_SysState[si].smc3EntryZoneTopSell=0.0; g_SysState[si].smc3EntryZoneBotSell=0.0;
+   g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+   g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0;
+   for(int k=0;k<SMC3_MAX_ZONES;k++) ZeroMemory(g_SysState[si].smc3z[k]);
+
    g_SysState[si].m3ChochDir=0;        g_SysState[si].m3ChochTime=0;
    g_SysState[si].m3BreakDir=0;        g_SysState[si].m3BreakTime=0;
    g_SysState[si].m3BreakIsChoch=false;g_SysState[si].m3Break50=0.0;
@@ -1276,7 +1404,7 @@ void InitSystemState(int si)
    g_SysState[si].confVPendBuy=false;  g_SysState[si].confVPendBuyPrice=0.0;
    g_SysState[si].confVPendSell=false; g_SysState[si].confVPendSellPrice=0.0;
 
-   bool ena[STRAT_COUNT]={InpUseConfluencia,InpUseStrat2};
+   bool ena[STRAT_COUNT]={InpUseConfluencia,InpUseStrat2,InpUseSMC3};
    for(int st=0;st<STRAT_COUNT;st++)
    { g_SysState[si].strategies[st].enabled        = ena[st];
      g_SysState[si].strategies[st].isLive         = false;
@@ -1314,6 +1442,13 @@ void InitGlobalVarKeys()
 
 string GetStateFileName()
 { return "GQP_v830_"+IntegerToString(InpMagicNumber)+".dat"; }
+
+//--- prefijo de las claves de estado de cada estrategia en el .dat
+string StratKeyPrefix(int st)
+{ if(st==STRAT_CONFLUENCIA) return "ST0_";
+  if(st==STRAT_S2)          return "ST2_";
+  if(st==STRAT_SMC3)        return "ST3_";
+  return "ST"+IntegerToString(st)+"_"; }
 
 void SaveState()
 {
@@ -1353,7 +1488,7 @@ void SaveStateToFile()
      FileWriteString(h,sp+"HASLIVE="+(g_SysState[si].hasLive?"1":"0")                  +"\n");
      FileWriteString(h,sp+"ALIVE="  +IntegerToString(g_SysState[si].activeLiveStrategy)+"\n");
      for(int st=0;st<STRAT_COUNT;st++)
-     { string pp=sp+((st==STRAT_S2)?"ST2_":"ST"+IntegerToString(st)+"_");
+     { string pp=sp+StratKeyPrefix(st);
        FileWriteString(h,pp+"LIVE="    +(g_SysState[si].strategies[st].isLive?"1":"0")         +"\n");
        FileWriteString(h,pp+"CV="      +IntegerToString(g_SysState[si].strategies[st].CV)      +"\n");
        FileWriteString(h,pp+"CVMAX="   +IntegerToString(g_SysState[si].strategies[st].CV_Max)  +"\n");
@@ -1396,7 +1531,23 @@ void SaveStateToFile()
      FileWriteString(h,sp+"S2_VPEND_B="+(g_SysState[si].s2VPendBuy?"1":"0")            +"\n");
      FileWriteString(h,sp+"S2_VPEND_BP="+DoubleToString(g_SysState[si].s2VPendBuyPrice,8)+"\n");
      FileWriteString(h,sp+"S2_VPEND_S="+(g_SysState[si].s2VPendSell?"1":"0")           +"\n");
-     FileWriteString(h,sp+"S2_VPEND_SP="+DoubleToString(g_SysState[si].s2VPendSellPrice,8)+"\n"); }
+     FileWriteString(h,sp+"S2_VPEND_SP="+DoubleToString(g_SysState[si].s2VPendSellPrice,8)+"\n");
+     FileWriteString(h,sp+"SMC3_ENTRY_B="+DoubleToString(g_SysState[si].smc3EntryBuy,8)      +"\n");
+     FileWriteString(h,sp+"SMC3_ENTRY_S="+DoubleToString(g_SysState[si].smc3EntrySell,8)     +"\n");
+     FileWriteString(h,sp+"SMC3_LEG_BH=" +DoubleToString(g_SysState[si].smc3EntryLegHighBuy,8)+"\n");
+     FileWriteString(h,sp+"SMC3_LEG_BL=" +DoubleToString(g_SysState[si].smc3EntryLegLowBuy,8) +"\n");
+     FileWriteString(h,sp+"SMC3_LEG_SH=" +DoubleToString(g_SysState[si].smc3EntryLegHighSell,8)+"\n");
+     FileWriteString(h,sp+"SMC3_LEG_SL=" +DoubleToString(g_SysState[si].smc3EntryLegLowSell,8) +"\n");
+     FileWriteString(h,sp+"SMC3_ZON_BT=" +DoubleToString(g_SysState[si].smc3EntryZoneTopBuy,8) +"\n");
+     FileWriteString(h,sp+"SMC3_ZON_BB=" +DoubleToString(g_SysState[si].smc3EntryZoneBotBuy,8) +"\n");
+     FileWriteString(h,sp+"SMC3_ZON_ST=" +DoubleToString(g_SysState[si].smc3EntryZoneTopSell,8)+"\n");
+     FileWriteString(h,sp+"SMC3_ZON_SB=" +DoubleToString(g_SysState[si].smc3EntryZoneBotSell,8)+"\n");
+     FileWriteString(h,sp+"SMC3_WAIT_B=" +(g_SysState[si].smc3WaitBuy?"1":"0")               +"\n");
+     FileWriteString(h,sp+"SMC3_WAIT_S=" +(g_SysState[si].smc3WaitSell?"1":"0")              +"\n");
+     FileWriteString(h,sp+"SMC3_VPEND_B="+(g_SysState[si].smc3VPendBuy?"1":"0")              +"\n");
+     FileWriteString(h,sp+"SMC3_VPEND_BP="+DoubleToString(g_SysState[si].smc3VPendBuyPrice,8) +"\n");
+     FileWriteString(h,sp+"SMC3_VPEND_S="+(g_SysState[si].smc3VPendSell?"1":"0")             +"\n");
+     FileWriteString(h,sp+"SMC3_VPEND_SP="+DoubleToString(g_SysState[si].smc3VPendSellPrice,8)+"\n"); }
    FileWriteString(h,"SAVED_AT="+TimeToString(TimeCurrent())+"\n");
    FileClose(h);
 }
@@ -1483,9 +1634,25 @@ void LoadStateFromFile()
          else if(rest=="S2_VPEND_BP") g_SysState[si].s2VPendBuyPrice=StringToDouble(val);
          else if(rest=="S2_VPEND_S")  g_SysState[si].s2VPendSell=(StringToInteger(val)>0);
          else if(rest=="S2_VPEND_SP") g_SysState[si].s2VPendSellPrice=StringToDouble(val);
+         else if(rest=="SMC3_ENTRY_B") g_SysState[si].smc3EntryBuy=StringToDouble(val);
+         else if(rest=="SMC3_ENTRY_S") g_SysState[si].smc3EntrySell=StringToDouble(val);
+         else if(rest=="SMC3_LEG_BH")  g_SysState[si].smc3EntryLegHighBuy=StringToDouble(val);
+         else if(rest=="SMC3_LEG_BL")  g_SysState[si].smc3EntryLegLowBuy=StringToDouble(val);
+         else if(rest=="SMC3_LEG_SH")  g_SysState[si].smc3EntryLegHighSell=StringToDouble(val);
+         else if(rest=="SMC3_LEG_SL")  g_SysState[si].smc3EntryLegLowSell=StringToDouble(val);
+         else if(rest=="SMC3_ZON_BT")  g_SysState[si].smc3EntryZoneTopBuy=StringToDouble(val);
+         else if(rest=="SMC3_ZON_BB")  g_SysState[si].smc3EntryZoneBotBuy=StringToDouble(val);
+         else if(rest=="SMC3_ZON_ST")  g_SysState[si].smc3EntryZoneTopSell=StringToDouble(val);
+         else if(rest=="SMC3_ZON_SB")  g_SysState[si].smc3EntryZoneBotSell=StringToDouble(val);
+         else if(rest=="SMC3_WAIT_B")  g_SysState[si].smc3WaitBuy=(StringToInteger(val)>0);
+         else if(rest=="SMC3_WAIT_S")  g_SysState[si].smc3WaitSell=(StringToInteger(val)>0);
+         else if(rest=="SMC3_VPEND_B") g_SysState[si].smc3VPendBuy=(StringToInteger(val)>0);
+         else if(rest=="SMC3_VPEND_BP")g_SysState[si].smc3VPendBuyPrice=StringToDouble(val);
+         else if(rest=="SMC3_VPEND_S") g_SysState[si].smc3VPendSell=(StringToInteger(val)>0);
+         else if(rest=="SMC3_VPEND_SP")g_SysState[si].smc3VPendSellPrice=StringToDouble(val);
          else
          { for(int st=0;st<STRAT_COUNT;st++)
-           { string pp=(st==STRAT_S2)?"ST2_":"ST"+IntegerToString(st)+"_";
+           { string pp=StratKeyPrefix(st);
              //--- compatibilidad: en archivos antiguos la estrategia de
              //    confluencia estaba en ST1_ (con PERSONAL en ST0_)
              if(StringFind(rest,pp)!=0)
@@ -1559,6 +1726,9 @@ void ClearVirtualState(int si,int st)
    if(st==STRAT_S2)
    { g_SysState[si].s2VPendBuy=false;  g_SysState[si].s2VPendBuyPrice=0.0;
      g_SysState[si].s2VPendSell=false; g_SysState[si].s2VPendSellPrice=0.0; }
+   if(st==STRAT_SMC3)
+   { g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+     g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0; }
 }
 
 //--- cierre VIRTUAL (simulación): MISMO régimen que LIVE.
@@ -1588,6 +1758,7 @@ void OnVirtualSL_Original(int si, int st)
            " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
    if(!g_SysState[si].hasLive&&
       g_SysState[si].strategies[st].CV>=(InpXActivacion+1))
       SelectNextLiveStrategy(si);
@@ -1612,6 +1783,7 @@ void OnVirtualSL_Protected(int si, int st, int openLevel)
            " Lot:",DoubleToString(GetPairLot(si),2)); }
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
 }
 
 void OnVirtualTP(int si, int st)
@@ -1628,6 +1800,7 @@ void OnVirtualTP(int si, int st)
    g_SysState[si].strategies[st].CV=1;
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
 }
 
 //--- cierre LIVE (real)
@@ -1643,6 +1816,7 @@ void OnLiveSL_Original(int si, int st)
          " Lot:",DoubleToString(GetPairLot(si),2));
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
 }
 
 void OnLiveSL_Protected(int si, int st, int openLevel)
@@ -1659,6 +1833,7 @@ void OnLiveSL_Protected(int si, int st, int openLevel)
          " Lot:",DoubleToString(GetPairLot(si),2));
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
 }
 
 void OnLiveTP(int si, int st)
@@ -1670,6 +1845,7 @@ void OnLiveTP(int si, int st)
    PairLevelReset(si);
    if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
    if(st==STRAT_S2) Strat2OnTradeClosed(si);
+   if(st==STRAT_SMC3) Smc3OnTradeClosed(si);
    g_SysState[si].strategies[st].isLive=false;
    g_SysState[si].hasLive=false;
    g_SysState[si].activeLiveStrategy=-1;
@@ -1738,6 +1914,7 @@ void StartStrategyVirtual(int si, int st, int signal)
 {
    if(st==STRAT_CONFLUENCIA && !InpAllowConfluOrders) return;
    if(st==STRAT_S2 && !InpAllowStrat2Orders) return;
+   if(st==STRAT_SMC3 && !InpAllowSmc3Orders) return;
    if(signal==0||g_SysState[si].strategies[st].virtualActive) return;
    if(g_SysState[si].strategies[st].isLive) return;   // en LIVE jamás se abre/sigue una virtual
    string sym=g_Symbols[si].name;
@@ -2226,6 +2403,86 @@ void UpdateStructureState(int si)
    {
       int cm=0;
       SE_OnTick(g_SysState[si].SE_M3,sym,cm);
+   }
+
+   //--- ESTRATEGIA 3: tres motores (TF alto / medio / bajo) --------
+   if(InpUseSMC3)
+   {
+      if(!g_SysState[si].SE_SMC_H.Valid) SE_Init(g_SysState[si].SE_SMC_H,sym,InpSmc3TFHigh);
+      if(!g_SysState[si].SE_SMC_M.Valid) SE_Init(g_SysState[si].SE_SMC_M,sym,InpSmc3TFMid);
+      if(!g_SysState[si].SE_SMC_L.Valid) SE_Init(g_SysState[si].SE_SMC_L,sym,InpSmc3TFLow);
+
+      //--- TF ALTO: bias + rango (premium / descuento)
+      datetime tSmcH=(datetime)SeriesInfoInteger(sym,InpSmc3TFHigh,SERIES_LASTBAR_DATE);
+      if(tSmcH!=g_SysState[si].smc3HLastBar)
+      {
+         g_SysState[si].smc3HLastBar=tSmcH;
+         int cH=0,tH=0,bH=0;
+         if(g_SysState[si].SE_SMC_H.Valid)
+         {
+            SE_OnClose(g_SysState[si].SE_SMC_H,sym,cH,tH,bH);
+            if(cH!=0) Smc3OnHighChange(si,cH);
+         }
+      }
+      //--- TF MEDIO: rompimiento → tramo → POI
+      datetime tSmcM=(datetime)SeriesInfoInteger(sym,InpSmc3TFMid,SERIES_LASTBAR_DATE);
+      if(tSmcM!=g_SysState[si].smc3MLastBar)
+      {
+         g_SysState[si].smc3MLastBar=tSmcM;
+         int cM2=0,tM2=0,bM2=0;
+         if(g_SysState[si].SE_SMC_M.Valid)
+         {
+            SE_OnClose(g_SysState[si].SE_SMC_M,sym,cM2,tM2,bM2);
+            int bDirM=(cM2!=0)?cM2:bM2;
+            if(bDirM!=0)
+            {
+               double lhM=g_SysState[si].SE_SMC_M.LastBreakHigh;
+               double llM=g_SysState[si].SE_SMC_M.LastBreakLow;
+               if(lhM>llM && llM>0.0)
+               {
+                  g_SysState[si].smc3BreakDirM   =bDirM;
+                  g_SysState[si].smc3BreakIsChochM=(cM2!=0);
+                  g_SysState[si].smc3LegHighM    =lhM;
+                  g_SysState[si].smc3LegLowM     =llM;
+                  g_SysState[si].smc3BreakTimeM  =TimeCurrent();
+                  Smc3OnMidBreak(si,bDirM,(cM2!=0),lhM,llM);
+               }
+            }
+         }
+      }
+      //--- TF BAJO: gatillo (BOS / CHoCH) con su tramo
+      datetime tSmcL=(datetime)SeriesInfoInteger(sym,InpSmc3TFLow,SERIES_LASTBAR_DATE);
+      if(tSmcL!=g_SysState[si].smc3LLastBar)
+      {
+         g_SysState[si].smc3LLastBar=tSmcL;
+         int cL2=0,tL2=0,bL2=0;
+         if(g_SysState[si].SE_SMC_L.Valid)
+         {
+            SE_OnClose(g_SysState[si].SE_SMC_L,sym,cL2,tL2,bL2);
+            int bDirL=(cL2!=0)?cL2:bL2;
+            if(bDirL!=0)
+            {
+               double lhL=g_SysState[si].SE_SMC_L.LastBreakHigh;
+               double llL=g_SysState[si].SE_SMC_L.LastBreakLow;
+               if(lhL>llL && llL>0.0)
+               {
+                  g_SysState[si].smc3BreakDirL  =bDirL;
+                  g_SysState[si].smc3TrigIsChoch=(cL2!=0);
+                  g_SysState[si].smc3TrigHigh   =lhL;
+                  g_SysState[si].smc3TrigLow    =llL;
+                  g_SysState[si].smc3Trig50     =(lhL+llL)*0.5;
+                  g_SysState[si].smc3BreakTimeL =TimeCurrent();
+               }
+            }
+         }
+      }
+
+      //--- tick: L3/L4 y tramos al tick + mantenimiento de las zonas
+      int cTick=0;
+      SE_OnTick(g_SysState[si].SE_SMC_H,sym,cTick);
+      SE_OnTick(g_SysState[si].SE_SMC_M,sym,cTick);
+      SE_OnTick(g_SysState[si].SE_SMC_L,sym,cTick);
+      Smc3MaintainZones(si);
    }
 
    //--- Estrategia 2: zona 4H (L1-L2 + 50%) y order blocks 1H
@@ -2994,8 +3251,9 @@ void PairOnActivation(int si,int activeSt)
      //--- la LIVE conserva su liveLogicLevel (manda el 1:2); solo se le
      //    cancelan las órdenes pendientes, no su estado virtual/lógico.
      if(!g_SysState[si].strategies[st].isLive) ClearVirtualState(si,st);
-     if(st==STRAT_CONFLUENCIA) ConfluenciaCancelFlow(si);
-     else                     Strat2CancelFlow(si); }
+     if(st==STRAT_CONFLUENCIA)      ConfluenciaCancelFlow(si);
+     else if(st==STRAT_S2)          Strat2CancelFlow(si);
+     else                           Smc3CancelFlow(si); }
 }
 
 //--- hay posición REAL en el par: los flujos de las estrategias que NO
@@ -3005,8 +3263,9 @@ void PairOnPosition(int si)
    for(int st=0;st<STRAT_COUNT;st++)
    { if(g_SysState[si].strategies[st].isLive) continue;
      ClearVirtualState(si,st);
-     if(st==STRAT_CONFLUENCIA) ConfluenciaCancelFlow(si);
-     else                     Strat2CancelFlow(si); }
+     if(st==STRAT_CONFLUENCIA)      ConfluenciaCancelFlow(si);
+     else if(st==STRAT_S2)          Strat2CancelFlow(si);
+     else                           Smc3CancelFlow(si); }
 }
 
 //--- Gestión de pendientes (corre SIEMPRE, incluso sin horario/CB) --
@@ -3084,13 +3343,816 @@ void UpdateStrat2Orders(int si)
    Strat2CheckVirtualFills(si);
 }
 
+//+==================================================================+
+//| ESTRATEGIA 3 (v8.57) — SMC MULTI-TEMPORAL                        |
+//|                                                                  |
+//| Correlación de TRES temporalidades (se configuran en los inputs): |
+//|                                                                  |
+//| 1) TF ALTO (InpSmc3TFHigh, H4 por defecto) = DIRECCIÓN            |
+//|    · bias del motor de líneas L1-L4 (alcista / bajista)           |
+//|    · rango L1-L2 y su 50% (EQ) → PREMIUM (mitad alta) y           |
+//|      DESCUENTO (mitad baja). Con InpSmc3UseDiscount solo se       |
+//|      compra en descuento y se vende en premium.                   |
+//| 2) TF MEDIO (InpSmc3TFMid, M15 por defecto) = ESTRUCTURA / POI    |
+//|    · cada BOS o CHoCH del motor entrega su TRAMO (origen→extremo) |
+//|    · dentro de ese tramo se busca el PUNTO DE INTERÉS (POI):      |
+//|        - ORDER BLOCK: última vela contraria antes del impulso     |
+//|        - FVG / imbalance de 3 velas que solape con el OB          |
+//|      zona = OB (∪ FVG si se solapan)                              |
+//|    · la zona queda VIGENTE mientras el precio no la atraviese;    |
+//|      se ARMA cuando el precio vuelve a entrar en ella.            |
+//| 3) TF BAJO (InpSmc3TFLow, M3 por defecto) = GATILLO               |
+//|    · con la zona armada, se espera un BOS o CHoCH a favor         |
+//|    · al llegar, se CONGELA el nivel de entrada según             |
+//|      InpSmc3EntryMode: 50% del tramo del gatillo (defecto),       |
+//|      50% de la zona POI, o borde proximal de la zona.            |
+//|    · la LIMIT se coloca cuando el precio está del lado correcto    |
+//|      del nivel (encima en compras / debajo en ventas).            |
+//|                                                                  |
+//| INVALIDACIONES:                                                   |
+//|   · cierre del TF de gatillo más allá del origen del tramo        |
+//|   · cierre más allá del lado contrario de la zona POI             |
+//|     (InpSmc3CancelZoneBreak)                                     |
+//|   · zona mitigada (precio la atraviesa) o caducada                |
+//|                                                                  |
+//| ÓRDENES: mismo ciclo virtual → vOPEN → LIVE que E1/E2, con magia  |
+//| propia (+3), lote del NIVEL del par y SL/TP de la configuración   |
+//| del EA (InpSL_Points / InpTP_Points o los del símbolo).           |
+//| Sigue vigente: UNA sola operación abierta por par.                |
+//+==================================================================+
+
+string Smc3Obj(string n){ return (SE_PREFIX+"S3_"+n); }
+
+string Smc3SideName(bool bull){ return(bull?"COMPRA (demanda)":"VENTA (oferta)"); }
+
+//--- reinicio de las zonas POI -------------------------------------
+void Smc3ResetZones(int si)
+{
+   for(int k=0;k<SMC3_MAX_ZONES;k++) ZeroMemory(g_SysState[si].smc3z[k]);
+}
+
+//--- reinicio total del estado de la E3 ----------------------------
+void Smc3ResetState(int si)
+{
+   g_SysState[si].smc3BreakDirM=0;      g_SysState[si].smc3BreakTimeM=0;
+   g_SysState[si].smc3LegHighM=0.0;     g_SysState[si].smc3LegLowM=0.0;
+   g_SysState[si].smc3BreakIsChochM=false;
+   g_SysState[si].smc3BreakDirL=0;      g_SysState[si].smc3BreakTimeL=0;
+   g_SysState[si].smc3TrigHigh=0.0;     g_SysState[si].smc3TrigLow=0.0;
+   g_SysState[si].smc3Trig50=0.0;       g_SysState[si].smc3TrigIsChoch=false;
+   g_SysState[si].smc3WaitBuy=false;    g_SysState[si].smc3WaitSell=false;
+   g_SysState[si].smc3EntryBuy=0.0;     g_SysState[si].smc3EntrySell=0.0;
+   g_SysState[si].smc3EntryLegHighBuy=0.0;  g_SysState[si].smc3EntryLegLowBuy=0.0;
+   g_SysState[si].smc3EntryLegHighSell=0.0; g_SysState[si].smc3EntryLegLowSell=0.0;
+   g_SysState[si].smc3EntryZoneTopBuy=0.0;  g_SysState[si].smc3EntryZoneBotBuy=0.0;
+   g_SysState[si].smc3EntryZoneTopSell=0.0; g_SysState[si].smc3EntryZoneBotSell=0.0;
+   g_SysState[si].smc3VPendBuy=false;   g_SysState[si].smc3VPendBuyPrice=0.0;
+   g_SysState[si].smc3VPendSell=false;  g_SysState[si].smc3VPendSellPrice=0.0;
+   Smc3ResetZones(si);
+   Smc3DeleteRealPendings(si);
+}
+
+//--- número de zonas armadas (para el panel) -----------------------
+int Smc3ArmedCount(int si,bool bull)
+{
+   int n=0;
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   { if(!g_SysState[si].smc3z[k].Active)          continue;
+     if(g_SysState[si].smc3z[k].Mitigated)        continue;
+     if(!g_SysState[si].smc3z[k].Armed)           continue;
+     if(g_SysState[si].smc3z[k].IsBull!=bull)     continue;
+     n++; }
+   return n;
+}
+
+int Smc3ActiveZones(int si)
+{
+   int n=0;
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+      if(g_SysState[si].smc3z[k].Active) n++;
+   return n;
+}
+
+//--- hueco para una zona nueva (recicla la más vieja que no esté en uso)
+int Smc3FindSlot(int si)
+{
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+      if(!g_SysState[si].smc3z[k].Active) return k;
+   int old=-1;
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   { if(g_SysState[si].smc3z[k].EntryFrozen) continue;
+     if(g_SysState[si].smc3z[k].Armed)       continue;
+     if(old<0 || g_SysState[si].smc3z[k].Created<g_SysState[si].smc3z[old].Created)
+        old=k; }
+   return old;
+}
+
+//--- guarda una zona POI. Devuelve su índice (-1 = no hay hueco) ----
+int Smc3AddZone(int si,Smc3Zone &z)
+{
+   double pt =SymbolInfoDouble(g_Symbols[si].name,SYMBOL_POINT);
+   double tol=MathMax(pt*2.0,0.0000001);
+   //--- ¿ya existe la misma zona? (mismo OB y mismo lado) → refrescar
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   { if(!g_SysState[si].smc3z[k].Active)                 continue;
+     if(g_SysState[si].smc3z[k].IsBull!=z.IsBull)        continue;
+     if(g_SysState[si].smc3z[k].OBTime!=z.OBTime)        continue;
+     if(MathAbs(g_SysState[si].smc3z[k].Top-z.Top)>tol)  continue;
+     return k; }
+   int maxZ=MathMax(1,MathMin(SMC3_MAX_ZONES,InpSmc3MaxZones));
+   int idx=-1;
+   if(Smc3ActiveZones(si)>=maxZ)
+   { idx=Smc3FindSlot(si);
+     if(idx<0) return -1;
+     ZeroMemory(g_SysState[si].smc3z[idx]); }
+   else
+   { idx=Smc3FindSlot(si);
+     if(idx<0) return -1; }
+   g_SysState[si].smc3z[idx]=z;
+   return idx;
+}
+
+//--- busca el POI (order block + imbalance) del tramo que rompió ---
+//    dir  = dirección del rompimiento (+1/-1)
+//    legH/legL = extremos del tramo (origen → extremo del impulso)
+bool Smc3BuildPoi(int si,int dir,double legH,double legL,datetime legTime,
+                  Smc3Zone &out)
+{
+   string sym=g_Symbols[si].name;
+   ENUM_TIMEFRAMES tf=InpSmc3TFMid;
+   int look=MathMax(4,InpSmc3ZoneLookback);
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+   double tol=MathMax(pt*2.0,0.0000001);
+
+   double hi=MathMax(legH,legL), lo=MathMin(legH,legL);
+   if(hi<=lo) return false;
+
+   //--- 1) origen del tramo: el extremo del impulso dentro del tramo
+   int    oJ=-1;
+   double best=0.0;
+   for(int j=1;j<=look;j++)
+   {
+      double h=iHigh(sym,tf,j), l=iLow(sym,tf,j);
+      if(h<=0.0 || l<=0.0) break;
+      if(dir>0 && l<lo-tol) break;          // ya salimos del tramo (hacia atrás)
+      if(dir<0 && h>hi+tol) break;
+      if(dir>0)
+      { if(best<=0.0 || l<best){ best=l; oJ=j; } }
+      else
+      { if(best<=0.0 || h>best){ best=h; oJ=j; } }
+   }
+   if(oJ<0) return false;
+
+   //--- 2) ORDER BLOCK: última vela CONTRARIA antes del impulso
+   int obJ=-1;
+   int obEnd=MathMin(look,oJ+5);
+   for(int j=oJ;j<=obEnd;j++)
+   {
+      double O=iOpen(sym,tf,j), C=iClose(sym,tf,j);
+      if(O<=0.0 || C<=0.0) break;
+      if(dir>0 && C<O){ obJ=j; break; }     // vela bajista → demanda
+      if(dir<0 && C>O){ obJ=j; break; }     // vela alcista → oferta
+   }
+   if(obJ<0) return false;
+
+   double   obH=iHigh(sym,tf,obJ), obL=iLow(sym,tf,obJ);
+   datetime obT=(datetime)iTime(sym,tf,obJ);
+   if(obH<=obL || obT<=0) return false;
+
+   //--- 3) FVG / imbalance de 3 velas dentro del impulso
+   bool   hasFVG=false;
+   double fvgH=0.0, fvgL=0.0;
+   if(InpSmc3UseFVG)
+   {
+      int fEnd=MathMax(2,oJ);
+      for(int j=1;j<fEnd;j++)
+      {
+         double hO=iHigh(sym,tf,j+2), lO=iLow(sym,tf,j+2);   // vela más antigua
+         double lN=iLow(sym,tf,j),   hN=iHigh(sym,tf,j);     // vela más reciente
+         if(hO<=0.0 || lO<=0.0) break;
+         if(dir>0 && lN>hO){ fvgL=hO; fvgH=lN; hasFVG=true; break; }  // hueco alcista
+         if(dir<0 && hN<lO){ fvgH=lO; fvgL=hN; hasFVG=true; break; }  // hueco bajista
+      }
+   }
+   if(InpSmc3RequireFVG && !hasFVG) return false;
+
+   //--- 4) la zona = OB (∪ FVG si se solapan) -----------------------
+   double zTop=obH, zBot=obL;
+   bool   useFVG=false;
+   if(hasFVG)
+   { double ovTop=MathMin(obH,fvgH), ovBot=MathMax(obL,fvgL);
+     if(ovTop>=ovBot)                        // se solapan → unión
+     { zTop=MathMax(obH,fvgH); zBot=MathMin(obL,fvgL); useFVG=true; } }
+   if(zTop<=zBot) return false;
+
+   //--- 5) la zona tiene que estar en la mitad correcta del tramo
+   double leg50=(hi+lo)*0.5;
+   if(dir>0 && zBot>leg50+tol) return false;   // demanda en descuento
+   if(dir<0 && zTop<leg50-tol) return false;   // oferta en prima
+
+   ZeroMemory(out);
+   out.Active  =true;
+   out.IsBull  =(dir>0);
+   out.OBHigh  =obH;      out.OBLow   =obL;
+   out.OBTime  =obT;
+   out.HasFVG  =useFVG;
+   out.FVGTop  =(useFVG? fvgH:0.0);
+   out.FVGBot  =(useFVG? fvgL:0.0);
+   out.Top     =zTop;     out.Bottom =zBot;
+   out.LegHigh =hi;       out.LegLow =lo;
+   out.LegTime =legTime;
+   out.Created =TimeCurrent();
+   return true;
+}
+
+//--- rompimiento del TF MEDIO → construir y guardar el POI ----------
+void Smc3OnMidBreak(int si,int dir,bool isChoch,double legH,double legL)
+{
+   if(!InpUseSMC3) return;
+   if(dir==0) return;
+   string sym=g_Symbols[si].name;
+   double pt=SymbolInfoDouble(sym,SYMBOL_POINT);
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double hi=MathMax(legH,legL), lo=MathMin(legH,legL);
+   if(hi<=lo) return;
+   if(InpSmc3MinLegPts>0.0 && (hi-lo)/pt<InpSmc3MinLegPts) return;
+
+   Smc3Zone z;
+   if(!Smc3BuildPoi(si,dir,hi,lo,TimeCurrent(),z)) return;
+   int idx=Smc3AddZone(si,z);
+   if(idx<0) return;
+   Print("SMC3 [",sym,"] ",(isChoch?"CHoCH":"BOS")," ",EnumToString(InpSmc3TFMid),
+         (dir>0?" ALCISTA":" BAJISTA"),
+         " · tramo [",DoubleToString(lo,dg),"..",DoubleToString(hi,dg),"]",
+         " → POI ",Smc3SideName(dir>0),
+         " [",DoubleToString(z.Bottom,dg),"..",DoubleToString(z.Top,dg),"]",
+         (z.HasFVG?" (OB+FVG)":" (OB)"),
+         " · zona ",IntegerToString(idx+1));
+}
+
+//--- mantenimiento de las zonas: caducidad, mitigación y armado ----
+void Smc3MaintainZones(int si)
+{
+   if(!InpUseSMC3) return;
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0) return;
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+   double tol=MathMax(pt*2.0,0.0000001);
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    maxBars=MathMax(1,InpSmc3ZoneBars);
+   double cM=iClose(sym,InpSmc3TFMid,1);          // cierre del TF medio
+   ENUM_TIMEFRAMES tfM=InpSmc3TFMid;
+
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   {
+      if(!g_SysState[si].smc3z[k].Active) continue;
+
+      //--- caducidad por antigüedad (velas del TF medio)
+      int bars=iBarShift(sym,tfM,g_SysState[si].smc3z[k].Created,false);
+      if(bars>=0 && bars>maxBars)
+      { Print("SMC3 [",sym,"] POI ",Smc3SideName(g_SysState[si].smc3z[k].IsBull),
+              " caducada (",IntegerToString(bars)," velas ",EnumToString(tfM),")");
+        g_SysState[si].smc3z[k].Active=false;
+        continue; }
+
+      //--- mitigación: cierre del TF medio atravesando la zona
+      if(cM>0.0)
+      { bool broke=(g_SysState[si].smc3z[k].IsBull)? (cM<g_SysState[si].smc3z[k].Bottom-tol)
+                                                  : (cM>g_SysState[si].smc3z[k].Top+tol);
+        if(broke)
+        { Print("SMC3 [",sym,"] POI ",Smc3SideName(g_SysState[si].smc3z[k].IsBull),
+                " [",DoubleToString(g_SysState[si].smc3z[k].Bottom,dg),"..",
+                DoubleToString(g_SysState[si].smc3z[k].Top,dg),"] MITIGADA (cierre ",
+                DoubleToString(cM,dg),")");
+          g_SysState[si].smc3z[k].Mitigated=true;
+          g_SysState[si].smc3z[k].Armed=false;
+          g_SysState[si].smc3z[k].Active=false;
+          continue; } }
+
+      //--- armado: el precio entra en la zona
+      if(!g_SysState[si].smc3z[k].Armed &&
+         bid>=g_SysState[si].smc3z[k].Bottom-tol &&
+         bid<=g_SysState[si].smc3z[k].Top+tol)
+      {
+         g_SysState[si].smc3z[k].Armed=true;
+         g_SysState[si].smc3z[k].ArmedTime=TimeCurrent();
+         Print("SMC3 [",sym,"] precio en el POI ",Smc3SideName(g_SysState[si].smc3z[k].IsBull),
+               " [",DoubleToString(g_SysState[si].smc3z[k].Bottom,dg),"..",
+               DoubleToString(g_SysState[si].smc3z[k].Top,dg),
+               "] → ARMADA, esperando BOS/CHoCH en ",EnumToString(InpSmc3TFLow));
+      }
+   }
+}
+
+//--- NIVEL DE ENTRADA según el modo elegido ------------------------
+double Smc3EntryLevel(int si,int dir,int zoneIdx,double trig50)
+{
+   double lvl=trig50;
+   if(zoneIdx>=0 && zoneIdx<SMC3_MAX_ZONES)
+   { Smc3Zone z=g_SysState[si].smc3z[zoneIdx];
+     if(InpSmc3EntryMode==SMC3_ENTRY_ZONE50)   lvl=(z.Top+z.Bottom)*0.5;
+     if(InpSmc3EntryMode==SMC3_ENTRY_ZONEPROX) lvl=(dir>0)? z.Top : z.Bottom; }
+   return lvl;
+}
+
+//--- gatillo del TF BAJO: BOS/CHoCH → congelar nivel de entrada -----
+void Smc3ProcessTrigger(int si)
+{
+   if(!InpUseSMC3) return;
+
+   int      dir    =g_SysState[si].smc3BreakDirL;
+   if(dir==0) return;
+   bool     isChoch=g_SysState[si].smc3TrigIsChoch;
+   datetime t      =g_SysState[si].smc3BreakTimeL;
+   double   tH     =g_SysState[si].smc3TrigHigh;
+   double   tL     =g_SysState[si].smc3TrigLow;
+   double   t50    =g_SysState[si].smc3Trig50;
+   g_SysState[si].smc3BreakDirL=0;        // el evento se consume siempre
+
+   if(!InpSmc3AcceptCHoCH &&  isChoch) return;
+   if(!InpSmc3AcceptBOS   && !isChoch) return;
+
+   int maxAge=PeriodSeconds(InpSmc3TFLow)*3;
+   if(t>0 && (long)(TimeCurrent()-t)>maxAge)
+   { Print("SMC3 [",g_Symbols[si].name,"] gatillo ",(isChoch?"CHoCH":"BOS"),
+           " descartado (evento viejo)"); return; }
+
+   if(!InpAllowSmc3Orders)                                       return;
+   if(g_SysState[si].strategies[STRAT_SMC3].cbPaused)            return;
+   if(PairOtherVirtualActive(si,STRAT_SMC3))                     return;
+   if(HasAnyPositionSymbol(si))                                  return;
+   if(Smc3HasPending(si))                                        return;
+
+   string sym=g_Symbols[si].name;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double pt =SymbolInfoDouble(sym,SYMBOL_POINT);
+   double tol=MathMax(pt*2.0,0.0000001);
+   if(bid<=0.0 || tH<=tL) return;
+
+   //--- 1) CORRELACIÓN DE TEMPORALIDADES: el TF alto manda ----------
+   if(!g_SysState[si].SE_SMC_H.Valid)
+   { Print("SMC3 [",sym,"] sin estructura del TF alto todavía"); return; }
+   int biasH=g_SysState[si].SE_SMC_H.Bias;
+   if(biasH!=dir)
+   { Print("SMC3 [",sym,"] gatillo ",(dir>0?"ALCISTA":"BAJISTA"),
+           " ignorado: ",EnumToString(InpSmc3TFHigh)," ",
+           (biasH==BIAS_BULLISH?"ALCISTA":biasH==BIAS_BEARISH?"BAJISTA":"SIN BIAS"));
+     return; }
+
+   //--- 2) premium / descuento del rango alto -----------------------
+   if(InpSmc3UseDiscount)
+   { double eq=g_SysState[si].SE_SMC_H.EQ;
+     if(eq>0.0)
+     { if(dir>0 && bid>eq+tol)
+       { Print("SMC3 [",sym,"] compra descartada: precio en PREMIUM (",
+               DoubleToString(bid,dg)," > 50% ",DoubleToString(eq,dg),")"); return; }
+       if(dir<0 && bid<eq-tol)
+       { Print("SMC3 [",sym,"] venta descartada: precio en DESCUENTO (",
+               DoubleToString(bid,dg)," < 50% ",DoubleToString(eq,dg),")"); return; } } }
+
+   //--- 3) el TF medio también tiene que acompañar -----------------
+   if(g_SysState[si].SE_SMC_M.Valid && g_SysState[si].SE_SMC_M.Bias!=dir)
+   { Print("SMC3 [",sym,"] gatillo ignorado: ",EnumToString(InpSmc3TFMid)," no acompaña");
+     return; }
+
+   //--- 4) zona POI armada del lado correcto -----------------------
+   int zi=-1;
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   { if(!g_SysState[si].smc3z[k].Active)             continue;
+     if(g_SysState[si].smc3z[k].Mitigated)           continue;
+     if(!g_SysState[si].smc3z[k].Armed)              continue;
+     if(g_SysState[si].smc3z[k].EntryFrozen)         continue;
+     if(g_SysState[si].smc3z[k].IsBull!=(dir>0))     continue;
+     if(g_SysState[si].smc3z[k].ArmedTime>0 && t>0 &&
+        g_SysState[si].smc3z[k].ArmedTime>t)         continue;
+     if(zi<0 || g_SysState[si].smc3z[k].Created>g_SysState[si].smc3z[zi].Created)
+        zi=k; }
+   if(zi<0)
+   { Print("SMC3 [",sym,"] gatillo ",(dir>0?"ALCISTA":"BAJISTA"),
+           " sin POI armada del lado ",Smc3SideName(dir>0)); return; }
+
+   //--- 5) nivel congelado -----------------------------------------
+   double lvl=Smc3EntryLevel(si,dir,zi,t50);
+   if(lvl<=0.0) return;
+
+   Smc3Zone z=g_SysState[si].smc3z[zi];
+   if(dir>0)
+   { g_SysState[si].smc3EntryBuy        =lvl;
+     g_SysState[si].smc3EntryLegHighBuy =tH;
+     g_SysState[si].smc3EntryLegLowBuy  =tL;
+     g_SysState[si].smc3EntryZoneTopBuy =z.Top;
+     g_SysState[si].smc3EntryZoneBotBuy =z.Bottom;
+     g_SysState[si].smc3WaitBuy         =true; }
+   else
+   { g_SysState[si].smc3EntrySell       =lvl;
+     g_SysState[si].smc3EntryLegHighSell=tH;
+     g_SysState[si].smc3EntryLegLowSell =tL;
+     g_SysState[si].smc3EntryZoneTopSell=z.Top;
+     g_SysState[si].smc3EntryZoneBotSell=z.Bottom;
+     g_SysState[si].smc3WaitSell        =true; }
+   g_SysState[si].smc3z[zi].EntryFrozen=true;
+   g_SysState[si].smc3z[zi].EntryPrice =lvl;
+   g_SysState[si].smc3z[zi].EntryTime  =TimeCurrent();
+
+   string modo=(InpSmc3EntryMode==SMC3_ENTRY_LEG50)?"50% del tramo del gatillo":
+               (InpSmc3EntryMode==SMC3_ENTRY_ZONE50)?"50% de la zona POI":"borde proximal del POI";
+   Print("SMC3 [",sym,"] ",(isChoch?"CHoCH":"BOS")," ",(dir>0?"ALCISTA":"BAJISTA"),
+         " con POI ",Smc3SideName(dir>0)," armada → ",modo,
+         " CONGELADO @",DoubleToString(lvl,dg),
+         " · tramo gatillo [",DoubleToString(tL,dg),"..",DoubleToString(tH,dg),"]",
+         " · zona [",DoubleToString(z.Bottom,dg),"..",DoubleToString(z.Top,dg),"]");
+}
+
+//--- coloca la LIMIT cuando el precio está del lado correcto -------
+void Smc3TryPlace(int si)
+{
+   if(!InpUseSMC3)                                              return;
+   if(!InpAllowSmc3Orders)                                      return;
+   if(g_SysState[si].strategies[STRAT_SMC3].cbPaused)           return;
+   if(HasAnyPositionSymbol(si))
+   { g_SysState[si].smc3WaitBuy=false; g_SysState[si].smc3WaitSell=false; return; }
+   if(Smc3HasPending(si))                                       return;
+   if(PairOtherVirtualActive(si,STRAT_SMC3))                    return;
+
+   string sym=g_Symbols[si].name;
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   if(bid<=0.0) return;
+   int dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+
+   if(g_SysState[si].smc3WaitBuy && bid>g_SysState[si].smc3EntryBuy)
+   { if(Smc3PlacePending(si,+1,g_SysState[si].smc3EntryBuy))
+     { g_SysState[si].smc3WaitBuy=false;
+       Print("SMC3 [",sym,"] precio encima del nivel congelado → LIMIT COMPRA"); } }
+   else if(g_SysState[si].smc3WaitSell && bid<g_SysState[si].smc3EntrySell)
+   { if(Smc3PlacePending(si,-1,g_SysState[si].smc3EntrySell))
+     { g_SysState[si].smc3WaitSell=false;
+       Print("SMC3 [",sym,"] precio debajo del nivel congelado → LIMIT VENTA"); } }
+}
+
+//--- LIMIT virtual (fase SIM) o real (fase LIVE) -------------------
+bool Smc3PlacePending(int si,int dir,double price)
+{
+   string sym=g_Symbols[si].name;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    st =STRAT_SMC3;
+   bool   isLive=g_SysState[si].strategies[st].isLive;
+   double lots=GetPairLot(si);
+   int    posType=(dir>0)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   double sl=CalcSL(sym,si,price,posType);
+   double tp=CalcTP(sym,si,price,posType);
+
+   if(!isLive)
+   {
+      if(dir>0){ g_SysState[si].smc3VPendBuy=true;  g_SysState[si].smc3VPendBuyPrice=price; }
+      else     { g_SysState[si].smc3VPendSell=true; g_SysState[si].smc3VPendSellPrice=price; }
+      Print("SMC3 [",sym,"] vLIMIT ",(dir>0?"BUY":"SELL")," @",DoubleToString(price,dg),
+            " SL=",DoubleToString(sl,dg)," TP=",DoubleToString(tp,dg),
+            " CV=",g_SysState[si].strategies[st].CV,
+            " NIVEL=",PairLevel(si)," Lot=",DoubleToString(lots,2));
+      return true;
+   }
+
+   if(IsWeeklyCloseWindow()) return false;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+   double minDist=(double)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL)*
+                  SymbolInfoDouble(sym,SYMBOL_POINT);
+   if(dir>0 && (ask-price)<minDist)
+   { Print("SMC3 [",sym,"] BUY LIMIT muy cerca del precio → reintenta");  return false; }
+   if(dir<0 && (price-bid)<minDist)
+   { Print("SMC3 [",sym,"] SELL LIMIT muy cerca del precio → reintenta"); return false; }
+
+   MqlTradeRequest req={}; MqlTradeResult res={};
+   req.action   =TRADE_ACTION_PENDING;
+   req.symbol   =sym;
+   req.volume   =lots;
+   req.type     =(dir>0)?ORDER_TYPE_BUY_LIMIT:ORDER_TYPE_SELL_LIMIT;
+   req.price    =price;
+   req.sl       =sl;
+   req.tp       =tp;
+   req.magic    =GetStrategyMagic(si,st);
+   req.deviation=20;
+   req.comment  =StringFormat("%s_%s_SMC3_LMT_N%d",InpComment,sym,PairLevel(si));
+   if(!OrderSend(req,res) || (res.retcode!=TRADE_RETCODE_DONE &&
+                              res.retcode!=TRADE_RETCODE_PLACED))
+   { Print("ERROR SMC3 Limit [",sym,"]: ",res.retcode); return false; }
+   Print("SMC3 [",sym,"] LIMIT ",(dir>0?"BUY":"SELL")," #",res.order,
+         " @",DoubleToString(price,dg),
+         " SL=",DoubleToString(sl,dg)," TP=",DoubleToString(tp,dg),
+         " Lot=",DoubleToString(lots,2));
+   return true;
+}
+
+//--- ¿hay ya una limit (virtual o real) de la E3 en el par? --------
+bool Smc3HasPending(int si)
+{
+   if(g_SysState[si].smc3VPendBuy || g_SysState[si].smc3VPendSell) return true;
+   string sym=g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,STRAT_SMC3);
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   { ulong t=OrderGetTicket(i); if(t==0) continue;
+     if(OrderGetString(ORDER_SYMBOL)!=sym)   continue;
+     if(OrderGetInteger(ORDER_MAGIC)!=magic) continue;
+     long ty=OrderGetInteger(ORDER_TYPE);
+     if(ty==ORDER_TYPE_BUY_LIMIT || ty==ORDER_TYPE_SELL_LIMIT) return true; }
+   return false;
+}
+
+//--- apertura virtual al llenarse la limit simulada ----------------
+void Smc3StartVirtual(int si,int dir,double price)
+{
+   string sym=g_Symbols[si].name;
+   int    dg =(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   int    st =STRAT_SMC3;
+   int    posType=(dir>0)?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   g_SysState[si].strategies[st].virtualDir       =dir;
+   g_SysState[si].strategies[st].virtualOpen      =price;
+   g_SysState[si].strategies[st].virtualOpenLevel =PairLevel(si);
+   g_SysState[si].strategies[st].virtualSL_price  =CalcSL(sym,si,price,posType);
+   g_SysState[si].strategies[st].virtualTP_price  =CalcTP(sym,si,price,posType);
+   g_SysState[si].strategies[st].virtualSLMoved   =false;
+   g_SysState[si].strategies[st].virtualActive    =true;
+   PairOnActivation(si,st);
+   Print("vOPEN [",sym,"/",g_SysState[si].strategies[st].name,"] ",
+         (dir>0?"BUY":"SELL")," (SMC3 · entrada 50% POI) @",DoubleToString(price,dg),
+         " CV=",g_SysState[si].strategies[st].CV,
+         " NIVEL=",g_SysState[si].strategies[st].virtualOpenLevel,
+         " SL=",DoubleToString(g_SysState[si].strategies[st].virtualSL_price,dg),
+         " TP=",DoubleToString(g_SysState[si].strategies[st].virtualTP_price,dg));
+}
+
+//--- ejecución de las limits virtuales -----------------------------
+void Smc3CheckVirtualFills(int si)
+{
+   if(!InpUseSMC3)                                          return;
+   if(!InpAllowSmc3Orders)                                  return;
+   if(g_SysState[si].strategies[STRAT_SMC3].isLive)         return;
+   if(g_SysState[si].strategies[STRAT_SMC3].virtualActive)  return;
+   if(PairOtherVirtualActive(si,STRAT_SMC3))                return;
+   if(HasAnyPositionSymbol(si))                             return;
+
+   string sym=g_Symbols[si].name;
+   double ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID);
+
+   if(g_SysState[si].smc3VPendBuy && ask>0.0 &&
+      ask<=g_SysState[si].smc3VPendBuyPrice)
+   {
+      Smc3StartVirtual(si,+1,g_SysState[si].smc3VPendBuyPrice);
+      g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+      g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0;
+      return;
+   }
+   if(g_SysState[si].smc3VPendSell && bid>0.0 &&
+      bid>=g_SysState[si].smc3VPendSellPrice)
+   {
+      Smc3StartVirtual(si,-1,g_SysState[si].smc3VPendSellPrice);
+      g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+      g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0;
+   }
+}
+
+//--- borra las limits reales de la E3 en el símbolo ----------------
+void Smc3DeleteRealPendings(int si)
+{
+   string sym=g_Symbols[si].name;
+   long   magic=GetStrategyMagic(si,STRAT_SMC3);
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   { ulong t=OrderGetTicket(i);
+     if(t==0)                                continue;
+     if(OrderGetString(ORDER_SYMBOL)!=sym)   continue;
+     if(OrderGetInteger(ORDER_MAGIC)!=magic) continue;
+     MqlTradeRequest req={}; MqlTradeResult res={};
+     req.action=TRADE_ACTION_REMOVE; req.order=t;
+     if(OrderSend(req,res))
+        Print("SMC3 [",sym,"] orden limit #",t," eliminada"); }
+}
+
+//--- invalidación: origen del tramo o lado contrario de la zona ----
+void Smc3CheckLegInvalid(int si)
+{
+   if(!InpUseSMC3)                        return;
+   if(!g_SysState[si].SE_SMC_L.Valid)     return;
+   string sym=g_Symbols[si].name;
+   double c1=iClose(sym,InpSmc3TFLow,1);
+   if(c1<=0.0) return;
+   int dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+
+   bool realBuy=false, realSell=false;
+   long magic=GetStrategyMagic(si,STRAT_SMC3);
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   { ulong ot=OrderGetTicket(i); if(ot==0) continue;
+     if(OrderGetString(ORDER_SYMBOL)!=sym)   continue;
+     if(OrderGetInteger(ORDER_MAGIC)!=magic) continue;
+     long ty=OrderGetInteger(ORDER_TYPE);
+     if(ty==ORDER_TYPE_BUY_LIMIT)  realBuy =true;
+     if(ty==ORDER_TYPE_SELL_LIMIT) realSell=true; }
+
+   bool buyFlow =(g_SysState[si].smc3WaitBuy  || g_SysState[si].smc3VPendBuy  || realBuy);
+   bool sellFlow=(g_SysState[si].smc3WaitSell || g_SysState[si].smc3VPendSell || realSell);
+
+   if(buyFlow)
+   { bool legBroke =(g_SysState[si].smc3EntryLegLowBuy>0.0 &&
+                     c1<g_SysState[si].smc3EntryLegLowBuy);
+     bool zoneBroke=(InpSmc3CancelZoneBreak &&
+                     g_SysState[si].smc3EntryZoneBotBuy>0.0 &&
+                     c1<g_SysState[si].smc3EntryZoneBotBuy);
+     if(legBroke || zoneBroke)
+     { Print("SMC3 [",sym,"] cierre ",DoubleToString(c1,dg)," ",
+             (zoneBroke?"rompe la ZONA POI de COMPRA (":"rompe el ORIGEN del tramo de COMPRA ("),
+             DoubleToString(zoneBroke?g_SysState[si].smc3EntryZoneBotBuy:
+                                      g_SysState[si].smc3EntryLegLowBuy,dg),
+             ") → entrada cancelada");
+       g_SysState[si].smc3WaitBuy=false;
+       g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+       g_SysState[si].smc3EntryBuy=0.0;
+       Smc3UnfreezeSide(si,true);
+       Smc3DeleteRealPendings(si);
+       return; } }
+
+   if(sellFlow)
+   { bool legBroke =(g_SysState[si].smc3EntryLegHighSell>0.0 &&
+                     c1>g_SysState[si].smc3EntryLegHighSell);
+     bool zoneBroke=(InpSmc3CancelZoneBreak &&
+                     g_SysState[si].smc3EntryZoneTopSell>0.0 &&
+                     c1>g_SysState[si].smc3EntryZoneTopSell);
+     if(legBroke || zoneBroke)
+     { Print("SMC3 [",sym,"] cierre ",DoubleToString(c1,dg)," ",
+             (zoneBroke?"rompe la ZONA POI de VENTA (":"rompe el ORIGEN del tramo de VENTA ("),
+             DoubleToString(zoneBroke?g_SysState[si].smc3EntryZoneTopSell:
+                                      g_SysState[si].smc3EntryLegHighSell,dg),
+             ") → entrada cancelada");
+       g_SysState[si].smc3WaitSell=false;
+       g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0;
+       g_SysState[si].smc3EntrySell=0.0;
+       Smc3UnfreezeSide(si,false);
+       Smc3DeleteRealPendings(si); } }
+}
+
+//--- deja las zonas de un lado listas para un NUEVO toque ----------
+void Smc3UnfreezeSide(int si,bool bull)
+{
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   { if(!g_SysState[si].smc3z[k].Active)               continue;
+     if(g_SysState[si].smc3z[k].IsBull!=bull)          continue;
+     if(!g_SysState[si].smc3z[k].EntryFrozen)          continue;
+     g_SysState[si].smc3z[k].EntryFrozen=false;
+     g_SysState[si].smc3z[k].EntryPrice =0.0;
+     g_SysState[si].smc3z[k].Armed      =false; }
+}
+
+//--- gestión de pendientes (corre siempre, aunque haya CB/horario) --
+void Smc3ManagePendings(int si)
+{
+   if(!InpUseSMC3) return;
+
+   bool hasPos =HasAnyPositionSymbol(si);
+   bool riskOff=g_CircuitBreakerOn ||
+                g_SysState[si].strategies[STRAT_SMC3].cbPaused ||
+                (InpUseTimeFilter && !IsTradeTimeAllowed());
+   if(!hasPos && !riskOff) return;
+
+   if(hasPos) PairOnPosition(si);
+
+   if(g_SysState[si].smc3VPendBuy || g_SysState[si].smc3VPendSell)
+   { if(hasPos)
+        Print("SMC3 [",g_Symbols[si].name,"] posición abierta → se retiran las demás órdenes limit");
+     g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+     g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0; }
+   Smc3DeleteRealPendings(si);
+}
+
+//--- cierre de un trade de la E3 -----------------------------------
+void Smc3OnTradeClosed(int si)
+{
+   g_SysState[si].smc3WaitBuy=false;   g_SysState[si].smc3WaitSell=false;
+   g_SysState[si].smc3EntryBuy=0.0;    g_SysState[si].smc3EntrySell=0.0;
+   g_SysState[si].smc3EntryLegHighBuy=0.0;  g_SysState[si].smc3EntryLegLowBuy=0.0;
+   g_SysState[si].smc3EntryLegHighSell=0.0; g_SysState[si].smc3EntryLegLowSell=0.0;
+   g_SysState[si].smc3EntryZoneTopBuy=0.0;  g_SysState[si].smc3EntryZoneBotBuy=0.0;
+   g_SysState[si].smc3EntryZoneTopSell=0.0; g_SysState[si].smc3EntryZoneBotSell=0.0;
+   //--- las zonas usadas necesitan un nuevo toque (ciclo nuevo)
+   Smc3UnfreezeSide(si,true);
+   Smc3UnfreezeSide(si,false);
+}
+
+//--- cancela el flujo de entrada de la E3 --------------------------
+void Smc3CancelFlow(int si)
+{
+   g_SysState[si].smc3WaitBuy=false;   g_SysState[si].smc3WaitSell=false;
+   g_SysState[si].smc3EntryBuy=0.0;    g_SysState[si].smc3EntrySell=0.0;
+   g_SysState[si].smc3EntryLegHighBuy=0.0;  g_SysState[si].smc3EntryLegLowBuy=0.0;
+   g_SysState[si].smc3EntryLegHighSell=0.0; g_SysState[si].smc3EntryLegLowSell=0.0;
+   g_SysState[si].smc3EntryZoneTopBuy=0.0;  g_SysState[si].smc3EntryZoneBotBuy=0.0;
+   g_SysState[si].smc3EntryZoneTopSell=0.0; g_SysState[si].smc3EntryZoneBotSell=0.0;
+   g_SysState[si].smc3VPendBuy=false;  g_SysState[si].smc3VPendBuyPrice=0.0;
+   g_SysState[si].smc3VPendSell=false; g_SysState[si].smc3VPendSellPrice=0.0;
+   g_SysState[si].smc3BreakDirL=0;
+   Smc3UnfreezeSide(si,true);
+   Smc3UnfreezeSide(si,false);
+   Smc3DeleteRealPendings(si);
+}
+
+//--- cambios de estructura del TF ALTO ----------------------------
+void Smc3OnHighChange(int si,int dir)
+{
+   Smc3CancelFlow(si);
+   Print("SMC3 [",g_Symbols[si].name,"] estructura ",EnumToString(InpSmc3TFHigh)," ",
+         (dir>0?"ALCISTA":"BAJISTA"),
+         " → flujo de entrada reiniciado (las zonas POI se mantienen)");
+}
+
+//--- orquestador por símbolo ---------------------------------------
+void UpdateSmc3(int si)
+{
+   if(!InpUseSMC3) return;
+
+   if(HasAnyPositionSymbol(si))
+   { g_SysState[si].smc3BreakDirL=0;
+     g_SysState[si].smc3WaitBuy=false;
+     g_SysState[si].smc3WaitSell=false;
+     return; }
+
+   Smc3CheckLegInvalid(si);
+   Smc3ProcessTrigger(si);
+   Smc3TryPlace(si);
+   Smc3CheckVirtualFills(si);
+}
+
+//+------------------------------------------------------------------+
+//| DIBUJO DE LA ESTRATEGIA 3                                        |
+//+------------------------------------------------------------------+
+void Smc3DeleteObjects(int si)
+{
+   string p=SE_PREFIX+"S3_";
+   int total=ObjectsTotal(0,0,-1);
+   for(int i=total-1;i>=0;i--)
+   { string n=ObjectName(0,i,0,-1);
+     if(StringFind(n,p)==0) ObjectDelete(0,n); }
+}
+
+void DrawSmc3(int si)
+{
+   if(!InpUseSMC3 || !InpSmc3Show){ Smc3DeleteObjects(si); return; }
+   string sym=g_Symbols[si].name;
+   int    dg=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+
+   //--- rango del TF alto: premium / descuento
+   if(g_SysState[si].SE_SMC_H.Valid)
+   { SE_HLine(Smc3Obj("HR1"),g_SysState[si].SE_SMC_H.L1,clrSandyBrown,STYLE_DASHDOT,1,"3T "+EnumToString(InpSmc3TFHigh)+" techo");
+     SE_HLine(Smc3Obj("HR2"),g_SysState[si].SE_SMC_H.L2,clrSandyBrown,STYLE_DASHDOT,1,"3T suelo");
+     SE_HLine(Smc3Obj("HEQ"),g_SysState[si].SE_SMC_H.EQ,clrSandyBrown,STYLE_DOT,1,"3T 50%"); }
+   else
+   { ObjectDelete(0,Smc3Obj("HR1")); ObjectDelete(0,Smc3Obj("HR2"));
+     ObjectDelete(0,Smc3Obj("HEQ")); }
+
+   //--- zonas POI vivas
+   datetime tNow=TimeCurrent();
+   for(int k=0;k<SMC3_MAX_ZONES;k++)
+   {
+      string rn=Smc3Obj("ZR"+IntegerToString(k));
+      string ln=Smc3Obj("ZL"+IntegerToString(k));
+      if(!g_SysState[si].smc3z[k].Active)
+      { ObjectDelete(0,rn); ObjectDelete(0,ln); continue; }
+      bool bull=g_SysState[si].smc3z[k].IsBull;
+      color c=bull?clrSeaGreen:clrIndianRed;
+      double top=g_SysState[si].smc3z[k].Top, bot=g_SysState[si].smc3z[k].Bottom;
+      datetime t1=g_SysState[si].smc3z[k].LegTime;
+      if(t1<=0) t1=g_SysState[si].smc3z[k].OBTime;
+      if(t1<=0) t1=tNow-PeriodSeconds(InpSmc3TFMid)*10;
+      SE_TimeRect(rn,t1,tNow,top,bot,c);
+      string est=g_SysState[si].smc3z[k].EntryFrozen?"ENTRADA":
+                 g_SysState[si].smc3z[k].Armed?"ARMADA":"POI";
+      SE_ZoneLabel(ln,top,StringFormat("POI %s %s (%s-%s)%s",
+                    (bull?"C":"V"),est,
+                    DoubleToString(bot,dg),DoubleToString(top,dg),
+                    (g_SysState[si].smc3z[k].HasFVG?" +FVG":"")),c);
+   }
+
+   //--- tramo del último rompimiento del TF medio
+   if(g_SysState[si].smc3LegHighM>g_SysState[si].smc3LegLowM &&
+      g_SysState[si].smc3BreakTimeM>0)
+   { SE_HLine(Smc3Obj("LEGH"),g_SysState[si].smc3LegHighM,clrPeru,STYLE_DOT,1,"3 tramo");
+     SE_HLine(Smc3Obj("LEGL"),g_SysState[si].smc3LegLowM, clrPeru,STYLE_DOT,1,"3 tramo"); }
+   else
+   { ObjectDelete(0,Smc3Obj("LEGH")); ObjectDelete(0,Smc3Obj("LEGL")); }
+
+   //--- nivel de entrada congelado
+   if(g_SysState[si].smc3EntryBuy>0.0)
+      SE_HLine(Smc3Obj("EB"),g_SysState[si].smc3EntryBuy,clrLime,STYLE_DASH,2,"ENTRADA 3 COMPRA");
+   else { ObjectDelete(0,Smc3Obj("EB")); ObjectDelete(0,Smc3Obj("EB_T")); }
+   if(g_SysState[si].smc3EntrySell>0.0)
+      SE_HLine(Smc3Obj("ES"),g_SysState[si].smc3EntrySell,clrOrangeRed,STYLE_DASH,2,"ENTRADA 3 VENTA");
+   else { ObjectDelete(0,Smc3Obj("ES")); ObjectDelete(0,Smc3Obj("ES_T")); }
+}
+
 //+------------------------------------------------------------------+
 //| DIBUJO DE LÍNEAS DE ESTRUCTURA EN EL GRÁFICO (visual de smc2)    |
 //| Colores vivos (visibles en fondo claro y oscuro) + etiqueta con  |
 //| nombre y precio al lado derecho de cada línea.                   |
 //+------------------------------------------------------------------+
-#define SE_PREFIX      "GQP_SE_"
-#define SE_LBL_OFF_BARS 6          // barras hacia el futuro para la etiqueta
 
 void SE_HLine(string name,double price,color clr,ENUM_LINE_STYLE sty,int w,string lbl)
 {
@@ -3887,6 +4949,10 @@ void DrawStructureLines(int si)
       { ObjectDelete(0,SE_PREFIX+Cf[c]); ObjectDelete(0,SE_PREFIX+Cf[c]+"_T"); }
    }
 
+   //--- ESTRATEGIA 3: rango del TF alto + zonas POI + entrada ---------------
+   if(InpUseSMC3) DrawSmc3(si);
+   else           Smc3DeleteObjects(si);
+
    //--- ESTRATEGIA 2: zona 4H (L1-L2 + 50%) + order blocks 1H ----------------
    if(InpUseStrat2 && InpStrat2ShowZone) DrawStrat2(si);
    else                                  Strat2DeleteObjects(si);
@@ -3934,6 +5000,10 @@ void UpdateAllStrategies()
    { if(!g_SysState[si].strategies[STRAT_S2].enabled) continue;
      if(g_SysState[si].strategies[STRAT_S2].cbPaused) continue;
      UpdateStrat2Orders(si); }
+   for(int si=0;si<g_SymCount;si++)
+   { if(!g_SysState[si].strategies[STRAT_SMC3].enabled) continue;
+     if(g_SysState[si].strategies[STRAT_SMC3].cbPaused) continue;
+     UpdateSmc3(si); }
 }
 
 //+------------------------------------------------------------------+
@@ -4241,7 +5311,8 @@ void ProcessClosedQueue()
        if(si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&!counted[si][st])
        { counted[si][st]=true;
          if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
-         if(st==STRAT_S2)          Strat2OnTradeClosed(si); } }
+         if(st==STRAT_S2)          Strat2OnTradeClosed(si);
+         if(st==STRAT_SMC3)        Smc3OnTradeClosed(si); } }
      else if(!snap.isManual&&si>=0&&si<MAX_SYMBOLS&&st>=0&&st<STRAT_COUNT&&
         !counted[si][st])
      {
@@ -4254,7 +5325,8 @@ void ProcessClosedQueue()
         { Print("CIERRE SEMANAL en GANANCIA [",sym,"/",sn,"] #",snap.ticket,
                 " PL=",DoubleToString(cPL,2)," → NIVEL intacto, próxima operación con el mismo nivel");
           if(st==STRAT_CONFLUENCIA) ConfluenciaOnTradeClosed(si);
-          if(st==STRAT_S2) Strat2OnTradeClosed(si); }
+          if(st==STRAT_S2) Strat2OnTradeClosed(si);
+          if(st==STRAT_SMC3) Smc3OnTradeClosed(si); }
         else
         { // Un SL que dejó beneficio es necesariamente el trailing/protegido,
           // aunque el broker no cierre exactamente en el precio guardado.
@@ -5495,6 +6567,27 @@ void MPFillSnapshot(int si,MPSnapshot &s)
                           (g_SysState[si].confLegChochSell?"CHoCH":"BOS"),
                           DoubleToString(g_SysState[si].confEntrySell,s.dg));
      s.stateClr=clrYellow; s.prio=1; }
+   else if(g_SysState[si].smc3VPendBuy)
+   { s.state=StringFormat("S3 LIMIT VIRTUAL B %s",
+                          DoubleToString(g_SysState[si].smc3VPendBuyPrice,s.dg));
+     s.stateClr=clrLime; s.prio=2; }
+   else if(g_SysState[si].smc3VPendSell)
+   { s.state=StringFormat("S3 LIMIT VIRTUAL S %s",
+                          DoubleToString(g_SysState[si].smc3VPendSellPrice,s.dg));
+     s.stateClr=clrOrangeRed; s.prio=2; }
+   else if(g_SysState[si].smc3WaitBuy)
+   { s.state=StringFormat("S3 ENTRADA B %s · ESPERA PRECIO",
+                          DoubleToString(g_SysState[si].smc3EntryBuy,s.dg));
+     s.stateClr=clrYellow; s.prio=1; }
+   else if(g_SysState[si].smc3WaitSell)
+   { s.state=StringFormat("S3 ENTRADA S %s · ESPERA PRECIO",
+                          DoubleToString(g_SysState[si].smc3EntrySell,s.dg));
+     s.stateClr=clrYellow; s.prio=1; }
+   else if(Smc3ArmedCount(si,true)+Smc3ArmedCount(si,false)>0)
+   { int nb=Smc3ArmedCount(si,true), ns=Smc3ArmedCount(si,false);
+     s.state=StringFormat("S3 POI %s · GATILLO %s",
+                          (nb>0?(ns>0?"C+V":"C"):"V"),MPTFName(InpSmc3TFLow));
+     s.stateClr=clrYellow; s.prio=1; }
    else if(s.zBuy)
    { s.state=(g_SysState[si].SE_H1.Bias==BIAS_BULLISH)?"ZONA C ✓ BOS/CHoCH M3"
                                                        :"ZONA C ✓ H1 NO ALCISTA";
@@ -5598,6 +6691,19 @@ void MPDrawMini(int x,int y,int w,int h,int si,MPSnapshot &s)
       { nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.L3,clrMagenta,1,"H1L3",extLo,extHi);
         nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.L4,clrOrangeRed,1,"H1L4",extLo,extHi); }
       nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].SE_H1.EQ,clrGold,2,"50%",extLo,extHi);
+   }
+   if(InpUseSMC3 && InpSmc3Show)
+   {
+      if(g_SysState[si].smc3EntryBuy>0.0)
+         nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].smc3EntryBuy,clrLime,1,"E3 B",extLo,extHi);
+      else if(g_SysState[si].smc3EntrySell>0.0)
+         nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].smc3EntrySell,clrOrangeRed,1,"E3 S",extLo,extHi);
+      for(int kz=0;kz<SMC3_MAX_ZONES;kz++)
+      { if(!g_SysState[si].smc3z[kz].Active) continue;
+        color zc=g_SysState[si].smc3z[kz].IsBull?clrSeaGreen:clrIndianRed;
+        nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].smc3z[kz].Top,   zc,2,"POI",extLo,extHi);
+        nl=MPAddLvl(lv,lc,ls,ln,nl,g_SysState[si].smc3z[kz].Bottom,zc,2,"POI",extLo,extHi);
+        break; }
    }
    if(s.hasLim)
       nl=MPAddLvl(lv,lc,ls,ln,nl,s.limPrice,(s.limDir>0)?clrLime:clrRed,3,
@@ -5866,13 +6972,16 @@ void MPVirtStratLine(int x,int y,int w,int si,int st,int thr)
      if(S.virtualActive) txt+=" · vOPEN";
      bool wait50=(st==STRAT_S2)?
         (g_SysState[si].s2WaitBuy || g_SysState[si].s2WaitSell):
+        (st==STRAT_SMC3)?
+        (g_SysState[si].smc3WaitBuy || g_SysState[si].smc3WaitSell):
         (g_SysState[si].confWaitBuy || g_SysState[si].confWaitSell);
      if(wait50)
-     { bool ch=true;                        // S2 siempre entra por CHoCH
-       if(st!=STRAT_S2)
-          ch=g_SysState[si].confWaitBuy?g_SysState[si].confLegChochBuy
-                                      :g_SysState[si].confLegChochSell;
-       txt+=(ch?" · ESPERA PRECIO (50% CHoCH)":" · ESPERA PRECIO (50% BOS)"); }
+     { if(st==STRAT_S2)          txt+=" · ESPERA PRECIO (50% CHoCH)";
+       else if(st==STRAT_SMC3)   txt+=" · ESPERA PRECIO (SMC3 POI)";
+       else
+       { bool ch=g_SysState[si].confWaitBuy?g_SysState[si].confLegChochBuy
+                                          :g_SysState[si].confLegChochSell;
+         txt+=(ch?" · ESPERA PRECIO (50% CHoCH)":" · ESPERA PRECIO (50% BOS)"); } }
      tc=(falta<=1)?clrOrange:(falta<=2)?clrDodgerBlue:C'150,170,210'; }
    MPText(x+42+bw+6,y+4,txt,tc,false,7);
 }
@@ -5900,7 +7009,7 @@ int MPDrawVirtualState(int x,int y,int w)
    MPTextR(x+w-8,y+4,StringFormat("%d pares",rows),C'150,160,190',false,8);
    int h=16;
 
-   int rows2=InpUseStrat2?2:1;          // líneas por par: E1 y S2
+   int rows2=1+(InpUseStrat2?1:0)+(InpUseSMC3?1:0);   // líneas por par: E1, S2 y SMC3
    int vRowH=MP_VROW_H*rows2;
    for(int r=0;r<rows;r++)
    { int si=vo[r];
@@ -5916,6 +7025,8 @@ int MPDrawVirtualState(int x,int y,int w)
      MPVirtStratLine(x+88,ry,w-96,si,STRAT_CONFLUENCIA,thr);
      if(InpUseStrat2)
         MPVirtStratLine(x+88,ry+MP_VROW_H,w-96,si,STRAT_S2,thr);
+     if(InpUseSMC3)
+        MPVirtStratLine(x+88,ry+MP_VROW_H*2,w-96,si,STRAT_SMC3,thr);
    }
    h+=rows*vRowH;
    if(nAct>rows)
@@ -5967,7 +7078,7 @@ void MultiPanelUpdate(bool force=false)
    if(nAct>rows) H+=13;
    //--- sección estado virtual (por par / por estrategia)
    int vRows=MathMin(nAct,MP_MAX_ROWS);
-   int vRows2=InpUseStrat2?2:1;
+   int vRows2=1+(InpUseStrat2?1:0)+(InpUseSMC3?1:0);
    H+=6+16+vRows*MP_VROW_H*vRows2;
    if(nAct>vRows) H+=13;
    if(chartRows>0) H+=8+chartRows*MP_BOX_H+(chartRows-1)*6;
@@ -6207,7 +7318,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.55 === X=",InpXActivacion,
+   Print("=== DIAG v8.57 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -6332,6 +7443,8 @@ int OnInit()
 
    if(InpUseConfluencia && !InpAllowConfluOrders)
       Print("CONFL: operativa pausada (InpAllowConfluOrders=false). Solo se calculan/dibujan zonas.");
+   if(InpUseSMC3 && !InpAllowSmc3Orders)
+      Print("SMC3: operativa pausada (InpAllowSmc3Orders=false). Solo se calculan/dibujan zonas POI.");
 
    SyncAllTrades();
 
@@ -6344,13 +7457,35 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.56 | Símbolos:",g_SymCount,
+   Print("EA v8.57 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
          " | 1:2=",InpUseTrailing12?(InpAutoFromLevel5?"ON (auto nivel≥5)":"ON (siempre)")
                                    :"OFF (solo se busca el TP)",
          " | OBJETIVO=",InpUseProfitStep?"ON":"OFF");
+   if(InpUseSMC3)
+   { for(int si=0;si<g_SymCount;si++)
+     { if(g_SysState[si].SE_SMC_H.Valid)
+          Print("SMC3 [",g_Symbols[si].name,"] ",EnumToString(InpSmc3TFHigh)," bias=",
+                g_SysState[si].SE_SMC_H.Bias==BIAS_BULLISH?"ALCISTA":
+                g_SysState[si].SE_SMC_H.Bias==BIAS_BEARISH?"BAJISTA":"-",
+                " rango [",DoubleToString(g_SysState[si].SE_SMC_H.L2,_Digits),"..",
+                DoubleToString(g_SysState[si].SE_SMC_H.L1,_Digits),"] 50%=",
+                DoubleToString(g_SysState[si].SE_SMC_H.EQ,_Digits),
+                " · ",EnumToString(InpSmc3TFMid)," → POI · ",
+                EnumToString(InpSmc3TFLow)," gatillo · zonas=",
+                IntegerToString(Smc3ActiveZones(si)));
+     }
+     Print("ESTRATEGIA 3: ",EnumToString(InpSmc3TFHigh)," dirección+descuento · ",
+           EnumToString(InpSmc3TFMid)," estructura/POI · ",EnumToString(InpSmc3TFLow),
+           " gatillo",
+           " | entrada=",(InpSmc3EntryMode==SMC3_ENTRY_LEG50?"50% del tramo":
+                          InpSmc3EntryMode==SMC3_ENTRY_ZONE50?"50% de la zona":"borde de la zona"),
+           " BOS=",InpSmc3AcceptBOS?"ON":"OFF"," CHoCH=",InpSmc3AcceptCHoCH?"ON":"OFF",
+           " descuento=",InpSmc3UseDiscount?"ON":"OFF",
+           " FVG=",InpSmc3UseFVG?(InpSmc3RequireFVG?"obligatorio":"si solapa"):"OFF"); }
+
    Print("ESTRATEGIA 1: H1=",EnumToString(InpConfTFSuperior),
          " (dirección) · entrada ",EnumToString(InpConfTFEntrada),
          " BOS/CHoCH → LIMIT en el 50% del tramo",
@@ -6370,7 +7505,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.56 cerrado | Razón:",reason);
+   Print("EA v8.57 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
@@ -6395,6 +7530,7 @@ void OnTick()
    //    órdenes limit del par (siempre, aunque haya CB/filtro horario)
    for(int si=0;si<g_SymCount;si++) ConfluenciaManagePendings(si);
    for(int si=0;si<g_SymCount;si++) Strat2ManagePendings(si);
+   for(int si=0;si<g_SymCount;si++) Smc3ManagePendings(si);
 
    if(!g_CircuitBreakerOn)
    { EnforceSLTP();
@@ -6638,7 +7774,8 @@ void OnChartEvent(const int id,const long &lparam,
         g_SysState[si].hasLive=false;
         g_SysState[si].activeLiveStrategy=-1;
         ConfluenciaResetState(si);
-        Strat2ResetState(si); }
+        Strat2ResetState(si);
+        Smc3ResetState(si); }
       SaveState(); RebuildPanel(); return;
    }
 
