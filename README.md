@@ -1,11 +1,11 @@
 # Ea-de-trading
 
-EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.59**:
+EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8.60**:
 
 - **Estrategia 1 (v8.56)** — la **dirección la manda la estructura de líneas L1-L4 en H1** (bias + rango + zona del 50%) y la **entrada se busca en M3 con un BOS o un CHoCH a favor de la zona de 1 hora**; la orden **LIMIT se coloca en el 50% del tramo del BOS/CHoCH** (del origen del impulso a su extremo), congelado, y **solo una operación abierta por par**. La LIMIT se envía cuando el precio está del lado correcto del 50% (encima en compras / debajo en ventas) y se cancela si el precio cierra M3 más allá del origen del tramo.
 - **Estrategia 2** — rango **L1-L2 en 4H** + su **50%**, **order blocks históricos con confirmación de imbalance** (FVG) y el **mismo ciclo de órdenes que la Estrategia 1**: toque → CHoCH M3 a favor del rebote → 50% L1-L2 M3 congelado → LIMIT virtual → **vOPEN** → **LIVE** (`InpXActivacion`) con magia propia (+2). Solo son válidas las zonas con **mínimo 10 velas H1 anteriores** a su detección.
 - **Estrategia 3 (v8.57) — SMC completo multi-temporal**: **correlación de tres temporalidades**. El **TF alto** (H4 por defecto) manda la **dirección** (bias del motor de líneas) y el **premium/descuento** (solo se compra por debajo del 50% del rango y se vende por encima). El **TF medio** (M15) aporta la **estructura del mercado**: cada **BOS/CHoCH** entrega su tramo y dentro de él se busca el **POI** (order block + imbalance/FVG). El **TF bajo** (M3) da el **gatillo**: con la zona armada, un **BOS o CHoCH** a favor congela la entrada en el **50% del tramo** (o en el 50%/borde del POI, configurable). Magia propia (+3), SL/TP del EA y el mismo ciclo virtual→LIVE.
-- **Rejilla / GRID opcional sobre E1 y E3 (v8.59)**: con `InpGridEnable=true` el EA **añade operaciones a la operación LIVE que ya abrió la Estrategia 1 o la Estrategia 3** cuando el precio va en contra, con **multiplicador de lotaje**, **lotaje inicial de la rejilla** y **multiplicador de distancia**. La apertura sigue siendo la de E1/E3; la rejilla solo promedia. TP y SL se recalculan sobre el **precio medio** de la cesta y el **nivel/CV del par se actualiza una sola vez**, cuando cierra la última posición.
+- **Rejilla / GRID opcional sobre E1 y E3 (v8.60)**: con `InpGridEnable=true` el EA **añade operaciones a la operación LIVE que ya abrió la Estrategia 1 o la Estrategia 3** cuando el precio va en contra, con **multiplicador de lotaje**, **lotaje inicial propio de la rejilla** (independiente de la tabla de riesgo) y **multiplicador de distancia**, hasta **20 operaciones** de rejilla por par. La cesta va **SIN stop loss** y se cierra con un **TP en USD**: cuando el beneficio flotante llega al objetivo se cierran todas las posiciones y el cierre cuenta como **TP (nivel→1, CV→1)**. El **primer nivel** de la rejilla solo se abre en el **horario de trading**; los **siguientes, a cualquier hora**.
 - **Una sola operación activa por par (v8.52)**: E1, S2 y E3 **comparten el mismo nivel de la tabla** (1–20). La primera estrategia que activa la LIMIT se queda con la operación; al activarse se **cancelan las demás límites (virtuales y reales) y el flujo pendiente de la otra estrategia**, y el par espera el resultado. Al cerrar: **TP → nivel 1**, **SL → +1 nivel**, **SL con trailing/protección → retroceso de 3 (o 4 si CV≥10)** posiciones en la tabla.
 - **Objetivo por pasos / profit step (v8.54)**: escalera de escalones **que nunca baja** (`base → base+paso → base+2·paso…`, paso en USD con `InpProfitStepUsd`). Al llegar a un escalón el EA **cierra todas las operaciones**, **borra todas las límites pendientes**, **reinicia TODOS los niveles de tabla a 1** (todos los pares) y **sube la base al escalón logrado**. Se mide por **equity** o por **suma de posiciones cerradas** (`InpStepMeasure`); la base se puede fijar **manualmente** (`InpStepBaseValue`). Las LIVE siguen LIVE y el CV virtual se mantiene.
 - Panel **MULTI-PAR** + gestión de riesgo de **Asistente 3 por par** + **3 modos de capital base** + fase **virtual→LIVE** con conteo idéntico a LIVE.
@@ -28,13 +28,13 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `README v8.36 MULTI-PAR.md` | README original de esa versión. |
 | `ea INICIAL v8.37.txt` | Copia en texto plano de `trabajador INICIAL v8.37.mq5` (tal como estaba en el repo al inicio). |
 | `README INICIAL v8.37.md` | README original de esa versión. |
-| `trabajador multichart.mq5` | **Versión actual (v8.59)**: estrategia 1 (**estructura L1-L4 H1 → bias/zona del 50%** + **BOS/CHoCH en M3** + **LIMIT en el 50% del tramo**) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + **Estrategia 3 (SMC multi-temporal: H4 dirección/descuento → M15 POI OB+FVG → M3 gatillo BOS/CHoCH → 50%)** con magia +3 + **rejilla opcional sobre E1/E3** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
+| `trabajador multichart.mq5` | **Versión actual (v8.60)**: estrategia 1 (**estructura L1-L4 H1 → bias/zona del 50%** + **BOS/CHoCH en M3** + **LIMIT en el 50% del tramo**) + **Estrategia 2 (rango 4H L1-L2 + 50% + OB+imbalance) con órdenes virtual→LIVE** (mismo ciclo que E1, magia +2, `InpAllowStrat2Orders`, min-age 10 velas H1) + **Estrategia 3 (SMC multi-temporal: H4 dirección/descuento → M15 POI OB+FVG → M3 gatillo BOS/CHoCH → 50%)** con magia +3 + **rejilla opcional sobre E1/E3 (lote propio, sin SL, TP en USD, hasta 20 niveles)** + panel MULTI-PAR + 3 modos de capital + LIVE desde nivel 1. |
 | `trabajador v8.40 LINEAS+CONFL.mq5` | Versión anterior (v8.40) con **DOS estrategias** (PERSONAL `LINEAS` + CONFLUENCIA `CONFL`), recuperada del historial (commit `c5bb1a7`). |
 | `ea.txt` | Copia en texto plano de `trabajador multichart.mq5` (sin BOM). |
 | `ea v8.40 LINEAS+CONFL.txt` | Copia en texto plano de `trabajador v8.40 LINEAS+CONFL.mq5` (sin BOM). |
 | `smc2.mq5` | EA visual SMC independiente (motor de líneas L1-L4, OB y FVG) — referencia de la lógica portada. |
 | `sim_smc3.py` | **Simulación en Python de la E3 v8.57** (SMC multi-temporal): motor L1-L4 en 3 temporalidades, POI (order block + FVG), armado por toque, gatillo del TF bajo, 50% del tramo y las invalidaciones. 7 escenarios (flujo completo, TF alto en contra, premium, sin POI armada, zona mitigada, origen roto, 50% de la zona). Se ejecuta con `python3 sim_smc3.py`. |
-| `sim_grid.py` | **Simulación en Python de la REJILLA v8.59**: progresión de lotaje y de distancia, media ponderada, TP/SL comunes de la cesta, tope de lote, paso automático (mitad del SL), cierres parciales (un solo evento de nivel/CV) y filtros (rejilla apagada, S2, circuit breaker, ventana semanal, horario, 1:2 protegido). 34 comprobaciones; `python3 sim_grid.py`. |
+| `sim_grid.py` | **Simulación en Python de la REJILLA v8.60**: lotaje propio (independiente de la tabla), progresión de lote y distancia, cesta **sin SL**, **TP en USD** de la cesta, tope de **20 niveles**, horario (1er nivel sí, siguientes no), tope de lote, cierres parciales (un solo evento de nivel/CV) y filtros (apagada, S2, circuit breaker, ventana semanal). 38 comprobaciones; `python3 sim_grid.py`. |
 | `sim_bos_choch.py` | **Simulación en Python de la E1 v8.56** (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados): reproduce el motor y los escenarios de BOS alcista, CHoCH alcista, rompimiento contrario (ignorado), BOS desactivado y cancelación por origen roto. Se ejecuta con `python3 sim_bos_choch.py`. |
 
 ## Estrategia 1 (v8.56) — líneas en H1 + BOS/CHoCH en M3 + 50% del tramo
@@ -207,63 +207,66 @@ La **Estrategia 3** es un **SMC completo** montado sobre el mismo motor de líne
 
 > **Nota:** la E3 **no toca** la lógica de E1 ni de S2 — usa **sus propios motores** (tres instancias del motor de líneas) y su **propia magia (+3)**. Si prefieres el criterio clásico de entrada dentro del POI, cambia `InpSmc3EntryMode` a `ZONE50` o `ZONEPROX`.
 
-## Rejilla (GRID) sobre las entradas de E1 y E3 (v8.59)
+## Rejilla (GRID) sobre las entradas de E1 y E3 (v8.60)
 
-La rejilla **no busca entradas propias**: la **apertura sigue siendo la de la Estrategia 1 o la Estrategia 3** (su LIMIT en el 50%, su ciclo virtual→LIVE y su magia). Cuando esa operación ya está en el mercado y el precio va **en contra**, la rejilla **añade operaciones en el mismo sentido** para promediar.
+La rejilla **no busca entradas propias**: la **apertura sigue siendo la de la Estrategia 1 o la Estrategia 3** (su LIMIT en el 50%, su ciclo virtual→LIVE y su magia). Cuando esa operación ya está en el mercado y el precio va **en contra**, la rejilla **añade operaciones en el mismo sentido** para promediar, hasta **20 operaciones** de rejilla por par.
 
 ```
                  precio
-   ▲ 1.10000  ■ entrada de E1/E3        (lote del nivel del par)
+   ▲ 1.10000  ■ entrada de E1/E3          (lote de la TABLA de riesgo)
    │           │
-   │ ←dist 1→  ■ L1  lotajeInicial
+   │ ←dist 1→  ■ L1  loteRejilla                    ← horario permitido
    │           │
-   │ ←dist 2→  ■ L2  lotajeInicial · mult
+   │ ←dist 2→  ■ L2  loteRejilla · mult             ← cualquier hora
    │           │
-   │ ←dist 3→  ■ L3  lotajeInicial · mult²
+   │ ←dist 3→  ■ L3  loteRejilla · mult²            ← cualquier hora
    ▼
-   TP/SL de la CESTA = precio MEDIO ± tp/sl del par
+   SIN SL · la CESTA se cierra cuando el flotante ≥ InpGridTPUsd
 ```
 
 | Regla | Cómo se calcula |
 |---|---|
 | **Distancia del nivel n** | `InpGridStepPts · InpGridDistMult^(n-1)` medida desde el **peor precio** de la cesta. Con `InpGridStepPts=0` se usa **la mitad del SL del par**. |
-| **Lotaje del nivel n** | `(InpGridLotInit, o el lote del nivel del par si es 0) · InpGridLotMult^(n-1)`, normalizado al paso de volumen del símbolo y limitado por `InpGridLotCap`. |
-| **Niveles extra** | `InpGridMaxLevels` (0 = sin rejilla). |
-| **TP** | `InpGridAvgTP=true` → **TP común** = precio medio ponderado ± `InpSymTP`; todas las posiciones llevan el mismo TP. |
-| **SL** | `InpGridBasketSL=true` → **SL común** = precio medio ponderado ∓ `InpSymSL`. Las posiciones con el **SL ya movido a protección (1:2)** **no se tocan**. |
-| **Nivel / CV del par** | Se actualiza **una sola vez**, cuando cierra la **última** posición de la cesta (los cierres parciales solo se registran en el log). |
+| **Lotaje del nivel n** | `InpGridLotInit · InpGridLotMult^(n-1)` — **lotaje propio de la rejilla**, nunca el de la **tabla de riesgo**; normalizado al paso de volumen y limitado por `InpGridLotCap`. |
+| **Niveles** | `InpGridMaxLevels` de 0 a **20** (tope duro `GRID_MAX_LEVELS=20`). |
+| **Stop loss** | **NO hay SL** (`InpGridStripSL`): la rejilla **retira** el SL de todas las posiciones de la cesta (la entrada incluida) y el 1:2 no la toca. |
+| **Take profit** | **TP en USD** (`InpGridTPUsd`): cuando el beneficio flotante de la cesta (`profit + swap`) llega al objetivo, se **cierran todas** las posiciones y el cierre cuenta como **TP → nivel 1 y CV 1**. |
+| **Horario** | El **primer** nivel de la rejilla solo se abre en el **horario de trading** (`InpStartHour/EndHour`); los niveles **2..20** se abren **a cualquier hora** (`InpGridFreeHours`). |
+| **Nivel / CV del par** | Se actualiza **una sola vez**, cuando cierra la **última** posición de la cesta. |
 
 **Inputs (`=== REJILLA (GRID) — SOBRE LAS ENTRADAS DE E1 Y E3 ===`)**
 
 | Input | Default | Significado |
 |---|---|---|
-| `InpGridEnable` | `false` | Activa la rejilla. **Desactivada por defecto**: sin ella el EA funciona exactamente igual que en la v8.58. |
+| `InpGridEnable` | `false` | Activa la rejilla. **Desactivada por defecto**: sin ella el EA funciona como en la v8.58. |
 | `InpGridOnE1` | `true` | Aplicar la rejilla a la **Estrategia 1**. |
 | `InpGridOnE3` | `true` | Aplicar la rejilla a la **Estrategia 3**. |
 | `InpGridStepPts` | `0` | Distancia del **primer** nivel en puntos (`0` = mitad del SL del par). |
-| `InpGridDistMult` | `1.0` | **Multiplicador de distancia** (`1` = todos los niveles equidistantes · `1.5` = cada nivel un 50% más lejos). |
-| `InpGridLotInit` | `0` | **Lotaje inicial de la rejilla** (`0` = lote del nivel del par). |
-| `InpGridLotMult` | `1.0` | **Multiplicador de lotaje** (`1` = lotes iguales · `2` = dobla cada nivel). |
-| `InpGridMaxLevels` | `4` | Niveles **extra** máximos. |
+| `InpGridDistMult` | `1.0` | **Multiplicador de distancia** (`1` = nivel equidistante · `1.5` = cada nivel un 50% más lejos). |
+| `InpGridLotInit` | `0.01` | **Lotaje inicial de la rejilla** — **independiente de la tabla de riesgo** (`0` = lote mínimo del símbolo). |
+| `InpGridLotMult` | `1.0` | **Multiplicador de lotaje** (`1` = todos iguales · `2` = dobla cada nivel). |
+| `InpGridMaxLevels` | `20` | Operaciones de rejilla por par (0–20). |
 | `InpGridLotCap` | `5.0` | Tope de lote por nivel de rejilla. |
-| `InpGridAvgTP` | `true` | TP común sobre el precio medio. |
-| `InpGridBasketSL` | `true` | SL común sobre el precio medio. |
-| `InpGridKeepTrail` | `false` | Mantener el 1:2 por posición aunque haya rejilla (por defecto el SL lo gobierna la cesta). |
+| `InpGridTPUsd` | `5.0` | **TP de la cesta en USD** (`0` = sin TP en USD → con `InpGridAvgTP=false` la cesta solo cerraría por el circuit breaker o el objetivo por pasos). |
+| `InpGridStripSL` | `true` | La cesta va **sin SL** (se retira el SL de todas sus posiciones). |
+| `InpGridAvgTP` | `false` | Respaldo: TP por **precio medio** (solo se usa si `InpGridTPUsd=0`). |
+| `InpGridFreeHours` | `true` | Niveles **2..20** a cualquier hora (el primero solo en horario permitido). |
+| `InpGridKeepTrail` | `false` | Mantener el 1:2 por posición aunque haya rejilla. |
 
-**Cuándo NO añade niveles:** circuit breaker activo, fuera del horario de trading, **ventana de cierre semanal**, estrategia con `cbPaused`, `InpAllowConfluOrders`/`InpAllowSmc3Orders` apagado, sin **margen libre** (más del 90% del margen consumido por la nueva orden) o al llegar a `InpGridMaxLevels`.
+**Cuándo NO añade niveles:** circuit breaker activo, **cierre semanal activo y dentro de su ventana** (las órdenes se cerrarían en el acto), estrategia con `cbPaused`, `InpAllowConfluOrders`/`InpAllowSmc3Orders` apagado, sin **margen libre** (más del 90% del margen consumido por la nueva orden), llegada a `InpGridMaxLevels`, o **fuera de horario cuando toca el primer nivel** (con `InpGridFreeHours=false` se aplica a todos).
 
-**Ejemplo (EURUSD, 5 dígitos, SL 95 pts, TP 305 pts)** con `InpGridStepPts=150`, `InpGridDistMult=1.5`, `InpGridLotInit=0.10`, `InpGridLotMult=2`, `InpGridMaxLevels=3`:
+**Ejemplo (EURUSD, 5 dígitos, SL 95 pts)** con `InpGridStepPts=150`, `InpGridDistMult=1`, `InpGridLotInit=0.01`, `InpGridLotMult=2`, `InpGridTPUsd=5`:
 
-| Nivel | Precio | Distancia | Lote | Cesta |
-|---|---|---|---|---|
-| entrada E1/E3 | 1.10000 | — | 0.10 (nivel del par) | 0.10 |
-| L1 | 1.09850 | 150 pts | 0.10 | 0.20 |
-| L2 | 1.09625 | 225 pts | 0.20 | 0.40 |
-| L3 | 1.092875 | 337.5 pts | 0.40 | 0.80 |
+| Nivel | Precio | Distancia | Lote | Lotes cesta | Horario |
+|---|---|---|---|---|---|
+| entrada E1/E3 | 1.10000 | — | 0.37 (tabla) | 0.37 | horario del EA |
+| L1 | 1.09850 | 150 pts | 0.01 | 0.38 | **solo en horario** |
+| L2 | 1.09700 | 150 pts | 0.02 | 0.40 | cualquier hora |
+| L3 | 1.09550 | 150 pts | 0.04 | 0.44 | cualquier hora |
 
-Con la cesta completa el precio medio es ≈1.0953: el **TP común** queda en media + 305 pts ≈ **1.0984** (por debajo del precio de la primera entrada, así que la cesta cierra en positivo con un retroceso parcial) y el **SL común** en media − 95 pts.
+Sin SL, la cesta se cierra en cuanto el **beneficio flotante** de esas posiciones alcanza **5 USD** (el precio necesario depende del lotaje acumulado: con 0.44 lotes son ≈ 11 puntos desde el precio medio). Al cerrarse, el par cuenta **un TP**: nivel → 1 y CV → 1.
 
-> ⚠️ **La rejilla es martingala**: el lotaje crece y el riesgo total de la cesta puede superar con creces el de una operación simple. Empieza con `InpGridLotMult=1` y `InpGridMaxLevels` bajos, y revisa `InpMaxDailyLossPct` / el circuit breaker.
+> ⚠️ **Sin stop loss el riesgo no está acotado por precio**: una tendencia en contra mantiene la cesta abierta indefinidamente y el lotaje crece si `InpGridLotMult > 1`. Los frenos que quedan son el **circuit breaker** (`InpMaxDailyLossPct`, que cierra todo) y el **objetivo por pasos**. Pruébalo en demo y con `InpGridLotMult=1` al principio.
 
 **Persistencia**: el estado de la rejilla por par (`GRID_ST`, `GRID_DIR`, `GRID_LEGS`) se guarda en el `.dat`, así que un reinicio no pierde los niveles ya abiertos.
 
@@ -282,7 +285,7 @@ Las líneas **se marcan con colores vivos y etiqueta con nombre + precio**:
 | `ENTRADA (50% BOS M3)` / `(50% CHoCH M3)` | 🟢 Lima / 🔴 Rojo | Discontinua | 50% del **tramo** del BOS/CHoCH de M3 congelado (nivel de la orden limit) |
 | `TRAMO BOS/CHoCH ...` | 🟢 Verde / 🔴 Rojo | Punteada + rectángulo relleno | Origen y extremo del tramo que rompió (v8.56) |
 | `3T H4 techo` / `suelo` / `3T 50%` | 🟤 Marrón | Raya-punto / punteada | Rango y 50% del TF alto de la **Estrategia 3** (v8.57) |
-| `REJILLA L2/4` | 🔵 Azul (DodgerBlue) | Punteada | Precio del **siguiente nivel** de la rejilla del par del panel (v8.59) |
+| `REJILLA L2/4` | 🔵 Azul (DodgerBlue) | Punteada | Precio del **siguiente nivel** de la rejilla del par del panel (v8.59/v8.60) |
 | `3 tramo` | 🟤 Marrón | Punteada | Tramo del último rompimiento del TF medio (E3) |
 | `POI C/V` (rectángulo) | 🟢/🔴 relleno | — | Zona POI (order block + FVG) de la **Estrategia 3** |
 | `ENTRADA 3 COMPRA/VENTA` | 🟢 Lima / 🔴 Rojo | Discontinua | Nivel congelado (50% del tramo del gatillo) de la E3 |
@@ -516,9 +519,13 @@ git show --stat HEAD
   ```bash
   grep -cE "MPVirtStratLine|MPDrawVirtualState|falta %d|VIRTUAL → LIVE" "trabajador multichart.mq5"
   ```
-- Rejilla v8.59 presente (debe dar `> 0`):
+- Rejilla v8.60 presente (debe dar `> 0`):
   ```bash
-  grep -cE "InpGridEnable|GridStepPoints|GridTryStep|GridRecalcBasket|GridPartialClose|gridLegs" "trabajador multichart.mq5"
+  grep -cE "InpGridEnable|GridStepPoints|GridTryStep|GridRecalcBasket|GridPartialClose|GridCheckTPUsd|gridLegs" "trabajador multichart.mq5"
+  ```
+- Rejilla con TP en USD, sin SL y con lote propio (debe dar `> 0`):
+  ```bash
+  grep -cE "InpGridTPUsd|InpGridStripSL|base=InpGridLotInit" "trabajador multichart.mq5"
   ```
 - La rejilla NO se aplica a la S2 (`GridUsesStrategy` solo nombra E1 y E3; debe dar `0`):
   ```bash
@@ -542,9 +549,10 @@ git show --stat HEAD
 
 ## ⚠️ Advertencia
 
-La tabla de riesgo llega al **2.414% de la base en el nivel 20**. Si activas la **rejilla (v8.59)**
-el riesgo por par ya no es el de una sola operación: la cesta acumula lotaje (multiplicador) y un SL
-común sobre el precio medio puede suponer varias veces el riesgo base. Prueba primero con
-`InpGridLotMult=1.0`, `InpGridMaxLevels` bajo y en cuenta demo. En modo LIVE, una racha larga de
+La tabla de riesgo llega al **2.414% de la base en el nivel 20**. Si activas la **rejilla (v8.60)** el
+riesgo por par ya no es el de una sola operación y, además, **la cesta va SIN stop loss**: puede
+acumular hasta **20 operaciones** con multiplicador de lotaje y permanecer abierta mientras el precio
+siga en contra. Sus únicos frenos son el **circuit breaker** y el **objetivo por pasos**. Prueba en
+demo, con `InpGridLotMult=1.0` y `InpGridMaxLevels` bajo, antes de usarlo en real. En modo LIVE, una racha larga de
 pérdidas puede destruir la cuenta (*blow-up*). Revisa la tabla, `InpMaxDailyLossPct` y `InpXActivacion`
 antes de usarlo con dinero real.
