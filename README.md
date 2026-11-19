@@ -36,6 +36,9 @@ EA de trading para **MetaTrader 5** (MQL5) — `EA_GestionCuantitativa.mq5` **v8
 | `sim_smc3.py` | **Simulación en Python de la E3 v8.57** (SMC multi-temporal): motor L1-L4 en 3 temporalidades, POI (order block + FVG), armado por toque, gatillo del TF bajo, 50% del tramo y las invalidaciones. 7 escenarios (flujo completo, TF alto en contra, premium, sin POI armada, zona mitigada, origen roto, 50% de la zona). Se ejecuta con `python3 sim_smc3.py`. |
 | `sim_grid.py` | **Simulación en Python de la REJILLA v8.60**: lotaje propio (independiente de la tabla), progresión de lote y distancia, cesta **sin SL**, **TP en USD** de la cesta, tope de **20 niveles**, horario (1er nivel sí, siguientes no), tope de lote, cierres parciales (un solo evento de nivel/CV) y filtros (apagada, S2, circuit breaker, ventana semanal). 38 comprobaciones; `python3 sim_grid.py`. |
 | `sim_bos_choch.py` | **Simulación en Python de la E1 v8.56** (motor L1-L4 + BOS/CHoCH + 50% del tramo + máquina de estados): reproduce el motor y los escenarios de BOS alcista, CHoCH alcista, rompimiento contrario (ignorado), BOS desactivado y cancelación por origen roto. Se ejecuta con `python3 sim_bos_choch.py`. |
+| `SMC_Lineas_BOS50.mq5` | **Indicador visual** (no opera): líneas L1-L4 + zonas premium/descuento + **BOS/CHoCH anclados dentro del 50%** de la estructura, con la misma lógica del EA v8.56, overlay H1, panel en gráfico y avisos en la pestaña Expertos. Listo para la terminal MT5 de Exness; convive con el EA en el mismo gráfico. Ver `README SMC50 LINEAS-BOS.md`. |
+| `SMC_Lineas_BOS50.txt` | Copia en texto plano de `SMC_Lineas_BOS50.mq5`. |
+| `README SMC50 LINEAS-BOS.md` | Guía del indicador: leyenda, lógica, instalación en Exness e inputs. |
 
 ## Estrategia 1 (v8.56) — líneas en H1 + BOS/CHoCH en M3 + 50% del tramo
 
