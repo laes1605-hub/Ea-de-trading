@@ -2,7 +2,7 @@
 //|                    EA_GestionCuantitativa.mq5                    |
 //+------------------------------------------------------------------+
 #property copyright "Gestión Cuantitativa EA"
-#property version   "8.57"
+#property version   "8.58"
 #property strict
 
 #include <Canvas\Canvas.mqh>   // panel MULTI-PAR (tester visual + gráfico real)
@@ -25,6 +25,15 @@ enum ENUM_STEP_MEASURE
    STEP_MEASURE_EQUITY = 0,   // Equity: flotante + realizado (dispara en cuanto toca el escalón)
    STEP_MEASURE_CLOSED = 1    // Posiciones cerradas: solo balance realizado (suma de cierres)
 };
+
+//--- Estrategia 3: cómo se fija el nivel de la orden LIMIT ---------
+enum ENUM_SMC3_ENTRY
+{
+   SMC3_ENTRY_LEG50    = 0,  // 50% del tramo del BOS/CHoCH del TF de gatillo
+   SMC3_ENTRY_ZONE50   = 1,  // 50% de la zona POI (order block / FVG)
+   SMC3_ENTRY_ZONEPROX = 2   // Borde proximal de la zona POI
+};
+
 
 //+------------------------------------------------------------------+
 //| INPUTS — GENERALES                                               |
@@ -326,14 +335,6 @@ enum ENUM_STRATEGY_ID
    STRAT_CONFLUENCIA  = 0,   // Estrategia 1: estructura de líneas L1-L4 (H1) + apertura confluencia (M3)
    STRAT_S2           = 1,   // Estrategia 2: OB + imbalance históricos (zona 4H) + CHoCH M3 + 50% M3
    STRAT_SMC3         = 2    // Estrategia 3: SMC multi-temporal (BOS/CHoCH + POI OB/FGV + 50%)
-};
-
-//--- Estrategia 3: cómo se fija el nivel de la orden LIMIT ---------
-enum ENUM_SMC3_ENTRY
-{
-   SMC3_ENTRY_LEG50    = 0,  // 50% del tramo del BOS/CHoCH del TF de gatillo
-   SMC3_ENTRY_ZONE50   = 1,  // 50% de la zona POI (order block / FVG)
-   SMC3_ENTRY_ZONEPROX = 2   // Borde proximal de la zona POI
 };
 
 enum ENUM_STRUCTURE_BIAS
@@ -3476,7 +3477,7 @@ int Smc3AddZone(int si,Smc3Zone &z)
 //    dir  = dirección del rompimiento (+1/-1)
 //    legH/legL = extremos del tramo (origen → extremo del impulso)
 bool Smc3BuildPoi(int si,int dir,double legH,double legL,datetime legTime,
-                  Smc3Zone &out)
+                  Smc3Zone &poi)
 {
    string sym=g_Symbols[si].name;
    ENUM_TIMEFRAMES tf=InpSmc3TFMid;
@@ -3550,18 +3551,18 @@ bool Smc3BuildPoi(int si,int dir,double legH,double legL,datetime legTime,
    if(dir>0 && zBot>leg50+tol) return false;   // demanda en descuento
    if(dir<0 && zTop<leg50-tol) return false;   // oferta en prima
 
-   ZeroMemory(out);
-   out.Active  =true;
-   out.IsBull  =(dir>0);
-   out.OBHigh  =obH;      out.OBLow   =obL;
-   out.OBTime  =obT;
-   out.HasFVG  =useFVG;
-   out.FVGTop  =(useFVG? fvgH:0.0);
-   out.FVGBot  =(useFVG? fvgL:0.0);
-   out.Top     =zTop;     out.Bottom =zBot;
-   out.LegHigh =hi;       out.LegLow =lo;
-   out.LegTime =legTime;
-   out.Created =TimeCurrent();
+   ZeroMemory(poi);
+   poi.Active  =true;
+   poi.IsBull  =(dir>0);
+   poi.OBHigh  =obH;      poi.OBLow   =obL;
+   poi.OBTime  =obT;
+   poi.HasFVG  =useFVG;
+   poi.FVGTop  =(useFVG? fvgH:0.0);
+   poi.FVGBot  =(useFVG? fvgL:0.0);
+   poi.Top     =zTop;     poi.Bottom =zBot;
+   poi.LegHigh =hi;       poi.LegLow =lo;
+   poi.LegTime =legTime;
+   poi.Created =TimeCurrent();
    return true;
 }
 
@@ -7318,7 +7319,7 @@ void PrintDiag()
    datetime now=TimeCurrent();
    if(now-g_LastDiagTime<60) return;
    g_LastDiagTime=now;
-   Print("=== DIAG v8.55 === X=",InpXActivacion,
+   Print("=== DIAG v8.58 === X=",InpXActivacion,
          " CB=",g_CircuitBreakerOn?"ACTIVO":"OFF",
          " Base=",BaseDisplay(false));
    for(int si=0;si<g_SymCount;si++)
@@ -7457,7 +7458,7 @@ int OnInit()
    if(IsVisual())
    { MultiPanelUpdate(true); DrawPositionLines(); }
 
-   Print("EA v8.57 | Símbolos:",g_SymCount,
+   Print("EA v8.58 | Símbolos:",g_SymCount,
          " | X=",InpXActivacion," LIVE@CV>=",InpXActivacion+1,
          " | Base=",BaseDisplay(false),
          " | CB=",DoubleToString(InpMaxDailyLossPct,1),"%",
@@ -7505,7 +7506,7 @@ void OnDeinit(const int reason)
    MultiPanelDestroy();
    RemovePositionLines();
    Comment("");
-   Print("EA v8.57 cerrado | Razón:",reason);
+   Print("EA v8.58 cerrado | Razón:",reason);
 }
 
 //+------------------------------------------------------------------+
